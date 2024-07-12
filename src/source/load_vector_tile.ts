@@ -60,10 +60,13 @@ export class DedupedRequest {
                 entry.result = [err, result];
                 for (const cb of entry.callbacks) {
                     if (this.scheduler) {
+                        console.log("adding callback to scheduler");
                         this.scheduler.add(() => {
                             cb(err, result);
                         }, metadata);
                     } else {
+                        console.log("calling callback directly");
+
                         cb(err, result);
                     }
                 }
@@ -72,6 +75,7 @@ export class DedupedRequest {
         }
 
         return () => {
+            console.log("cancelling from default return");
             if (entry.result) return;
             entry.callbacks = entry.callbacks.filter(cb => cb !== callback);
             if (!entry.callbacks.length) {
