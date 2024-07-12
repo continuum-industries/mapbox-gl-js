@@ -57,6 +57,7 @@ export class DedupedRequest {
 
         if (!entry.cancel) {
             entry.cancel = request((err, result) => {
+                console.log("request callback resolving in deduped request", key, "err:", err, "result:", result);
                 entry.result = [err, result];
                 for (const cb of entry.callbacks) {
                     if (this.scheduler) {
@@ -99,6 +100,7 @@ export function loadVectorTile(
 
     const makeRequest = (callback: LoadVectorDataCallback) => {
         const request = getArrayBuffer(params.request, (err?: Error | null, data?: ArrayBuffer | null, cacheControl?: string | null, expires?: string | null) => {
+            console.log("makeRequest resolving");
             if (err) {
                 callback(err);
             } else if (data) {
