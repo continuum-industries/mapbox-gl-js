@@ -75,6 +75,7 @@ export class DedupedRequest {
             if (entry.result) return;
             entry.callbacks = entry.callbacks.filter(cb => cb !== callback);
             if (!entry.callbacks.length) {
+                console.log("cancelling entry");
                 entry.cancel();
                 delete this.entries[key];
             }
@@ -106,6 +107,7 @@ export function loadVectorTile(
             }
         });
         return () => {
+            console.log("cancelling makeRequest");
             request.cancel();
             callback();
         };
@@ -117,5 +119,10 @@ export function loadVectorTile(
     }
 
     const callbackMetadata = {type: 'parseTile', isSymbolTile: params.isSymbolTile, zoom: params.tileZoom};
-    return (this.deduped as DedupedRequest).request(key, callbackMetadata, makeRequest, callback);
+    const cancel = (this.deduped as DedupedRequest).request(key, callbackMetadata, makeRequest, callback);
+
+    return () => {
+        console.log("cancelling loadVectorTile");
+        cancel();
+    };
 }
