@@ -30,6 +30,33 @@ load-bearing:
    on Pareto until a new tag is cut *and* Pareto's `package.json` is bumped to it. Cutting the tag
    is part of shipping, not an afterthought.
 
+### The `prepare` script
+
+```json
+"prepare": "npm run build-prod && npm run build-css && npm run build-dts"
+```
+
+Three steps, because Pareto resolves exactly three files. It imports `mapbox-gl` (which `exports`
+maps to `dist/mapbox-gl.js` for code and `dist/mapbox-gl.d.ts` for types) and
+`mapbox-gl/dist/mapbox-gl.css` (via the `./dist/*` export). `build-all`, `build-style-spec` and the
+ESM/CSP bundles that upstream's `prepublishOnly` produces are deliberately **not** built: nothing
+downstream imports them, and a git install already costs Pareto a full rollup run.
+
+Two things about this script have bitten us and will bite again:
+
+- **Upstream renames build scripts.** The pre-sync `prepare` ran `build-prod-min`, which upstream
+  has since retired in favour of `build-prod`. A `prepare` that names a missing script fails the
+  install *in the consumer*, not here, so nobody in this repository sees it. Re-check the script
+  names on every sync.
+- **`build-dts` is new in this sync, and it changes which types Pareto sees.** Before, `prepare`
+  built only the bundle and the CSS. `package.json` `types` pointed at a `dist/mapbox-gl.d.ts` that
+  was never generated, so TypeScript fell through to `@types/mapbox-gl` from DefinitelyTyped —
+  which was pinned at `^3.4.0` and describing a runtime that had moved on to 3.28. Now that the
+  real declarations are emitted, and now that upstream ships an `exports` map whose `types`
+  condition takes precedence, Pareto type-checks against the actual API surface. That is the
+  correct state, and it is a behaviour change: `@types/mapbox-gl` should be dropped from Pareto
+  rather than left to lose a resolution race.
+
 ---
 
 ## Why this fork exists
@@ -77,7 +104,7 @@ As of the v3.28.1 sync the fork's entire delta is **one source file and one `pac
 | File | Change |
 | --- | --- |
 | `src/source/load_vector_tile.ts` | Bounded request queue inside `DedupedRequest` |
-| `package.json` | `prepare` script, so git installs produce `dist/` |
+| `package.json` | One added line: the `prepare` script, so git installs produce `dist/` |
 | `test/unit/source/load_vector_tile.test.ts` | Coverage for the queue (new file, no upstream counterpart) |
 
 Nothing else. `vector_tile_source.ts` and `vector_tile_worker_source.ts` are untouched upstream

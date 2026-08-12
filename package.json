@@ -105,6 +105,7 @@
   "scripts": {
     "build-dev": "rollup -c --environment BUILD:dev",
     "watch-dev": "rollup -c --environment BUILD:dev --watch",
+    "prepare": "npm run build-prod && npm run build-css && npm run build-dts",
     "watch-esm": "rollup -c rollup.config.esm.ts --environment BUILD:dev --watch",
     "build-esm-dev": "rollup -c rollup.config.esm.ts --environment BUILD:dev",
     "build-prod": "rollup -c --environment BUILD:production,MINIFY:true",
