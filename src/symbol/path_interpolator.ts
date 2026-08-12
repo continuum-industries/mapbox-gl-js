@@ -1,13 +1,14 @@
 import {clamp} from '../util/util';
-import Point from '@mapbox/point-geometry';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
+
+import type Point from '@mapbox/point-geometry';
 
 class PathInterpolator {
-    points: Array<Point>;
-    length: number;
-    paddedLength: number;
-    padding: number;
-    _distances: Array<number>;
+    points!: Array<Point>;
+    length!: number;
+    paddedLength!: number;
+    padding!: number;
+    _distances!: Array<number>;
 
     constructor(points_?: Array<Point> | null, padding_?: number | null) {
         this.reset(points_, padding_);
@@ -24,7 +25,7 @@ class PathInterpolator {
             this._distances[i] = this._distances[i - 1] + this.points[i].dist(this.points[i - 1]);
         }
 
-        this.length = this._distances[this._distances.length - 1];
+        this.length = this._distances.at(-1);
         this.padding = Math.min(padding_ || 0, this.length * 0.5);
         this.paddedLength = this.length - this.padding * 2.0;
     }

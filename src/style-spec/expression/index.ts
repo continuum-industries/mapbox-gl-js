@@ -1,6 +1,4 @@
-import assert from 'assert';
-
-import extend from '../util/extend';
+import assert from '../util/assert';
 import ParsingError from './parsing_error';
 import ParsingContext from './parsing_context';
 import EvaluationContext from './evaluation_context';
@@ -11,14 +9,19 @@ import Coalesce from './definitions/coalesce';
 import Let from './definitions/let';
 import definitions from './definitions/index';
 import * as isConstant from './is_constant';
+import * as expressionDependencies from './expression_dependencies';
 import RuntimeError from './runtime_error';
 import {success, error} from '../util/result';
 import {
     supportsPropertyExpression,
     supportsZoomExpression,
     supportsLightExpression,
-    supportsInterpolation
+    supportsInterpolation,
+    supportsLineProgressExpression
 } from '../util/properties';
+import {isFunction, createFunction} from '../function/index';
+import {Color} from './values';
+import {ColorType, StringType, NumberType, BooleanType, ValueType, FormattedType, ResolvedImageType, ObjectType, array} from './types';
 
 import type {Type, EvaluationKind} from './types';
 import type {Value} from './values';
@@ -26,27 +29,24 @@ import type {Expression} from './expression';
 import type {StylePropertySpecification} from '../style-spec';
 import type {Result} from '../util/result';
 import type {InterpolationType} from './definitions/interpolate';
-import type {PropertyValueSpecification} from '../types';
+import type {PropertyValueSpecification, OptionSpecification} from '../types';
 import type {FormattedSection} from './types/formatted';
 import type Point from '@mapbox/point-geometry';
 import type {CanonicalTileID} from '../types/tile_id';
 import type {FeatureDistanceData} from '../feature_filter/index';
 import type {ConfigOptions} from '../types/config_options';
+import type {ImageId} from './types/image_id';
 
 export interface Feature {
-    readonly type: 1 | 2 | 3 | 'Unknown' | 'Point' | 'LineString' | 'Polygon';
-    readonly id?: number | null;
-    readonly properties: {
-        [_: string]: any;
-    };
-    readonly patterns?: {
-        [_: string]: string;
-    };
+    readonly type: 0 | 1 | 2 | 3 | 'Unknown' | 'Point' | 'LineString' | 'Polygon';
+    readonly id?: string | number | null;
+    readonly properties: Record<PropertyKey, unknown>;
+    readonly patterns?: Record<PropertyKey, string[]>;
     readonly geometry?: Array<Array<Point>>;
 }
 
 export type FeatureState = {
-    [_: string]: any;
+    [_: string]: unknown;
 };
 
 export interface GlobalProperties {
@@ -60,22 +60,33 @@ export interface GlobalProperties {
     readonly isSupportedScript?: (_: string) => boolean;
     accumulated?: Value;
     brightness?: number;
+    worldview?: string;
+    activeFloors?: Set<string>;
 }
 
 export class StyleExpression {
     expression: Expression;
-
-    _evaluator: EvaluationContext;
+    _scope?: string | null;
+    _options?: ConfigOptions | null;
+    _iconImageUseTheme?: string | null;
+    _evaluator?: EvaluationContext;
     _defaultValue: Value;
     _warningHistory: {[key: string]: boolean};
-    _enumValues?: {[_: string]: unknown};
+    _enumValues?: {[_: string]: unknown} | null;
+    configDependencies: Set<string>;
+    isIndoorDependent: boolean;
 
-    constructor(expression: Expression, propertySpec?: StylePropertySpecification, scope?: string, options?: ConfigOptions) {
+    constructor(expression: Expression, propertySpec?: StylePropertySpecification | null, scope?: string | null, options?: ConfigOptions | null, iconImageUseTheme?: string | null) {
         this.expression = expression;
         this._warningHistory = {};
-        this._evaluator = new EvaluationContext(scope, options);
+        this._scope = scope;
+        this._options = options;
+        this._iconImageUseTheme = iconImageUseTheme;
+        this._evaluator = new EvaluationContext(scope, options, iconImageUseTheme);
         this._defaultValue = propertySpec ? getDefaultValue(propertySpec) : null;
         this._enumValues = propertySpec && propertySpec.type === 'enum' ? propertySpec.values : null;
+        this.configDependencies = expressionDependencies.getConfigDependencies(expression);
+        this.isIndoorDependent = expressionDependencies.isIndoorDependent(expression);
     }
 
     evaluateWithoutErrorHandling(
@@ -83,21 +94,23 @@ export class StyleExpression {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
         featureTileCoord?: Point,
         featureDistanceData?: FeatureDistanceData,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
-        this._evaluator.globals = globals;
-        this._evaluator.feature = feature;
-        this._evaluator.featureState = featureState;
-        this._evaluator.canonical = canonical || null;
-        this._evaluator.availableImages = availableImages || null;
-        this._evaluator.formattedSection = formattedSection;
-        this._evaluator.featureTileCoord = featureTileCoord || null;
-        this._evaluator.featureDistanceData = featureDistanceData || null;
+        const evaluator = this._evaluator!;
+        evaluator.globals = globals;
+        evaluator.feature = feature;
+        evaluator.featureState = featureState;
+        evaluator.canonical = canonical || null;
+        evaluator.availableImages = availableImages || null;
+        evaluator.formattedSection = formattedSection;
+        evaluator.featureTileCoord = featureTileCoord || null;
+        evaluator.featureDistanceData = featureDistanceData || null;
 
-        return this.expression.evaluate(this._evaluator);
+        return this.expression.evaluate(evaluator);
     }
 
     evaluate(
@@ -105,11 +118,18 @@ export class StyleExpression {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
         featureTileCoord?: Point,
         featureDistanceData?: FeatureDistanceData,
+        iconImageUseTheme?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
+        if (!this._evaluator) {
+            // `_evaluator` is explicitly omitted from serialization in src/util/web_worker_transfer.ts
+            this._evaluator = new EvaluationContext(this._scope, this._options, this._iconImageUseTheme);
+        }
+
         this._evaluator.globals = globals;
         this._evaluator.feature = feature || null;
         this._evaluator.featureState = featureState || null;
@@ -118,8 +138,9 @@ export class StyleExpression {
         this._evaluator.formattedSection = formattedSection || null;
         this._evaluator.featureTileCoord = featureTileCoord || null;
         this._evaluator.featureDistanceData = featureDistanceData || null;
-
+        this._evaluator.iconImageUseTheme = iconImageUseTheme || null;
         try {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const val = this.expression.evaluate(this._evaluator);
             // eslint-disable-next-line no-self-compare
             if (val === null || val === undefined || (typeof val === 'number' && val !== val)) {
@@ -129,11 +150,12 @@ export class StyleExpression {
                 throw new RuntimeError(`Expected value to be one of ${Object.keys(this._enumValues).map(v => JSON.stringify(v)).join(', ')}, but found ${JSON.stringify(val)} instead.`);
             }
             return val;
-        } catch (e: any) {
-            if (!this._warningHistory[e.message]) {
-                this._warningHistory[e.message] = true;
+        } catch (e) {
+            const error = e as Error;
+            if (!this._warningHistory[error.message]) {
+                this._warningHistory[error.message] = true;
                 if (typeof console !== 'undefined') {
-                    console.warn(e.message);
+                    console.warn(`Failed to evaluate expression "${JSON.stringify(this.expression.serialize())}". ${error.message}`);
                 }
             }
             return this._defaultValue;
@@ -143,7 +165,7 @@ export class StyleExpression {
 
 export function isExpression(expression: unknown): boolean {
     return Array.isArray(expression) && expression.length > 0 &&
-        typeof expression[0] === 'string' && expression[0] in definitions;
+        typeof expression[0] === 'string' && Object.hasOwn(definitions, expression[0]);
 }
 
 /**
@@ -160,8 +182,9 @@ export function createExpression(
     propertySpec?: StylePropertySpecification | null,
     scope?: string | null,
     options?: ConfigOptions | null,
+    iconImageUseTheme?: string | null
 ): Result<StyleExpression, Array<ParsingError>> {
-    const parser = new ParsingContext(definitions, [], propertySpec ? getExpectedType(propertySpec) : undefined, undefined, undefined, scope, options);
+    const parser = new ParsingContext(definitions, [], propertySpec ? getExpectedType(propertySpec) : undefined, undefined, undefined, scope, options, iconImageUseTheme);
 
     // For string-valued properties, coerce to string at the top level rather than asserting.
     const parsed = parser.parse(expression, undefined, undefined, undefined,
@@ -172,22 +195,46 @@ export function createExpression(
         return error(parser.errors);
     }
 
-    return success(new StyleExpression(parsed, propertySpec, scope, options));
+    return success(new StyleExpression(parsed, propertySpec, scope, options, iconImageUseTheme));
+}
+
+// Parse a config option's default or value with the option's declared type
+// fed to the expression parser. This drives implicit string→color coercion
+// inside expressions (e.g. `["interpolate", ..., "hsl(...)"]` on a color
+// option). Skipped for array options (the parser doesn't model the schema's
+// `array: true` flag) and for primitive values (they keep their original
+// literal shape so `getConfig` round-trips unchanged).
+//
+// A plain (non-array) object -- e.g. a GeoJSON geometry for an `object`-typed
+// option -- isn't valid expression syntax on its own (the parser rejects bare
+// objects to avoid ambiguity with legacy function specs); treat it like
+// `["literal", {...}]` instead, so both a schema `default` and a runtime
+// value can be written as a bare object.
+export function createConfigExpression(value: unknown, option: OptionSpecification = {} as OptionSpecification): Result<StyleExpression, Array<ParsingError>> {
+    const propertySpec = (option.type && !option.array && Array.isArray(value)) ?
+        {type: option.type, 'property-type': 'data-constant'} as unknown as StylePropertySpecification :
+        undefined;
+    const isBareObject = value !== null && typeof value === 'object' && !Array.isArray(value);
+    return createExpression(isBareObject ? ['literal', value] : value, propertySpec);
 }
 
 export class ZoomConstantExpression<Kind extends EvaluationKind> {
     kind: Kind;
     isStateDependent: boolean;
-    isConfigDependent: boolean;
+    configDependencies: Set<string>;
+    isIndoorDependent: boolean;
     _styleExpression: StyleExpression;
     isLightConstant: boolean | null | undefined;
+    isLineProgressConstant: boolean | null | undefined;
 
-    constructor(kind: Kind, expression: StyleExpression, isLightConstant?: boolean | null) {
+    constructor(kind: Kind, expression: StyleExpression, isLightConstant?: boolean | null, isLineProgressConstant?: boolean | null) {
         this.kind = kind;
         this._styleExpression = expression;
         this.isLightConstant = isLightConstant;
+        this.isLineProgressConstant = isLineProgressConstant;
         this.isStateDependent = kind !== ('constant' as EvaluationKind) && !isConstant.isStateConstant(expression.expression);
-        this.isConfigDependent = !isConstant.isConfigConstant(expression.expression);
+        this.configDependencies = expressionDependencies.getConfigDependencies(expression.expression);
+        this.isIndoorDependent = expressionDependencies.isIndoorDependent(expression.expression);
     }
 
     evaluateWithoutErrorHandling(
@@ -195,8 +242,9 @@ export class ZoomConstantExpression<Kind extends EvaluationKind> {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
         return this._styleExpression.evaluateWithoutErrorHandling(globals, feature, featureState, canonical, availableImages, formattedSection);
     }
@@ -206,10 +254,12 @@ export class ZoomConstantExpression<Kind extends EvaluationKind> {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
+        iconImageUseTheme?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
-        return this._styleExpression.evaluate(globals, feature, featureState, canonical, availableImages, formattedSection);
+        return this._styleExpression.evaluate(globals, feature, featureState, canonical, availableImages, formattedSection, undefined, undefined, iconImageUseTheme);
     }
 }
 
@@ -217,19 +267,23 @@ export class ZoomDependentExpression<Kind extends EvaluationKind> {
     kind: Kind;
     zoomStops: Array<number>;
     isStateDependent: boolean;
+    isIndoorDependent: boolean;
     isLightConstant: boolean | null | undefined;
-    isConfigDependent: boolean;
+    isLineProgressConstant: boolean | null | undefined;
+    configDependencies: Set<string>;
 
     _styleExpression: StyleExpression;
     interpolationType: InterpolationType | null | undefined;
 
-    constructor(kind: Kind, expression: StyleExpression, zoomStops: Array<number>, interpolationType?: InterpolationType, isLightConstant?: boolean | null) {
+    constructor(kind: Kind, expression: StyleExpression, zoomStops: Array<number>, interpolationType?: InterpolationType, isLightConstant?: boolean | null, isLineProgressConstant?: boolean | null) {
         this.kind = kind;
         this.zoomStops = zoomStops;
         this._styleExpression = expression;
         this.isStateDependent = kind !== ('camera' as EvaluationKind) && !isConstant.isStateConstant(expression.expression);
+        this.isIndoorDependent = expressionDependencies.isIndoorDependent(expression.expression);
         this.isLightConstant = isLightConstant;
-        this.isConfigDependent = !isConstant.isConfigConstant(expression.expression);
+        this.isLineProgressConstant = isLineProgressConstant;
+        this.configDependencies = expressionDependencies.getConfigDependencies(expression.expression);
         this.interpolationType = interpolationType;
     }
 
@@ -238,8 +292,9 @@ export class ZoomDependentExpression<Kind extends EvaluationKind> {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
         return this._styleExpression.evaluateWithoutErrorHandling(globals, feature, featureState, canonical, availableImages, formattedSection);
     }
@@ -249,8 +304,9 @@ export class ZoomDependentExpression<Kind extends EvaluationKind> {
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ): any {
         return this._styleExpression.evaluate(globals, feature, featureState, canonical, availableImages, formattedSection);
     }
@@ -266,42 +322,48 @@ export class ZoomDependentExpression<Kind extends EvaluationKind> {
 
 export type ConstantExpression = {
     kind: 'constant';
-    isConfigDependent: boolean;
-    readonly evaluate: (
+    configDependencies: Set<string>;
+    isIndoorDependent: boolean;
+    readonly evaluate: <T = unknown>(
         globals: GlobalProperties,
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
-    ) => any;
+        availableImages?: ImageId[],
+        formattedSection?: FormattedSection,
+        iconImageUseTheme?: string
+    ) => T;
 };
 
 export type SourceExpression = {
     kind: 'source';
     isStateDependent: boolean;
+    isIndoorDependent: boolean;
     isLightConstant: boolean | null | undefined;
-    isConfigDependent: boolean;
-    readonly evaluate: (
+    isLineProgressConstant: boolean | null | undefined;
+    configDependencies: Set<string>;
+    readonly evaluate: <T = unknown>(
         globals: GlobalProperties,
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
-    ) => any;
+    ) => T;
 };
 
 export type CameraExpression = {
     kind: 'camera';
     isStateDependent: boolean;
-    isConfigDependent: boolean;
-    readonly evaluate: (
+    isIndoorDependent: boolean;
+    configDependencies: Set<string>;
+    readonly evaluate: <T = unknown>(
         globals: GlobalProperties,
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
-    ) => any;
+        availableImages?: ImageId[],
+    ) => T;
     readonly interpolationFactor: (input: number, lower: number, upper: number) => number;
     zoomStops: Array<number>;
     interpolationType: InterpolationType | null | undefined;
@@ -310,16 +372,19 @@ export type CameraExpression = {
 export interface CompositeExpression {
     kind: 'composite';
     isStateDependent: boolean;
+    isIndoorDependent: boolean;
     isLightConstant: boolean | null | undefined;
-    isConfigDependent: boolean;
-    readonly evaluate: (
+    isLineProgressConstant: boolean | null | undefined;
+    configDependencies: Set<string>;
+    readonly evaluate: <T = unknown>(
         globals: GlobalProperties,
         feature?: Feature,
         featureState?: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
         formattedSection?: FormattedSection,
-    ) => any;
+        iconImageUseTheme?: string
+    ) => T;
     readonly interpolationFactor: (input: number, lower: number, upper: number) => number;
     zoomStops: Array<number>;
     interpolationType: InterpolationType | null | undefined;
@@ -328,37 +393,48 @@ export interface CompositeExpression {
 export type StylePropertyExpression = ConstantExpression | SourceExpression | CameraExpression | CompositeExpression;
 
 export function createPropertyExpression(
-    expression: unknown,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expression: any,
     propertySpec: StylePropertySpecification,
     scope?: string | null,
     options?: ConfigOptions | null,
+    iconImageUseTheme?: string | null
 ): Result<StylePropertyExpression, Array<ParsingError>> {
-    expression = createExpression(expression, propertySpec, scope, options);
-    // @ts-expect-error - TS2339 - Property 'result' does not exist on type 'unknown'.
+    expression = createExpression(expression, propertySpec, scope, options, iconImageUseTheme);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (expression.result === 'error') {
-        // @ts-expect-error - TS2322 - Type 'unknown' is not assignable to type 'Result<StylePropertyExpression, ParsingError[]>'.
-        return expression;
+        return expression as Result<StylePropertyExpression, Array<ParsingError>>;
     }
 
-    // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const parsed = expression.value.expression;
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     const isFeatureConstant = isConstant.isFeatureConstant(parsed);
     if (!isFeatureConstant && !supportsPropertyExpression(propertySpec)) {
         return error([new ParsingError('', 'data expressions not supported')]);
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     const isZoomConstant = isConstant.isGlobalPropertyConstant(parsed, ['zoom', 'pitch', 'distance-from-center']);
     if (!isZoomConstant && !supportsZoomExpression(propertySpec)) {
         return error([new ParsingError('', 'zoom expressions not supported')]);
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     const isLightConstant = isConstant.isGlobalPropertyConstant(parsed, ['measure-light']);
     if (!isLightConstant && !supportsLightExpression(propertySpec)) {
         return error([new ParsingError('', 'measure-light expression not supported')]);
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    const isLineProgressConstant = isConstant.isGlobalPropertyConstant(parsed, ['line-progress']);
+    if (!isLineProgressConstant && !supportsLineProgressExpression(propertySpec)) {
+        return error([new ParsingError('', 'line-progress expression not supported')]);
+    }
+
     const canRelaxZoomRestriction = propertySpec.expression && propertySpec.expression.relaxZoomRestriction;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     const zoomCurve = findZoomCurve(parsed);
     if (!zoomCurve && !isZoomConstant && !canRelaxZoomRestriction) {
         return error([new ParsingError('', '"zoom" expression may only be used as input to a top-level "step" or "interpolate" expression, or in the properties of atmosphere.')]);
@@ -369,24 +445,21 @@ export function createPropertyExpression(
     }
 
     if (!zoomCurve) {
-        return success(isFeatureConstant ?
-        // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
-            (new ZoomConstantExpression('constant', expression.value, isLightConstant) as ConstantExpression) :
-        // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
-            (new ZoomConstantExpression('source', expression.value, isLightConstant) as SourceExpression));
+        return success((isFeatureConstant && isLineProgressConstant) ?
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+            (new ZoomConstantExpression('constant', expression.value, isLightConstant, isLineProgressConstant) as ConstantExpression) :
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+            (new ZoomConstantExpression('source', expression.value, isLightConstant, isLineProgressConstant) as SourceExpression));
     }
 
     const interpolationType = zoomCurve instanceof Interpolate ? zoomCurve.interpolation : undefined;
 
-    return success(isFeatureConstant ?
-    // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
-        (new ZoomDependentExpression('camera', expression.value, zoomCurve.labels, interpolationType, isLightConstant) as CameraExpression) :
-    // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
-        (new ZoomDependentExpression('composite', expression.value, zoomCurve.labels, interpolationType, isLightConstant) as CompositeExpression));
+    return success((isFeatureConstant && isLineProgressConstant) ?
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+        (new ZoomDependentExpression('camera', expression.value, zoomCurve.labels, interpolationType, isLightConstant, isLineProgressConstant) as CameraExpression) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+        (new ZoomDependentExpression('composite', expression.value, zoomCurve.labels, interpolationType, isLightConstant, isLineProgressConstant) as CompositeExpression));
 }
-
-import {isFunction, createFunction} from '../function/index';
-import {Color} from './values';
 
 // serialization wrapper for old-style stop functions normalized to the
 // expression interface
@@ -394,15 +467,15 @@ export class StylePropertyFunction<T> {
     _parameters: PropertyValueSpecification<T>;
     _specification: StylePropertySpecification;
 
-    kind: EvaluationKind;
-    evaluate: (globals: GlobalProperties, feature?: Feature) => any;
-    interpolationFactor: (input: number, lower: number, upper: number) => number | null | undefined;
+    kind!: EvaluationKind;
+    evaluate!: <T = unknown>(globals: GlobalProperties, feature?: Feature) => T;
+    interpolationFactor!: (input: number, lower: number, upper: number) => number | null | undefined;
     zoomStops: Array<number> | null | undefined;
 
     constructor(parameters: PropertyValueSpecification<T>, specification: StylePropertySpecification) {
         this._parameters = parameters;
         this._specification = specification;
-        extend(this, createFunction(this._parameters, this._specification));
+        Object.assign(this, createFunction(this._parameters, this._specification));
     }
 
     static deserialize<T>(
@@ -430,12 +503,13 @@ export function normalizePropertyExpression<T>(
     specification: StylePropertySpecification,
     scope?: string | null,
     options?: ConfigOptions | null,
+    iconImageUseTheme?: string | null
 ): StylePropertyExpression {
     if (isFunction(value)) {
-        return new StylePropertyFunction(value, specification) as any;
+        return new StylePropertyFunction(value, specification) as unknown as StylePropertyExpression;
 
     } else if (isExpression(value) || (Array.isArray(value) && value.length > 0)) {
-        const expression = createPropertyExpression(value, specification, scope, options);
+        const expression = createPropertyExpression(value, specification, scope, options, iconImageUseTheme);
         if (expression.result === 'error') {
             // this should have been caught in validation
             throw new Error(expression.value.map(err => `${err.key}: ${err.message}`).join(', '));
@@ -443,15 +517,16 @@ export function normalizePropertyExpression<T>(
         return expression.value;
 
     } else {
-        let constant: any = value;
+        let constant = value;
         if (typeof value === 'string' && specification.type === 'color') {
-            constant = Color.parse(value);
+            constant = Color.parse(value) as PropertyValueSpecification<T>;
         }
         return {
             kind: 'constant',
-            isConfigDependent: false,
+            configDependencies: new Set(),
+            isIndoorDependent: false,
             evaluate: () => constant
-        };
+        } as ConstantExpression;
     }
 }
 
@@ -459,7 +534,7 @@ export function normalizePropertyExpression<T>(
 // expression (collectively referred to as a "curve"). The curve may be wrapped in one or more "let" or
 // "coalesce" expressions.
 function findZoomCurve(expression: Expression): Step | Interpolate | ParsingError | null {
-    let result = null;
+    let result: Step | Interpolate | ParsingError | null = null;
     if (expression instanceof Let) {
         result = findZoomCurve(expression.result);
 
@@ -494,8 +569,6 @@ function findZoomCurve(expression: Expression): Step | Interpolate | ParsingErro
     return result;
 }
 
-import {ColorType, StringType, NumberType, BooleanType, ValueType, FormattedType, ResolvedImageType, array} from './types';
-
 function getExpectedType(spec: StylePropertySpecification): Type {
     const types = {
         color: ColorType,
@@ -504,7 +577,8 @@ function getExpectedType(spec: StylePropertySpecification): Type {
         enum: StringType,
         boolean: BooleanType,
         formatted: FormattedType,
-        resolvedImage: ResolvedImageType
+        resolvedImage: ResolvedImageType,
+        object: ObjectType
     };
 
     if (spec.type === 'array') {

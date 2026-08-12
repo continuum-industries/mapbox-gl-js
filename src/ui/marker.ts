@@ -1,10 +1,9 @@
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import Point from '@mapbox/point-geometry';
-
 import * as DOM from '../util/dom';
 import LngLat from '../geo/lng_lat';
 import smartWrap from '../util/smart_wrap';
-import {bindAll, extend, radToDeg, smoothstep} from '../util/util';
+import {bindAll, radToDeg, smoothstep} from '../util/util';
 import {anchorTranslate} from './anchor';
 import {Event, Evented} from '../util/evented';
 import {GLOBE_ZOOM_THRESHOLD_MAX} from '../geo/projection/globe_constants';
@@ -14,10 +13,12 @@ import type {Anchor} from './anchor';
 import type {Map} from './map';
 import type Popup from './popup';
 import type {LngLatLike} from '../geo/lng_lat';
-import type {MapMouseEvent, MapTouchEvent} from './events';
+import type {MapEventOf, MapMouseEvent, MapTouchEvent} from './events';
 import type {PointLike} from '../types/point-like';
 
-type Options = {
+const WHITESPACE_RE = /\s+/;
+
+export type MarkerOptions = {
     element?: HTMLElement;
     offset?: PointLike;
     anchor?: Anchor;
@@ -30,6 +31,21 @@ type Options = {
     pitchAlignment?: string;
     occludedOpacity?: number;
     className?: string;
+    altitude?: number;
+};
+
+const defaultOptions: MarkerOptions = {
+    rotation: 0,
+    rotationAlignment: 'auto',
+    pitchAlignment: 'auto',
+    occludedOpacity: 0.2,
+    altitude: 0,
+};
+
+type MarkerEvents = {
+    'dragstart': void;
+    'drag': void;
+    'dragend': void;
 };
 
 /**
@@ -49,6 +65,7 @@ type Options = {
  * @param {string} [options.rotationAlignment='auto'] The alignment of the marker's rotation.`'map'` is aligned with the map plane, consistent with the cardinal directions as the map rotates. `'viewport'` is screenspace-aligned. `'horizon'` is aligned according to the nearest horizon, on non-globe projections it is equivalent to `'viewport'`. `'auto'` is equivalent to `'viewport'`.
  * @param {number} [options.occludedOpacity=0.2] The opacity of a marker that's occluded by 3D terrain.
  * @param {string} [options.className] Space-separated CSS class names to add to marker element.
+ * @param {number} [options.altitude=0] Elevation in meters above the map surface. If terrain is enabled, the marker will be elevated relative to the terrain.
  * @example
  * // Create a new marker.
  * const marker = new mapboxgl.Marker()
@@ -64,17 +81,17 @@ type Options = {
  * @see [Example: Add custom icons with Markers](https://www.mapbox.com/mapbox-gl-js/example/custom-marker-icons/)
  * @see [Example: Create a draggable Marker](https://www.mapbox.com/mapbox-gl-js/example/drag-a-marker/)
  */
-export default class Marker extends Evented {
+export default class Marker extends Evented<MarkerEvents> {
     _map: Map | null | undefined;
     _anchor: Anchor;
     _offset: Point;
     _element: HTMLElement;
     _popup: Popup | null | undefined;
-    _lngLat: LngLat;
+    _lngLat!: LngLat;
     _pos: Point | null | undefined;
     _color: string;
     _scale: number;
-    _defaultMarker: boolean;
+    _defaultMarker!: boolean;
     _draggable: boolean;
     _clickTolerance: number;
     _isDragging: boolean;
@@ -86,16 +103,20 @@ export default class Marker extends Evented {
     _rotationAlignment: string;
     _originalTabIndex: string | null | undefined; // original tabindex of _element
     _fadeTimer: number | null | undefined;
-    _updateFrameId: number;
+    _updateFrameId!: number;
     _updateMoving: () => void;
     _occludedOpacity: number;
+    _altitude: number;
+    _pointerEvents?: string;
+    _svgElement!: Element;
+    _shadowElement!: Element;
 
-    constructor(options?: Options, legacyOptions?: Options) {
+    constructor(options?: MarkerOptions, legacyOptions?: MarkerOptions) {
         super();
         // For backward compatibility -- the constructor used to accept the element as a
         // required first argument, before it was made optional.
         if (options instanceof HTMLElement || legacyOptions) {
-            options = extend({element: options}, legacyOptions);
+            options = {element: options as HTMLElement, ...legacyOptions};
         }
 
         bindAll([
@@ -108,50 +129,38 @@ export default class Marker extends Evented {
             '_clearFadeTimer'
         ], this);
 
-        this._anchor = (options && options.anchor) || 'center';
-        this._color = (options && options.color) || '#3FB1CE';
-        this._scale = (options && options.scale) || 1;
-        this._draggable = (options && options.draggable) || false;
-        this._clickTolerance = (options && options.clickTolerance) || 0;
-        this._isDragging = false;
+        const {
+            anchor = 'center',
+            color = '#3FB1CE',
+            scale = 1,
+            draggable = false,
+            clickTolerance = 0,
+            rotation = defaultOptions.rotation,
+            rotationAlignment = defaultOptions.rotationAlignment,
+            pitchAlignment = defaultOptions.pitchAlignment,
+            occludedOpacity = defaultOptions.occludedOpacity,
+            altitude = defaultOptions.altitude,
+        } = options || {};
+
+        this._anchor = anchor;
+        this._color = color;
+        this._scale = scale;
+        this._draggable = draggable;
+        this._clickTolerance = clickTolerance;
+        this._rotation = rotation;
+        this._rotationAlignment = rotationAlignment;
+        this._pitchAlignment = pitchAlignment;
+        this._occludedOpacity = occludedOpacity;
+        this._altitude = altitude;
+
         this._state = 'inactive';
-        this._rotation = (options && options.rotation) || 0;
-        this._rotationAlignment = (options && options.rotationAlignment) || 'auto';
-        this._pitchAlignment = (options && options.pitchAlignment && options.pitchAlignment) || 'auto';
+        this._isDragging = false;
+        this._pointerEvents = null;
         this._updateMoving = () => this._update(true);
-        this._occludedOpacity = (options && options.occludedOpacity) || 0.2;
 
         if (!options || !options.element) {
             this._defaultMarker = true;
-            this._element = DOM.create('div');
-
-            // create default map marker SVG
-
-            const DEFAULT_HEIGHT = 41;
-            const DEFAULT_WIDTH = 27;
-
-            const svg = DOM.createSVG('svg', {
-                display: 'block',
-                height: `${DEFAULT_HEIGHT * this._scale}px`,
-                width: `${DEFAULT_WIDTH * this._scale}px`,
-                viewBox: `0 0 ${DEFAULT_WIDTH} ${DEFAULT_HEIGHT}`
-            }, this._element);
-
-            const gradient = DOM.createSVG('radialGradient', {id: 'shadowGradient'}, DOM.createSVG('defs', {}, svg));
-            DOM.createSVG('stop', {offset: '10%', 'stop-opacity': 0.4}, gradient);
-            DOM.createSVG('stop', {offset: '100%', 'stop-opacity': 0.05}, gradient);
-            DOM.createSVG('ellipse', {cx: 13.5, cy: 34.8, rx: 10.5, ry: 5.25, fill: 'url(#shadowGradient)'}, svg); // shadow
-
-            DOM.createSVG('path', { // marker shape
-                fill: this._color,
-                d: 'M27,13.5C27,19.07 20.25,27 14.75,34.5C14.02,35.5 12.98,35.5 12.25,34.5C6.75,27 0,19.22 0,13.5C0,6.04 6.04,0 13.5,0C20.96,0 27,6.04 27,13.5Z'
-            }, svg);
-            DOM.createSVG('path', { // border
-                opacity: 0.25,
-                d: 'M13.5,0C6.04,0 0,6.04 0,13.5C0,19.22 6.75,27 12.25,34.5C13,35.52 14.02,35.5 14.75,34.5C20.25,27 27,19.07 27,13.5C27,6.04 20.96,0 13.5,0ZM13.5,1C20.42,1 26,6.58 26,13.5C26,15.9 24.5,19.18 22.22,22.74C19.95,26.3 16.71,30.14 13.94,33.91C13.74,34.18 13.61,34.32 13.5,34.44C13.39,34.32 13.26,34.18 13.06,33.91C10.28,30.13 7.41,26.31 5.02,22.77C2.62,19.23 1,15.95 1,13.5C1,6.58 6.58,1 13.5,1Z'
-            }, svg);
-
-            DOM.createSVG('circle', {fill: 'white', cx: 13.5, cy: 13.5, r: 5.5}, svg); // circle
+            this._element = this._createDefaultMarker();
 
             // if no element and no offset option given apply an offset for the default marker
             // the -14 as the y value of the default marker offset was determined as follows
@@ -169,11 +178,9 @@ export default class Marker extends Evented {
         if (!this._element.hasAttribute('aria-label')) {
             this._element.setAttribute('aria-label', 'Map marker');
         }
-
         if (!this._element.hasAttribute('role')) {
             this._element.setAttribute('role', 'img');
         }
-
         this._element.classList.add('mapboxgl-marker');
         this._element.addEventListener('dragstart', (e: DragEvent) => {
             e.preventDefault();
@@ -187,10 +194,55 @@ export default class Marker extends Evented {
             classList.remove(`mapboxgl-marker-anchor-${key}`);
         }
         classList.add(`mapboxgl-marker-anchor-${this._anchor}`);
-        const classNames = options && options.className ? options.className.trim().split(/\s+/) : [];
-        classList.add(...classNames);
+        if (options && options.className) {
+            classList.add(...options.className.trim().split(WHITESPACE_RE));
+        }
 
         this._popup = null;
+    }
+
+    /**
+     * Creates a default map marker SVG element.
+     * @private
+     */
+    _createDefaultMarker(): HTMLDivElement {
+        const element = DOM.create('div');
+
+        const DEFAULT_HEIGHT = 41;
+        const DEFAULT_WIDTH = 27;
+
+        const svg = DOM.createSVG('svg', {
+            display: 'block',
+            height: `${DEFAULT_HEIGHT * this._scale}px`,
+            width: `${DEFAULT_WIDTH * this._scale}px`,
+            viewBox: `0 0 ${DEFAULT_WIDTH} ${DEFAULT_HEIGHT}`
+        }, element);
+        this._svgElement = svg;
+
+        // Shadow gradient defs live permanently — they are invisible and zero-cost.
+        const gradient = DOM.createSVG('radialGradient', {id: 'shadowGradient'}, DOM.createSVG('defs', {}, svg));
+        DOM.createSVG('stop', {offset: '10%', 'stop-opacity': 0.4}, gradient);
+        DOM.createSVG('stop', {offset: '100%', 'stop-opacity': 0.05}, gradient);
+
+        // The shadow ellipse is the only painted shadow element; toggled by setAltitude.
+        const shadowEllipse = DOM.createSVG('ellipse', {cx: 13.5, cy: 34.8, rx: 10.5, ry: 5.25, fill: 'url(#shadowGradient)'});
+        this._shadowElement = shadowEllipse;
+        if (this._altitude === 0) {
+            svg.insertBefore(shadowEllipse, svg.firstChild);
+        }
+
+        DOM.createSVG('path', { // marker shape
+            fill: this._color,
+            d: 'M27,13.5C27,19.07 20.25,27 14.75,34.5C14.02,35.5 12.98,35.5 12.25,34.5C6.75,27 0,19.22 0,13.5C0,6.04 6.04,0 13.5,0C20.96,0 27,6.04 27,13.5Z'
+        }, svg);
+        DOM.createSVG('path', { // border
+            opacity: 0.25,
+            d: 'M13.5,0C6.04,0 0,6.04 0,13.5C0,19.22 6.75,27 12.25,34.5C13,35.52 14.02,35.5 14.75,34.5C20.25,27 27,19.07 27,13.5C27,6.04 20.96,0 13.5,0ZM13.5,1C20.42,1 26,6.58 26,13.5C26,15.9 24.5,19.18 22.22,22.74C19.95,26.3 16.71,30.14 13.94,33.91C13.74,34.18 13.61,34.32 13.5,34.44C13.39,34.32 13.26,34.18 13.06,33.91C10.28,30.13 7.41,26.31 5.02,22.77C2.62,19.23 1,15.95 1,13.5C1,6.58 6.58,1 13.5,1Z'
+        }, svg);
+
+        DOM.createSVG('circle', {fill: 'white', cx: 13.5, cy: 13.5, r: 5.5}, svg); // circle
+
+        return element;
     }
 
     /**
@@ -263,37 +315,77 @@ export default class Marker extends Evented {
      * the marker on screen.
      *
      * @returns {LngLat} A {@link LngLat} describing the marker's location.
-    * @example
-    * // Store the marker's longitude and latitude coordinates in a variable
-    * const lngLat = marker.getLngLat();
-    * // Print the marker's longitude and latitude values in the console
-    * console.log(`Longitude: ${lngLat.lng}, Latitude: ${lngLat.lat}`);
-    * @see [Example: Create a draggable Marker](https://docs.mapbox.com/mapbox-gl-js/example/drag-a-marker/)
-    */
+     * @example
+     * // Store the marker's longitude and latitude coordinates in a variable
+     * const lngLat = marker.getLngLat();
+     * // Print the marker's longitude and latitude values in the console
+     * console.log(`Longitude: ${lngLat.lng}, Latitude: ${lngLat.lat}`);
+     * @see [Example: Create a draggable Marker](https://docs.mapbox.com/mapbox-gl-js/example/drag-a-marker/)
+     */
     getLngLat(): LngLat {
         return this._lngLat;
     }
 
     /**
-    * Set the marker's geographical position and move it.
+     * Set the marker's geographical position and move it.
      *
-    * @param {LngLat} lnglat A {@link LngLat} describing where the marker should be located.
-    * @returns {Marker} Returns itself to allow for method chaining.
-    * @example
-    * // Create a new marker, set the longitude and latitude, and add it to the map.
-    * new mapboxgl.Marker()
-    *     .setLngLat([-65.017, -16.457])
-    *     .addTo(map);
-    * @see [Example: Add custom icons with Markers](https://docs.mapbox.com/mapbox-gl-js/example/custom-marker-icons/)
-    * @see [Example: Create a draggable Marker](https://docs.mapbox.com/mapbox-gl-js/example/drag-a-marker/)
-    * @see [Example: Add a marker using a place name](https://docs.mapbox.com/mapbox-gl-js/example/marker-from-geocode/)
-    */
+     * @param {LngLat} lnglat A {@link LngLat} describing where the marker should be located.
+     * @returns {Marker} Returns itself to allow for method chaining.
+     * @example
+     * // Create a new marker, set the longitude and latitude, and add it to the map.
+     * new mapboxgl.Marker()
+     *     .setLngLat([-65.017, -16.457])
+     *     .addTo(map);
+     * @see [Example: Add custom icons with Markers](https://docs.mapbox.com/mapbox-gl-js/example/custom-marker-icons/)
+     * @see [Example: Create a draggable Marker](https://docs.mapbox.com/mapbox-gl-js/example/drag-a-marker/)
+     * @see [Example: Add a marker using a place name](https://docs.mapbox.com/mapbox-gl-js/example/marker-from-geocode/)
+     */
     setLngLat(lnglat: LngLatLike): this {
         this._lngLat = LngLat.convert(lnglat);
         this._pos = null;
         if (this._popup) this._popup.setLngLat(this._lngLat);
         this._update(true);
         return this;
+    }
+
+    /**
+     * Sets the `altitude` property of the marker.
+     *
+     * @param {number} [altitude=0] Sets the `altitude` property of the marker.
+     * @returns {Marker} Returns itself to allow for method chaining.
+     * @example
+     * marker.setAltitude(100);
+     */
+    setAltitude(altitude: number): this {
+        if (altitude === this._altitude) return this;
+
+        const previousAltitude = this._altitude;
+        this._altitude = altitude || defaultOptions.altitude;
+
+        // toggle shadow ellipse when altitude crosses zero in either direction
+        // (the ground shadow is only visible at altitude 0)
+        const crossesZero = (previousAltitude === 0) !== (this._altitude === 0);
+        if (this._defaultMarker && crossesZero) {
+            if (this._altitude === 0) {
+                this._svgElement.insertBefore(this._shadowElement, this._svgElement.firstChild);
+            } else {
+                this._shadowElement.remove();
+            }
+        }
+
+        this._update();
+        return this;
+    }
+
+    /**
+     * Returns the current `altitude` of the marker.
+     *
+     * @returns {number} The altitude of the marker.
+     * @example
+     * const altitude = marker.getAltitude();
+     */
+    getAltitude(): number {
+        return this._altitude;
     }
 
     /**
@@ -350,6 +442,7 @@ export default class Marker extends Evented {
             }
             this._popup = popup;
             popup._marker = this;
+            popup._altitude = this._altitude;
             if (this._lngLat) this._popup.setLngLat(this._lngLat);
 
             this._element.setAttribute('role', 'button');
@@ -380,7 +473,7 @@ export default class Marker extends Evented {
         const targetElement = e.originalEvent.target;
         const element = this._element;
 
-        if (this._popup && (targetElement === element || element.contains((targetElement as any)))) {
+        if (this._popup && (targetElement === element || element.contains(targetElement as Node))) {
             this.togglePopup();
         }
     }
@@ -431,7 +524,7 @@ export default class Marker extends Evented {
         const map = this._map;
         const pos = this._pos;
         if (!map || !pos) return false;
-        const unprojected = map.unproject(pos);
+        const unprojected = map.unproject(pos, this._altitude);
         const camera = map.getFreeCameraOptions();
         if (!camera.position) return false;
         const cameraLngLat = camera.position.toLngLat();
@@ -451,19 +544,24 @@ export default class Marker extends Evented {
             this._clearFadeTimer();
             return;
         }
-        const mapLocation = map.unproject(pos);
-        let opacity;
+        const mapLocation = map.unproject(pos, this._altitude);
+        let opacity: number;
         if (map._showingGlobe() && isLngLatBehindGlobe(map.transform, this._lngLat)) {
             opacity = 0;
         } else {
             opacity = 1 - map._queryFogOpacity(mapLocation);
-            if (map.transform._terrainEnabled() && map.getTerrain() && this._behindTerrain()) {
+            if (map.transform._terrainEnabled() && map.style && map.style.hasTerrain() && this._behindTerrain()) {
                 opacity *= this._occludedOpacity;
             }
         }
 
         this._element.style.opacity = `${opacity}`;
-        this._element.style.pointerEvents = opacity > 0 ? 'auto' : 'none';
+        const currentPointerEvents = this._element.style.pointerEvents;
+        const isUnmanaged = this._pointerEvents === null ? currentPointerEvents === '' : currentPointerEvents === this._pointerEvents;
+        if (isUnmanaged) {
+            this._pointerEvents = opacity > 0 ? 'auto' : 'none';
+            this._element.style.pointerEvents = this._pointerEvents;
+        }
         if (this._popup) {
             this._popup._setOpacity(opacity);
         }
@@ -521,7 +619,6 @@ export default class Marker extends Evented {
     }
 
     _calculateZTransform(): string {
-
         const pos = this._pos;
         const map = this._map;
         if (!map || !pos) { return ''; }
@@ -530,8 +627,8 @@ export default class Marker extends Evented {
         const alignment = this.getRotationAlignment();
         if (alignment === 'map') {
             if (map._showingGlobe()) {
-                const north = map.project(new LngLat(this._lngLat.lng, this._lngLat.lat + .001));
-                const south = map.project(new LngLat(this._lngLat.lng, this._lngLat.lat - .001));
+                const north = map.project(new LngLat(this._lngLat.lng, this._lngLat.lat + .001), this._altitude);
+                const south = map.project(new LngLat(this._lngLat.lng, this._lngLat.lat - .001), this._altitude);
                 const diff = south.sub(north);
                 rotation = radToDeg(Math.atan2(diff.y, diff.x)) - 90;
             } else {
@@ -557,7 +654,7 @@ export default class Marker extends Evented {
         return rotation ? `rotateZ(${rotation}deg)` : '';
     }
 
-    _update(delaySnap?: boolean) {
+    _update(delaySnap?: MapEventOf<'moveend'> | boolean) {
         cancelAnimationFrame(this._updateFrameId);
         const map = this._map;
         if (!map) return;
@@ -566,7 +663,7 @@ export default class Marker extends Evented {
             this._lngLat = smartWrap(this._lngLat, this._pos, map.transform);
         }
 
-        this._pos = map.project(this._lngLat);
+        this._pos = map.project(this._lngLat, this._altitude);
 
         // because rounding the coordinates at every `move` event causes stuttered zooming
         // we only round them when _update is called with `moveend` or when its called with
@@ -589,9 +686,9 @@ export default class Marker extends Evented {
                 this._updateDOM();
             }
 
-            if ((map._showingGlobe() || map.getTerrain() || map.getFog()) && !this._fadeTimer) {
-                // @ts-expect-error - TS2322 - Type 'Timeout' is not assignable to type 'number'.
-                this._fadeTimer = setTimeout(this._evaluateOpacity.bind(this), 60);
+            if ((map._showingGlobe() || (map.style && map.style.hasTerrain()) || map.getFog()) && !this._fadeTimer) {
+
+                this._fadeTimer = window.setTimeout(this._evaluateOpacity.bind(this), 60);
             }
         });
     }
@@ -682,7 +779,7 @@ export default class Marker extends Evented {
         }
 
         this._pos = e.point.sub(posDelta);
-        this._lngLat = map.unproject(this._pos);
+        this._lngLat = map.unproject(this._pos, this._altitude);
         this.setLngLat(this._lngLat);
         // suppress click event so that popups don't toggle on drag
         this._element.style.pointerEvents = 'none';
@@ -733,14 +830,14 @@ export default class Marker extends Evented {
         // only fire dragend if it was preceded by at least one drag event
         if (this._state === 'active') {
             /**
-            * Fired when the marker is finished being dragged.
-            *
-            * @event dragend
-            * @memberof Marker
-            * @instance
-            * @type {Object}
-            * @property {Marker} marker The object that was dragged.
-            */
+             * Fired when the marker is finished being dragged.
+             *
+             * @event dragend
+             * @memberof Marker
+             * @instance
+             * @type {Object}
+             * @property {Marker} marker The object that was dragged.
+             */
             this.fire(new Event('dragend'));
         }
 
@@ -752,7 +849,7 @@ export default class Marker extends Evented {
         const pos = this._pos;
         if (!map || !pos) return;
 
-        if (this._element.contains((e.originalEvent.target as any))) {
+        if (this._element.contains((e.originalEvent.target as Node))) {
             e.preventDefault();
 
             // We need to calculate the pixel distance between the click point
@@ -819,7 +916,7 @@ export default class Marker extends Evented {
      * marker.setRotation(45);
      */
     setRotation(rotation: number): this {
-        this._rotation = rotation || 0;
+        this._rotation = rotation || defaultOptions.rotation;
         this._update();
         return this;
     }
@@ -844,7 +941,7 @@ export default class Marker extends Evented {
      * marker.setRotationAlignment('viewport');
      */
     setRotationAlignment(alignment: string): this {
-        this._rotationAlignment = alignment || 'auto';
+        this._rotationAlignment = alignment || defaultOptions.rotationAlignment;
         this._update();
         return this;
     }
@@ -873,7 +970,7 @@ export default class Marker extends Evented {
      * marker.setPitchAlignment('map');
      */
     setPitchAlignment(alignment: string): this {
-        this._pitchAlignment = alignment || 'auto';
+        this._pitchAlignment = alignment || defaultOptions.pitchAlignment;
         this._update();
         return this;
     }
@@ -902,7 +999,7 @@ export default class Marker extends Evented {
      * marker.setOccludedOpacity(0.3);
      */
     setOccludedOpacity(opacity: number): this {
-        this._occludedOpacity = opacity || 0.2;
+        this._occludedOpacity = opacity || defaultOptions.occludedOpacity;
         this._update();
         return this;
     }

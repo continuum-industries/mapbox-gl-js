@@ -3,7 +3,7 @@ import {AlphaImage} from '../util/image';
 import {register} from '../util/web_worker_transfer';
 import potpack from 'potpack';
 
-import type {StyleGlyph} from '../style/style_glyph';
+import type {GlyphMap} from './glyph_manager';
 
 const glyphPadding = 1;
 /*
@@ -34,16 +34,9 @@ export type GlyphPositions = {
 export default class GlyphAtlas {
     image: AlphaImage;
     positions: GlyphPositions;
-    constructor(stacks: {
-        [_: string]: {
-            glyphs: {
-                [_: number]: StyleGlyph | null | undefined;
-            };
-            ascender?: number;
-            descender?: number;
-        };
-    }) {
-        const positions: Record<string, any> = {};
+
+    constructor(stacks: GlyphMap) {
+        const positions: GlyphPositions = {};
         const bins = [];
 
         for (const stack in stacks) {
@@ -66,6 +59,7 @@ export default class GlyphAtlas {
             }
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const {w, h} = potpack(bins);
         const image = new AlphaImage({width: w || 1, height: h || 1});
 

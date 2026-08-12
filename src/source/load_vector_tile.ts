@@ -1,262 +1,133 @@
-// @ts-expect-error - TS2300 - Duplicate identifier 'VectorTile'.
 import {VectorTile} from '@mapbox/vector-tile';
-import Protobuf from 'pbf';
-import {getArrayBuffer} from '../util/ajax';
-import assert from "assert";
+import {PbfReader} from 'pbf';
+import {getArrayBuffer, isHttpNotFound} from '../util/ajax';
 
-// @ts-expect-error - TS2300 - Duplicate identifier 'VectorTile'.
-import type {VectorTile} from '@mapbox/vector-tile';
 import type {Callback} from '../types/callback';
-import type {RequestedTileParameters} from './worker_source';
-import type Scheduler from '../util/scheduler';
-import type {Cancelable} from 'src/types/cancelable';
+import type {Cancelable} from '../types/cancelable';
+import type {WorkerSourceVectorTileRequest} from './worker_source';
+import type {default as Scheduler, TaskMetadata} from '../util/scheduler';
 
 export type LoadVectorTileResult = {
     rawData: ArrayBuffer;
     vectorTile?: VectorTile;
-    expires?: any;
-    cacheControl?: any;
-    resourceTiming?: Array<PerformanceResourceTiming>;
+    headers?: Headers;
 };
 
 /**
- * @callback LoadVectorDataCallback
- * @param error
- * @param vectorTile
+ * Callback for vector tile data loading with a three-state contract:
+ * - `(null, data)` — tile has data, render normally
+ * - `(null, null)` — tile intentionally empty, render as empty (e.g. HTTP 404 on a sparse tileset)
+ * - `(err)` — real error, propagate further (e.g. network error, invalid tile data)
+ *
  * @private
  */
-export type LoadVectorDataCallback = Callback<LoadVectorTileResult | null | undefined>;
+export type LoadVectorDataCallback = Callback<LoadVectorTileResult | null>;
 
-export type AbortVectorData = () => void;
-export type LoadVectorData = (params: RequestedTileParameters, callback: LoadVectorDataCallback, deduped: DedupedRequest) => AbortVectorData | null | undefined;
-export type DedupedRequestInput = {key : string,
-    metadata: any,
-    requestFunc: any,
-    callback: LoadVectorDataCallback,
-    fromQueue?: boolean
-};
-export type VectorTileQueueEntry = DedupedRequestInput & {
-    cancelled: boolean,
-    cancel: () => void
-};
+export type LoadVectorData = (params: WorkerSourceVectorTileRequest, callback: LoadVectorDataCallback) => Cancelable['cancel'];
 
-let requestQueue: Map<string, VectorTileQueueEntry>, numRequests: number;
-export const resetRequestQueue = () => {
-    requestQueue = new Map();
-    numRequests = 0;
-};
-resetRequestQueue();
+type VectorDataRequest = (callback: LoadVectorDataCallback) => Cancelable['cancel'];
 
-const filterQueue = (key: string) => {
-    requestQueue.delete(key);
+type DedupedRequestEntry = {
+    result?: [Error | null, LoadVectorTileResult | null];
+    cancel?: Cancelable['cancel'];
+    callbacks?: LoadVectorDataCallback[];
 };
 
 export class DedupedRequest {
-    entries: {
-        [key: string]: any;
-    };
-    scheduler: Scheduler | null | undefined;
+    scheduler?: Scheduler;
+    entries: {[key: string]: DedupedRequestEntry;};
 
     constructor(scheduler?: Scheduler) {
         this.entries = {};
         this.scheduler = scheduler;
     }
 
-    addToSchedulerOrCallDirectly({
-        callback,
-        metadata,
-        err,
-        result,
-    }: {
-        callback: LoadVectorDataCallback;
-        metadata: any;
-        err: Error | null | undefined;
-        result: any;
-    }) {
-        if (this.scheduler) {
-            this.scheduler.add(() => {
-                callback(err, result);
-            }, metadata);
-        } else {
-            callback(err, result);
-        }
-    }
-
-    getEntry = (key: string) => {
-        return (
-            this.entries[key] || {
-                // use a set to avoid duplicate callbacks being added when calling from queue
-                callbacks: new Set(),
-            }
-        );
-    };
-
-    request({key, metadata, requestFunc, callback, fromQueue}: DedupedRequestInput): Cancelable {
-        const entry = (this.entries[key] = this.getEntry(key));
-
-        const removeCallbackFromEntry = ({key, requestCallback}) => {
-            const entry = this.getEntry(key);
-            if (entry.result) {
-                return;
-            }
-            entry.callbacks.delete(requestCallback);
-            if (entry.callbacks.size) {
-                return;
-            }
-            if (entry.cancel) {
-                entry.cancel();
-            }
-            filterQueue(key);
-            delete this.entries[key];
-        };
-
-        let advanced = false;
-        const advanceImageRequestQueue = () => {
-            if (advanced) {
-                return;
-            }
-            advanced = true;
-            numRequests--;
-            assert(numRequests >= 0);
-            while (requestQueue.size && numRequests < 50) {
-                const request = requestQueue.values().next().value;
-                const {key, metadata, requestFunc, callback, cancelled} = request;
-                filterQueue(key);
-                if (!cancelled) {
-                    request.cancel = this.request({
-                        key,
-                        metadata,
-                        requestFunc,
-                        callback,
-                        fromQueue: true
-                    }).cancel;
-                }
-            }
-        };
+    request(key: string, metadata: TaskMetadata, request: VectorDataRequest, callback: LoadVectorDataCallback): Cancelable['cancel'] {
+        const entry = this.entries[key] = this.entries[key] || {callbacks: []};
 
         if (entry.result) {
             const [err, result] = entry.result;
-            this.addToSchedulerOrCallDirectly({
-                callback,
-                metadata,
-                err,
-                result,
-            });
-            return {cancel: () => {}};
-        }
-
-        entry.callbacks.add(callback);
-
-        const inQueue = requestQueue.has(key);
-        if ((!entry.cancel && !inQueue) || fromQueue) {
-            // Lack of attached cancel handler means this is the first request for this resource
-            if (numRequests >= 50) {
-                const queued = {
-                    key,
-                    metadata,
-                    requestFunc,
-                    callback,
-                    cancelled: false,
-                    cancel() {},
-                };
-                const cancelFunc = () => {
-                    queued.cancelled = true;
-                    removeCallbackFromEntry({
-                        key,
-                        requestCallback: callback,
-                    });
-                };
-                queued.cancel = cancelFunc;
-                requestQueue.set(key, queued);
-                return queued;
+            if (this.scheduler) {
+                this.scheduler.add(() => {
+                    callback(err, result);
+                }, metadata);
+            } else {
+                callback(err, result);
             }
-            numRequests++;
-
-            const actualRequestCancel = requestFunc((err, result) => {
-                entry.result = [err, result];
-
-                for (const cb of entry.callbacks) {
-                    this.addToSchedulerOrCallDirectly({
-                        callback: cb,
-                        metadata,
-                        err,
-                        result,
-                    });
-                }
-
-                filterQueue(key);
-                advanceImageRequestQueue();
-
-                setTimeout(() => {
-                    delete this.entries[key];
-                }, 1000 * 3);
-            });
-            entry.cancel = actualRequestCancel;
+            return () => {};
         }
 
-        return {
-            cancel() {
-                removeCallbackFromEntry({
-                    key,
-                    requestCallback: callback,
-                });
-            },
+        entry.callbacks.push(callback);
+
+        if (!entry.cancel) {
+            entry.cancel = request((err: Error | null, result: LoadVectorTileResult | null) => {
+                entry.result = [err, result];
+                for (const cb of entry.callbacks) {
+                    if (this.scheduler) {
+                        this.scheduler.add(() => {
+                            cb(err, result);
+                        }, metadata);
+                    } else {
+                        cb(err, result);
+                    }
+                }
+                setTimeout(() => delete this.entries[key], 1000 * 3);
+            });
+        }
+
+        return () => {
+            if (entry.result) return;
+            entry.callbacks = entry.callbacks.filter(cb => cb !== callback);
+            if (!entry.callbacks.length) {
+                entry.cancel();
+                delete this.entries[key];
+            }
         };
     }
 }
-
-const makeArrayBufferHandler = ({requestParams, skipParse}) => {
-
-    const makeRequest = (callback: LoadVectorDataCallback) => {
-        const request = getArrayBuffer(requestParams, (err?: Error | null, data?: ArrayBuffer | null, cacheControl?: string | null, expires?: string | null) => {
-            if (err) {
-                callback(err);
-            } else if (data) {
-                callback(null, {
-                    vectorTile: skipParse ? undefined : new VectorTile(new Protobuf(data)),
-                    rawData: data,
-                    cacheControl,
-                    expires
-                });
-            }
-        });
-        return () => {
-            request.cancel();
-            callback();
-        };
-    };
-
-    return makeRequest;
-};
 
 /**
  * @private
  */
 export function loadVectorTile(
-    params: RequestedTileParameters,
+    this: {deduped: DedupedRequest},
+    params: WorkerSourceVectorTileRequest,
     callback: LoadVectorDataCallback,
-    deduped: DedupedRequest,
     skipParse?: boolean,
-    providedArrayBufferHandlerMaker?: any
-): () => void {
+): Cancelable['cancel'] {
     const key = JSON.stringify(params.request);
 
-    const arrayBufferCallbackMaker = providedArrayBufferHandlerMaker || makeArrayBufferHandler;
-    const makeRequest = arrayBufferCallbackMaker({requestParams: params.request, skipParse});
+    const makeRequest: VectorDataRequest = (callback: LoadVectorDataCallback) => {
+        const controller = new AbortController();
+        getArrayBuffer(params.request, controller.signal)
+            .then(({data, headers}) => {
+                callback(null, {
+                    rawData: data,
+                    vectorTile: skipParse ? undefined : new VectorTile(new PbfReader(data)),
+                    headers
+                });
+            })
+            .catch((err: Error) => {
+                if (controller.signal.aborted) return;
+                // HTTP 404 on a sparse tileset: the tile intentionally doesn't exist.
+                // Convert to empty result — no parent fallback for HTTP sources.
+                if (isHttpNotFound(err)) {
+                    callback(null, null);
+                } else {
+                    callback(err);
+                }
+            });
+        return () => {
+            controller.abort();
+            callback(null, null);
+        };
+    };
 
     if (params.data) {
         // if we already got the result earlier (on the main thread), return it directly
-        deduped.entries[key] = {result: [null, params.data]};
+        this.deduped.entries[key] = {result: [null, params.data]};
     }
 
-    const callbackMetadata = {type: 'parseTile', isSymbolTile: params.isSymbolTile, zoom: params.tileZoom};
-    const dedupedAndQueuedRequest = deduped.request({
-        key,
-        metadata: callbackMetadata,
-        requestFunc: makeRequest,
-        callback,
-        fromQueue: false
-    });
-
-    return dedupedAndQueuedRequest.cancel;
+    const metadata: TaskMetadata = {type: 'parseTile', renderSourceType: params.renderSourceType, zoom: params.tileZoom};
+    return this.deduped.request(key, metadata, makeRequest, callback);
 }

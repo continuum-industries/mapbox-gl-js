@@ -4,7 +4,10 @@
     "test": {
       "width": 64,
       "height": 64,
-      "allowed": 0.0003
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0003},
+        {"platform-tag-contains": "native-android-vulkan", "threshold": 0.0067}
+      ]
     }
   },
   "zoom": 2,

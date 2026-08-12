@@ -1,6 +1,5 @@
-import {extend, bindAll} from '../util/util';
+import {bindAll} from '../util/util';
 import {Event, Evented} from '../util/evented';
-import {MapMouseEvent} from '../ui/events';
 import * as DOM from '../util/dom';
 import LngLat from '../geo/lng_lat';
 import Point from '@mapbox/point-geometry';
@@ -8,18 +7,22 @@ import smartWrap from '../util/smart_wrap';
 import {anchorTranslate} from './anchor';
 import {isLngLatBehindGlobe} from '../geo/projection/globe_util';
 
+import type {MapMouseEvent, MapEventOf} from '../ui/events';
 import type {Map} from './map';
 import type {Anchor} from './anchor';
 import type {LngLatLike} from '../geo/lng_lat';
 import type {PointLike} from '../types/point-like';
 import type Marker from './marker';
 
+const WHITESPACE_RE = /\s+/;
+
 const defaultOptions = {
     closeButton: true,
     closeOnClick: true,
     focusAfterOpen: true,
     className: '',
-    maxWidth: "240px"
+    maxWidth: '240px',
+    altitude: 0
 };
 
 export type Offset = number | PointLike | Partial<Record<Anchor, PointLike>>;
@@ -33,6 +36,12 @@ export type PopupOptions = {
     offset?: Offset;
     className?: string;
     maxWidth?: string;
+    altitude?: number;
+};
+
+type PopupEvents = {
+    'open': void;
+    'close': void;
 };
 
 const focusQuerySelector = [
@@ -71,6 +80,7 @@ const focusQuerySelector = [
  *
  * Negative offsets indicate left and up.
  * @param {string} [options.className] Space-separated CSS class names to add to popup container.
+ * @param {number} [options.altitude=0] Elevation in meters above the map surface. If terrain is enabled, the popup will be elevated relative to the terrain.
  * @param {string} [options.maxWidth='240px'] -
  * A string that sets the CSS property of the popup's maximum width (for example, `'300px'`).
  * To ensure the popup resizes to fit its content, set this property to `'none'`.
@@ -99,26 +109,29 @@ const focusQuerySelector = [
  * @see [Example: Display a popup on click](https://www.mapbox.com/mapbox-gl-js/example/popup-on-click/)
  * @see [Example: Attach a popup to a marker instance](https://www.mapbox.com/mapbox-gl-js/example/set-popup/)
  */
-export default class Popup extends Evented {
+export default class Popup extends Evented<PopupEvents> {
     _map: Map | null | undefined;
     options: PopupOptions;
     _content: HTMLElement | null | undefined;
-    _container: HTMLElement | null | undefined;
+    _container: HTMLElement | undefined;
     _closeButton: HTMLElement | null | undefined;
     _tip: HTMLElement | null | undefined;
-    _lngLat: LngLat;
-    _trackPointer: boolean;
+    _lngLat!: LngLat;
+    _trackPointer!: boolean;
     _pos: Point | null | undefined;
-    _anchor: Anchor;
+    _anchor!: Anchor;
     _classList: Set<string>;
     _marker: Marker | null | undefined;
+    _altitude: number;
 
     constructor(options?: PopupOptions) {
         super();
-        this.options = extend(Object.create(defaultOptions), options);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        this.options = Object.assign(Object.create(defaultOptions), options);
+        this._altitude = this.options.altitude;
         bindAll(['_update', '_onClose', 'remove', '_onMouseEvent'], this);
         this._classList = new Set(options && options.className ?
-            options.className.trim().split(/\s+/) : []);
+            options.className.trim().split(WHITESPACE_RE) : []);
     }
 
     /**
@@ -295,6 +308,31 @@ export default class Popup extends Evented {
     }
 
     /**
+     * Gets the altitude of the popup.
+     *
+     * @returns {number} The altitude of the popup.
+     * @example
+     * const altitude = popup.getAltitude();
+     */
+    getAltitude(): number {
+        return this._altitude;
+    }
+
+    /**
+     * Sets the altitude of the popup.
+     *
+     * @param {number} altitude - The altitude of the popup.
+     * @returns {Popup} Returns itself to allow for method chaining.
+     * @example
+     * popup.setAltitude(10);
+     */
+    setAltitude(altitude: number): this {
+        this._altitude = altitude;
+        this._update();
+        return this;
+    }
+
+    /**
      * Tracks the popup anchor to the cursor position on screens with a pointer device (it will be hidden on touchscreens). Replaces the `setLngLat` behavior.
      * For most use cases, set `closeOnClick` and `closeButton` to `false`.
      *
@@ -334,7 +372,7 @@ export default class Popup extends Evented {
      * popupElem.style.fontSize = "25px";
      * @returns {HTMLElement} Returns container element.
      */
-    getElement(): HTMLElement | null | undefined {
+    getElement(): HTMLElement | undefined {
         return this._container;
     }
 
@@ -379,7 +417,7 @@ export default class Popup extends Evented {
     setHTML(html: string): this {
         const frag = document.createDocumentFragment();
         const temp = document.createElement('body');
-        let child;
+        let child: ChildNode | null;
         temp.innerHTML = html;
         while (true) {
             child = temp.firstChild;
@@ -397,7 +435,7 @@ export default class Popup extends Evented {
      * @example
      * const maxWidth = popup.getMaxWidth();
      */
-    getMaxWidth(): string | null | undefined {
+    getMaxWidth(): string | undefined {
         return this._container && this._container.style.maxWidth;
     }
 
@@ -448,11 +486,9 @@ export default class Popup extends Evented {
 
         if (this.options.closeButton) {
             const button = this._closeButton = DOM.create('button', 'mapboxgl-popup-close-button', content);
-            // @ts-expect-error - TS2339 - Property 'type' does not exist on type 'HTMLElement'.
             button.type = 'button';
             button.setAttribute('aria-label', 'Close popup');
-            button.setAttribute('aria-hidden', 'true');
-            button.innerHTML = '&#215;';
+            button.innerHTML = '<span aria-hidden="true">&#215;</span>';
             button.addEventListener('click', this._onClose);
         }
         this._update();
@@ -594,7 +630,7 @@ export default class Popup extends Evented {
         container.className = classes.join(' ');
     }
 
-    _update(cursor?: Point) {
+    _update(cursor?: Point | MapEventOf<'move'>) {
         const hasPosition = this._lngLat || this._trackPointer;
         const map = this._map;
         const content = this._content;
@@ -618,7 +654,7 @@ export default class Popup extends Evented {
         }
 
         if (!this._trackPointer || cursor) {
-            const pos = this._pos = this._trackPointer && cursor ? cursor : map.project(this._lngLat);
+            const pos = this._pos = this._trackPointer && cursor instanceof Point ? cursor : map.project(this._lngLat, this._altitude);
 
             const offsetBottom = normalizeOffset(this.options.offset);
             const anchor = this._anchor = this._getAnchor(offsetBottom.y);
@@ -643,9 +679,8 @@ export default class Popup extends Evented {
     _focusFirstElement() {
         if (!this.options.focusAfterOpen || !this._container) return;
 
-        const firstFocusable = this._container.querySelector(focusQuerySelector);
+        const firstFocusable: HTMLElement = this._container.querySelector(focusQuerySelector);
 
-        // @ts-expect-error - TS2339 - Property 'focus' does not exist on type 'Element'.
         if (firstFocusable) firstFocusable.focus();
     }
 

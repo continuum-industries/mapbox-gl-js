@@ -1,14 +1,18 @@
 import ValidationError from '../error/validation_error';
 import validateExpression from './validate_expression';
 import validateEnum from './validate_enum';
-import getType from '../util/get_type';
+import {getType, isString, isNumber, isBoolean} from '../util/get_type';
 import {unbundle, deepUnbundle} from '../util/unbundle_jsonlint';
-import extend from '../util/extend';
 import {isExpressionFilter} from '../feature_filter/index';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
 
-type Options = ValidationOptions & {
+type FilterValidatorOptions = {
+    key: string;
+    value: unknown;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
     layerType?: string;
     object?: {
         type?: string,
@@ -16,108 +20,111 @@ type Options = ValidationOptions & {
     }
 };
 
-export default function validateFilter(options: Options): Array<ValidationError> {
+export default function validateFilter(options: FilterValidatorOptions): ValidationError[] {
     if (isExpressionFilter(deepUnbundle(options.value))) {
         // We default to a layerType of `fill` because that points to a non-dynamic filter definition within the style-spec.
         const layerType = options.layerType || 'fill';
 
-        return validateExpression(extend({}, options, {
-            expressionContext: 'filter',
+        return validateExpression({
+            ...options,
+            expressionContext: 'filter' as const,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             valueSpec: options.styleSpec[`filter_${layerType}`]
-        }));
+        });
     } else {
         return validateNonExpressionFilter(options);
     }
 }
 
-function validateNonExpressionFilter(options: Options) {
+function validateNonExpressionFilter(options: FilterValidatorOptions): ValidationError[] {
     const value = options.value;
     const key = options.key;
 
-    if (getType(value) !== 'array') {
+    if (!Array.isArray(value)) {
         return [new ValidationError(key, value, `array expected, ${getType(value)} found`)];
     }
-
-    const styleSpec = options.styleSpec;
-    let type;
-
-    let errors = [];
 
     if (value.length < 1) {
         return [new ValidationError(key, value, 'filter array must have at least 1 element')];
     }
 
-    errors = errors.concat(validateEnum({
+    const styleSpec = options.styleSpec;
+    let errors: ValidationError[] = validateEnum({
         key: `${key}[0]`,
         value: value[0],
-        valueSpec: styleSpec.filter_operator,
-        style: options.style,
-        styleSpec: options.styleSpec
-    }));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        valueSpec: styleSpec.filter_operator
+    });
+
+    const validate = () => {
+        if (value.length >= 2) {
+            if (!isString(value[1])) {
+                errors.push(new ValidationError(`${key}[1]`, value[1], `string expected, ${getType(value[1])} found`));
+            }
+        }
+        for (let i = 2; i < value.length; i++) {
+            if (unbundle(value[1]) === '$type') {
+                errors = errors.concat(validateEnum({
+                    key: `${key}[${i}]`,
+                    value: value[i],
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                    valueSpec: styleSpec.geometry_type
+                }));
+            } else if (!isString(value[i]) && !isNumber(value[i]) && !isBoolean(value[i])) {
+                errors.push(new ValidationError(`${key}[${i}]`, value[i], `string, number, or boolean expected, ${getType(value[i])} found.`));
+            }
+        }
+    };
 
     switch (unbundle(value[0])) {
     case '<':
     case '<=':
     case '>':
-    // @ts-expect-error - falls through
     case '>=':
         if (value.length >= 2 && unbundle(value[1]) === '$type') {
             errors.push(new ValidationError(key, value, `"$type" cannot be use with operator "${value[0]}"`));
         }
-        /* falls through */
+        if (value.length !== 3) {
+            errors.push(new ValidationError(key, value, `filter array for operator "${value[0]}" must have 3 elements`));
+        }
+        validate();
+        break;
+
     case '==':
-    // @ts-expect-error - falls through
     case '!=':
         if (value.length !== 3) {
             errors.push(new ValidationError(key, value, `filter array for operator "${value[0]}" must have 3 elements`));
         }
-        /* falls through */
+        validate();
+        break;
+
     case 'in':
     case '!in':
-        if (value.length >= 2) {
-            type = getType(value[1]);
-            if (type !== 'string') {
-                errors.push(new ValidationError(`${key}[1]`, value[1], `string expected, ${type} found`));
-            }
-        }
-        for (let i = 2; i < value.length; i++) {
-            type = getType(value[i]);
-            if (unbundle(value[1]) === '$type') {
-                errors = errors.concat(validateEnum({
-                    key: `${key}[${i}]`,
-                    value: value[i],
-                    valueSpec: styleSpec.geometry_type,
-                    style: options.style,
-                    styleSpec: options.styleSpec
-                }));
-            } else if (type !== 'string' && type !== 'number' && type !== 'boolean') {
-                errors.push(new ValidationError(`${key}[${i}]`, value[i], `string, number, or boolean expected, ${type} found`));
-            }
-        }
+        validate();
         break;
 
     case 'any':
     case 'all':
     case 'none':
         for (let i = 1; i < value.length; i++) {
-            errors = errors.concat(validateNonExpressionFilter(({
+            errors = errors.concat(validateNonExpressionFilter({
                 key: `${key}[${i}]`,
                 value: value[i],
                 style: options.style,
                 styleSpec: options.styleSpec
-            } as any)));
+            }));
         }
         break;
 
     case 'has':
     case '!has':
-        type = getType(value[1]);
         if (value.length !== 2) {
             errors.push(new ValidationError(key, value, `filter array for "${value[0]}" operator must have 2 elements`));
-        } else if (type !== 'string') {
-            errors.push(new ValidationError(`${key}[1]`, value[1], `string expected, ${type} found`));
+        } else if (!isString(value[1])) {
+            errors.push(new ValidationError(`${key}[1]`, value[1], `string expected, ${getType(value[1])} found`));
         }
         break;
     }
+
     return errors;
 }

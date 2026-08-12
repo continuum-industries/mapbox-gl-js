@@ -1,19 +1,19 @@
-import assert from 'assert';
-import type {Direction, Position} from '../util/util';
-import {clone, extend, endsWith, easeCubicInOut, sphericalDirectionToCartesian, sphericalPositionToCartesian} from '../util/util';
+import assert from '../style-spec/util/assert';
+import {clone, easeCubicInOut, sphericalDirectionToCartesian, sphericalPositionToCartesian} from '../util/util';
 import * as interpolate from '../style-spec/util/interpolate';
 import {number as interpolateValue} from '../style-spec/util/interpolate';
 import {normalizePropertyExpression} from '../style-spec/expression/index';
-import Color from '../style-spec/util/color';
 import {register} from '../util/web_worker_transfer';
 import EvaluationParameters from './evaluation_parameters';
+
+import type Color from '../style-spec/util/color';
+import type {Direction, Position} from '../util/util';
 import type {CanonicalTileID} from '../source/tile_id';
 import type {StylePropertySpecification} from '../style-spec/style-spec';
 import type {
     TransitionSpecification,
     PropertyValueSpecification
 } from '../style-spec/types';
-
 import type {
     Feature,
     FeatureState,
@@ -21,11 +21,20 @@ import type {
     SourceExpression,
     CompositeExpression
 } from '../style-spec/expression/index';
-
 import type {ConfigOptions} from '../style-spec/types/config_options';
+import type {ImageId} from '../style-spec/expression/types/image_id';
+import type {Type} from '../style-spec/expression/types';
+import type {FormattedSection} from '../style-spec/expression/types/formatted';
+
 export type {ConfigOptions};
 
 type TimePoint = number;
+
+type Overrides = {
+    runtimeType: Type;
+    getOverride: (o: unknown) => unknown;
+    hasOverride: (o: unknown) => boolean;
+};
 
 /**
  * Implements a number of classes that define state and behavior for paint and layout properties, most
@@ -63,13 +72,14 @@ type TimePoint = number;
  */
 export interface Property<T, R> {
     specification: StylePropertySpecification;
-    possiblyEvaluate(
+    possiblyEvaluate: (
         value: PropertyValue<T, R>,
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
-    ): R;
-    interpolate(a: R, b: R, t: number): R;
+        availableImages?: ImageId[],
+        iconImageUseTheme?: string
+    ) => R;
+    interpolate: (a: R, b: R, t: number) => R;
 }
 
 /**
@@ -96,10 +106,14 @@ export class PropertyValue<T, R> {
     value: PropertyValueSpecification<T> | undefined;
     expression: StylePropertyExpression;
 
-    constructor(property: Property<T, R>, value?: PropertyValueSpecification<T>, scope?: string | null, options?: ConfigOptions | null) {
+    constructor(property: Property<T, R>, value?: PropertyValueSpecification<T>, scope?: string | null, options?: ConfigOptions | null, iconImageUseTheme?: string | null) {
         this.property = property;
         this.value = value;
-        this.expression = normalizePropertyExpression(value === undefined ? property.specification.default : value, property.specification, scope, options);
+        this.expression = normalizePropertyExpression(value === undefined ? property.specification.default : value, property.specification, scope, options, iconImageUseTheme);
+    }
+
+    isIndoorDependent(): boolean {
+        return this.expression.isIndoorDependent;
     }
 
     isDataDriven(): boolean {
@@ -109,9 +123,10 @@ export class PropertyValue<T, R> {
     possiblyEvaluate(
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
+        iconImageUseTheme?: string
     ): R {
-        return this.property.possiblyEvaluate(this, parameters, canonical, availableImages);
+        return this.property.possiblyEvaluate(this, parameters, canonical, availableImages, iconImageUseTheme);
     }
 }
 
@@ -139,18 +154,18 @@ class TransitionablePropertyValue<T, R> {
     value: PropertyValue<T, R>;
     transition: TransitionSpecification | undefined;
 
-    constructor(property: Property<T, R>, scope?: string | null, options?: ConfigOptions | null) {
+    constructor(property: Property<T, R>, scope?: string | null, options?: ConfigOptions | null, iconImageUseTheme?: string | null) {
         this.property = property;
-        this.value = new PropertyValue(property, undefined, scope, options);
+        this.value = new PropertyValue(property, undefined, scope, options, iconImageUseTheme);
     }
 
     transitioned(parameters: TransitionParameters, prior: TransitioningPropertyValue<T, R>): TransitioningPropertyValue<T, R> {
-        return new TransitioningPropertyValue(this.property, this.value, prior, // eslint-disable-line no-use-before-define
-            extend({}, parameters.transition, this.transition), parameters.now);
+        return new TransitioningPropertyValue(this.property, this.value, prior,
+            ({...parameters.transition, ...this.transition}), parameters.now);
     }
 
     untransitioned(): TransitioningPropertyValue<T, R> {
-        return new TransitioningPropertyValue(this.property, this.value, null, {}, 0); // eslint-disable-line no-use-before-define
+        return new TransitioningPropertyValue(this.property, this.value, null, {}, 0);
     }
 }
 
@@ -161,9 +176,9 @@ class TransitionablePropertyValue<T, R> {
  * @private
  */
 type TransitionablePropertyValues<Properties> = {
-    [Key in keyof Properties]: Properties[Key] extends Property<infer T, infer R>
-    ? TransitionablePropertyValue<T, R>
-    : never;
+    [Key in keyof Properties]: Properties[Key] extends Property<infer T, infer R> ?
+        TransitionablePropertyValue<T, R> :
+        never;
 };
 
 /**
@@ -178,28 +193,36 @@ export class Transitionable<Props extends {[Key in keyof Props]: Props[Key]}> {
     _values: TransitionablePropertyValues<Props>;
     _scope: string | null | undefined;
     _options: ConfigOptions | null | undefined;
-    isConfigDependent: boolean;
+    _iconImageUseTheme?: string | null;
+    _isIndoorDependent: boolean;
+    configDependencies: Set<string>;
 
-    constructor(properties: Properties<Props>, scope?: string | null, options?: ConfigOptions | null) {
+    constructor(properties: Properties<Props>, scope?: string | null, options?: ConfigOptions | null, iconImageUseTheme?: string | null) {
         this._properties = properties;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this._values = (Object.create(properties.defaultTransitionablePropertyValues));
         this._scope = scope;
         this._options = options;
-        this.isConfigDependent = false;
+        this._iconImageUseTheme = iconImageUseTheme;
+        this._isIndoorDependent = false;
+        this.configDependencies = new Set();
     }
 
-    getValue<S extends keyof Props, T>(name: S): PropertyValueSpecification<T> | void {
-        return clone(this._values[name].value.value as PropertyValueSpecification<T> | void);
+    getValue<S extends keyof Props, T>(name: S): PropertyValueSpecification<T> | undefined {
+        return clone(this._values[name].value.value as PropertyValueSpecification<T> | undefined);
     }
 
     setValue<S extends keyof Props, T>(name: S, value?: PropertyValueSpecification<T>) {
-        if (!this._values.hasOwnProperty(name)) {
-            this._values[name] = new TransitionablePropertyValue(this._values[name].property, this._scope, this._options) as TransitionablePropertyValues<Props>[S];
+        if (!Object.hasOwn(this._values, name)) {
+            this._values[name] = new TransitionablePropertyValue(this._values[name].property, this._scope, this._options, this._iconImageUseTheme) as TransitionablePropertyValues<Props>[S];
         }
         // Note that we do not _remove_ an own property in the case where a value is being reset
         // to the default: the transition might still be non-default.
-        this._values[name].value = new PropertyValue(this._values[name].property, value === null ? undefined : clone(value), this._scope, this._options);
-        this.isConfigDependent = this.isConfigDependent || this._values[name].value.expression.isConfigDependent;
+        this._values[name].value = new PropertyValue(this._values[name].property, value === null ? undefined : clone(value), this._scope, this._options, this._iconImageUseTheme);
+        if (this._values[name].value.expression.configDependencies) {
+            this.configDependencies = new Set([...this.configDependencies, ...this._values[name].value.expression.configDependencies]);
+            this._isIndoorDependent = this._isIndoorDependent || this._values[name].value.isIndoorDependent();
+        }
     }
 
     setTransitionOrValue<P extends PropertyValueSpecifications<Props>>(properties?: P, options?: ConfigOptions) {
@@ -209,33 +232,33 @@ export class Transitionable<Props extends {[Key in keyof Props]: Props[Key]}> {
         if (properties) {
             for (const name in properties) {
                 const value = properties[name];
-                if (endsWith(name, '-transition')) {
+                if (name.endsWith('-transition')) {
                     const propName = name.slice(0, -'-transition'.length) as keyof Props;
                     if (specProperties[propName]) {
-                        this.setTransition(propName, value as TransitionSpecification);
+                        this.setTransition(propName, value);
                     }
-                } else if (specProperties.hasOwnProperty(name)) { // skip unrecognized properties
-                    this.setValue(name as unknown as keyof Props, value);
+                } else if (Object.hasOwn(specProperties, name)) { // skip unrecognized properties
+                    this.setValue(name, value);
                 }
             }
         }
     }
 
-    getTransition<S extends keyof Props>(name: S): TransitionSpecification | void {
+    getTransition<S extends keyof Props>(name: S): TransitionSpecification | undefined {
         return clone(this._values[name].transition);
     }
 
     setTransition<S extends keyof Props>(name: S, value?: TransitionSpecification) {
-        if (!this._values.hasOwnProperty(name)) {
+        if (!Object.hasOwn(this._values, name)) {
             this._values[name] = new TransitionablePropertyValue(this._values[name].property) as TransitionablePropertyValues<Props>[S];
         }
         this._values[name].transition = clone(value) || undefined;
     }
 
     serialize(): PropertyValueSpecifications<Props> {
-        const result: any = {};
+        const result = {} as PropertyValueSpecifications<Props>;
         for (const property of Object.keys(this._values) as Array<keyof Props>) {
-            const value = this.getValue(property);
+            const value = this.getValue(property) as Props[keyof Props];
             if (value !== undefined) {
                 result[property] = value;
             }
@@ -249,19 +272,25 @@ export class Transitionable<Props extends {[Key in keyof Props]: Props[Key]}> {
     }
 
     transitioned(parameters: TransitionParameters, prior: Transitioning<Props>): Transitioning<Props> {
-        const result = new Transitioning(this._properties); // eslint-disable-line no-use-before-define
+        const result = new Transitioning(this._properties);
         for (const property of Object.keys(this._values)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             result._values[property] = this._values[property].transitioned(parameters, prior._values[property]);
         }
         return result;
     }
 
     untransitioned(): Transitioning<Props> {
-        const result = new Transitioning(this._properties); // eslint-disable-line no-use-before-define
+        const result = new Transitioning(this._properties);
         for (const property of Object.keys(this._values)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             result._values[property] = this._values[property].untransitioned();
         }
         return result;
+    }
+
+    isIndoorDependent(): boolean {
+        return this._isIndoorDependent;
     }
 }
 
@@ -303,7 +332,7 @@ class TransitioningPropertyValue<T, R> {
     possiblyEvaluate(
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
     ): R {
         const now = parameters.now || 0;
         const finalValue = this.value.possiblyEvaluate(parameters, canonical, availableImages);
@@ -339,9 +368,9 @@ class TransitioningPropertyValue<T, R> {
  * @private
  */
 type TransitioningPropertyValues<Properties> = {
-    [Key in keyof Properties]: Properties[Key] extends Property<infer T, infer R>
-    ? TransitioningPropertyValue<T, R>
-    : never;
+    [Key in keyof Properties]: Properties[Key] extends Property<infer T, infer R> ?
+        TransitioningPropertyValue<T, R> :
+        never;
 };
 
 /**
@@ -359,16 +388,18 @@ export class Transitioning<Props extends {
 
     constructor(properties: Properties<Props>) {
         this._properties = properties;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this._values = (Object.create(properties.defaultTransitioningPropertyValues));
     }
 
     possiblyEvaluate(
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
     ): PossiblyEvaluated<Props> {
-        const result = new PossiblyEvaluated(this._properties); // eslint-disable-line no-use-before-define
+        const result = new PossiblyEvaluated(this._properties);
         for (const property of Object.keys(this._values)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             result._values[property] = this._values[property].possiblyEvaluate(parameters, canonical, availableImages);
         }
         return result;
@@ -376,6 +407,7 @@ export class Transitioning<Props extends {
 
     hasTransition(): boolean {
         for (const property of Object.keys(this._values)) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (this._values[property].prior) {
                 return true;
             }
@@ -393,9 +425,7 @@ export class Transitioning<Props extends {
  * @private
  */
 type PropertyValues<Props> = {
-    [Key in keyof Props]: Props[Key] extends Property<infer T, infer R>
-    ? PropertyValue<T, R>
-    : never;
+    [Key in keyof Props]: Props[Key] extends Property<infer T, infer R> ? PropertyValue<T, R> : never;
 };
 
 /**
@@ -404,11 +434,11 @@ type PropertyValues<Props> = {
  *
  * @private
  */
-type PropertyValueSpecifications<Props> = {
-    [Key in keyof Props]: Props[Key] extends Property<infer T, infer R>
-    ? PropertyValueSpecification<T>
-    : never;
-};
+export type PropertyValueSpecifications<Props> = Partial<{
+    [Key in keyof Props]: Props[Key] extends Property<infer T, unknown> ?
+        PropertyValueSpecification<T extends Color ? string : T> :
+        never;
+}>;
 
 /**
  * Because layout properties are not transitionable, they have a simpler representation and evaluation chain than
@@ -428,29 +458,37 @@ export class Layout<Props extends {
     _values: PropertyValues<Props>;
     _scope: string;
     _options: ConfigOptions | null | undefined;
-    isConfigDependent: boolean;
+    _iconImageUseTheme: string | null | undefined;
+    _isIndoorDependent: boolean;
+    configDependencies: Set<string>;
 
-    constructor(properties: Properties<Props>, scope: string, options?: ConfigOptions | null) {
+    constructor(properties: Properties<Props>, scope: string, options?: ConfigOptions | null, iconImageUseTheme?: string | null) {
         this._properties = properties;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this._values = (Object.create(properties.defaultPropertyValues));
         this._scope = scope;
         this._options = options;
-        this.isConfigDependent = false;
+        this._iconImageUseTheme = iconImageUseTheme;
+        this._isIndoorDependent = false;
+        this.configDependencies = new Set();
     }
 
     getValue<S extends keyof Props, T>(name: S): PropertyValueSpecification<T> | void {
         return clone(this._values[name].value as PropertyValueSpecification<T> | void);
     }
 
-    setValue<S extends keyof Props>(name: S, value: any) {
-        this._values[name] = new PropertyValue(this._values[name].property, value === null ? undefined : clone(value), this._scope, this._options) as PropertyValues<Props>[S];
-        this.isConfigDependent = this.isConfigDependent || this._values[name].expression.isConfigDependent;
+    setValue<S extends keyof Props>(name: S, value: unknown) {
+        this._values[name] = new PropertyValue(this._values[name].property, value === null ? undefined : clone(value), this._scope, this._options, this._iconImageUseTheme) as PropertyValues<Props>[S];
+        if (this._values[name].expression.configDependencies) {
+            this.configDependencies = new Set([...this.configDependencies, ...this._values[name].expression.configDependencies]);
+            this._isIndoorDependent = this._isIndoorDependent || this._values[name].isIndoorDependent();
+        }
     }
 
     serialize(): PropertyValueSpecifications<Props> {
-        const result: any = {};
+        const result = {} as PropertyValueSpecifications<Props>;
         for (const property of Object.keys(this._values) as Array<keyof Props>) {
-            const value = this.getValue(property);
+            const value = this.getValue(property) as Props[keyof Props];
             if (value !== undefined) {
                 result[property] = value;
             }
@@ -461,13 +499,19 @@ export class Layout<Props extends {
     possiblyEvaluate(
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
+        iconImageUseTheme?: string
     ): PossiblyEvaluated<Props> {
-        const result = new PossiblyEvaluated(this._properties); // eslint-disable-line no-use-before-define
+        const result = new PossiblyEvaluated(this._properties);
         for (const property of Object.keys(this._values)) {
-            result._values[property] = this._values[property].possiblyEvaluate(parameters, canonical, availableImages);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            result._values[property] = this._values[property].possiblyEvaluate(parameters, canonical, availableImages, iconImageUseTheme);
         }
         return result;
+    }
+
+    isIndoorDependent(): boolean {
+        return this._isIndoorDependent;
     }
 }
 
@@ -494,10 +538,7 @@ export class Layout<Props extends {
  *
  * @private
  */
-export type PossiblyEvaluatedValue<T> = {
-    kind: 'constant';
-    value: T;
-} | SourceExpression | CompositeExpression;
+export type PossiblyEvaluatedValue<T> = {kind: 'constant'; value: T} | SourceExpression | CompositeExpression;
 
 /**
  * `PossiblyEvaluatedPropertyValue` is used for data-driven paint and layout property values. It holds a
@@ -511,18 +552,20 @@ export class PossiblyEvaluatedPropertyValue<T> {
     property: DataDrivenProperty<T>;
     value: PossiblyEvaluatedValue<T>;
     parameters: EvaluationParameters;
+    iconImageUseTheme: string | null | undefined;
 
-    constructor(property: DataDrivenProperty<T>, value: PossiblyEvaluatedValue<T>, parameters: EvaluationParameters) {
+    constructor(property: DataDrivenProperty<T>, value: PossiblyEvaluatedValue<T>, parameters: EvaluationParameters, iconImageUseTheme?: string) {
         this.property = property;
         this.value = value;
         this.parameters = parameters;
+        this.iconImageUseTheme = iconImageUseTheme;
     }
 
     isConstant(): boolean {
         return this.value.kind === 'constant';
     }
 
-    constantOr(value: T): T {
+    constantOr<U>(value: U): T | U {
         if (this.value.kind === 'constant') {
             return this.value.value;
         } else {
@@ -534,9 +577,10 @@ export class PossiblyEvaluatedPropertyValue<T> {
         feature: Feature,
         featureState: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
+        formattedSection?: FormattedSection
     ): T {
-        return this.property.evaluate(this.value, this.parameters, feature, featureState, canonical, availableImages);
+        return this.property.evaluate(this.value, this.parameters, feature, featureState, canonical, availableImages, this.iconImageUseTheme, formattedSection);
     }
 }
 
@@ -556,9 +600,7 @@ export class PossiblyEvaluatedPropertyValue<T> {
  * @private
  */
 type PossiblyEvaluatedPropertyValues<Properties> = {
-    [Key in keyof Properties]: Properties[Key] extends Property<infer T, infer R>
-    ? R
-    : never;
+    [Key in keyof Properties]: Properties[Key] extends Property<unknown, infer R> ? R : never;
 };
 
 /**
@@ -566,14 +608,13 @@ type PossiblyEvaluatedPropertyValues<Properties> = {
  * given layer type.
  * @private
  */
-export class PossiblyEvaluated<Props extends {
-    [Prop in keyof Props]: Props[Prop]
-}> {
+export class PossiblyEvaluated<Props extends {[Prop in keyof Props]: Props[Prop]}> {
     _properties: Properties<Props>;
     _values: PossiblyEvaluatedPropertyValues<Props>;
 
     constructor(properties: Properties<Props>) {
         this._properties = properties;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this._values = Object.create(properties.defaultPossiblyEvaluatedValues);
     }
 
@@ -602,7 +643,8 @@ export class DataConstantProperty<T> implements Property<T, T> {
     }
 
     interpolate(a: T, b: T, t: number): T {
-        const interp: (a: T, b: T, t: number) => T | null | undefined = (interpolate as any)[this.specification.type];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const interp: (a: T, b: T, t: number) => T | null | undefined = interpolate[this.specification.type];
         if (interp) {
             return interp(a, b, t);
         } else {
@@ -620,14 +662,10 @@ export class DataConstantProperty<T> implements Property<T, T> {
  */
 export class DataDrivenProperty<T> implements Property<T, PossiblyEvaluatedPropertyValue<T>> {
     specification: StylePropertySpecification;
-    overrides: {
-        [key: string]: any;
-    } | null | undefined;
+    overrides?: Overrides;
     useIntegerZoom: boolean | null | undefined;
 
-    constructor(specification: StylePropertySpecification, overrides?: {
-        [key: string]: any;
-    }) {
+    constructor(specification: StylePropertySpecification, overrides?: Overrides) {
         this.specification = specification;
         this.overrides = overrides;
     }
@@ -636,12 +674,13 @@ export class DataDrivenProperty<T> implements Property<T, PossiblyEvaluatedPrope
         value: PropertyValue<T, PossiblyEvaluatedPropertyValue<T>>,
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
+        iconImageUseTheme?: string
     ): PossiblyEvaluatedPropertyValue<T> {
         if (value.expression.kind === 'constant' || value.expression.kind === 'camera') {
-            return new PossiblyEvaluatedPropertyValue(this, {kind: 'constant', value: value.expression.evaluate(parameters, (null as any), {}, canonical, availableImages)}, parameters);
+            return new PossiblyEvaluatedPropertyValue<T>(this, {kind: 'constant', value: value.expression.evaluate(parameters, null, {}, canonical, availableImages, undefined, iconImageUseTheme)}, parameters);
         } else {
-            return new PossiblyEvaluatedPropertyValue(this, value.expression, parameters);
+            return new PossiblyEvaluatedPropertyValue(this, value.expression, parameters, iconImageUseTheme);
         }
     }
 
@@ -663,10 +702,11 @@ export class DataDrivenProperty<T> implements Property<T, PossiblyEvaluatedPrope
         // `Properties#defaultPossiblyEvaluatedValues`, which serves as the prototype of
         // `PossiblyEvaluated#_values`.
         if (a.value.value === undefined || b.value.value === undefined) {
-            return new PossiblyEvaluatedPropertyValue(this, {kind: 'constant', value: (undefined as any)}, a.parameters);
+            return new PossiblyEvaluatedPropertyValue<T>(this, {kind: 'constant', value: undefined}, a.parameters);
         }
 
-        const interp: (a: T, b: T, t: number) => T | null | undefined = (interpolate as any)[this.specification.type];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const interp: (a: T, b: T, t: number) => T | null | undefined = interpolate[this.specification.type];
         if (interp) {
             return new PossiblyEvaluatedPropertyValue(this, {kind: 'constant', value: interp(a.value.value, b.value.value, t)}, a.parameters);
         } else {
@@ -680,12 +720,14 @@ export class DataDrivenProperty<T> implements Property<T, PossiblyEvaluatedPrope
         feature: Feature,
         featureState: FeatureState,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
+        iconImageUseTheme?: string,
+        formattedSection?: FormattedSection
     ): T {
         if (value.kind === 'constant') {
             return value.value;
         } else {
-            return value.evaluate(parameters, feature, featureState, canonical, availableImages);
+            return value.evaluate(parameters, feature, featureState, canonical, availableImages, formattedSection, iconImageUseTheme);
         }
     }
 }
@@ -708,9 +750,9 @@ export class ColorRampProperty implements Property<Color, boolean> {
         value: PropertyValue<Color, boolean>,
         parameters: EvaluationParameters,
         canonical?: CanonicalTileID,
-        availableImages?: Array<string>,
+        availableImages?: ImageId[],
     ): boolean {
-        return !!value.expression.evaluate(parameters, (null as any), {}, canonical, availableImages);
+        return !!value.expression.evaluate(parameters, null, {}, canonical, availableImages);
     }
 
     interpolate(): boolean { return false; }
@@ -794,8 +836,8 @@ export class Properties<Props extends {[Key in keyof Props]: Props[Key]}> {
         const defaultParameters = new EvaluationParameters(0, {});
         for (const property in properties) {
             const prop = properties[property];
-            // @ts-expect-error - TS2339 - Property 'overridable' does not exist on type 'StylePropertySpecification'.
-            if (prop.specification.overridable) {
+            const spec = (prop as {specification?: {overridable?: boolean}}).specification;
+            if (spec && spec.overridable) {
                 this.overridableProperties.push(property);
             }
 

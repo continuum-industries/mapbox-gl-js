@@ -1,5 +1,4 @@
 import * as DOM from '../../util/dom';
-
 import {Event} from '../../util/evented';
 
 import type {Map} from '../map';
@@ -17,11 +16,11 @@ class BoxZoomHandler implements Handler {
     _map: Map;
     _el: HTMLElement;
     _container: HTMLElement;
-    _enabled: boolean;
-    _active: boolean;
+    _enabled!: boolean;
+    _active!: boolean;
     _startPos: Point | null | undefined;
     _lastPos: Point | null | undefined;
-    _box: HTMLElement;
+    _box!: HTMLElement;
     _clickTolerance: number;
 
     /**
@@ -164,7 +163,7 @@ class BoxZoomHandler implements Handler {
 
         if (this._box) {
             this._box.remove();
-            this._box = (null as any);
+            this._box = null;
         }
 
         DOM.enableDrag();
@@ -173,7 +172,7 @@ class BoxZoomHandler implements Handler {
         delete this._lastPos;
     }
 
-    _fireEvent(type: string, e: any): Map {
+    _fireEvent(type: 'boxzoomstart' | 'boxzoomcancel', e: MouseEvent | KeyboardEvent): Map {
         return this._map.fire(new Event(type, {originalEvent: e}));
     }
 }

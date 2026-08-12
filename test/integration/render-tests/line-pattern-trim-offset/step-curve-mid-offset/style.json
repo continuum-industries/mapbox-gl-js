@@ -4,11 +4,13 @@
     "test": {
       "height": 128,
       "width": 128,
-      "allowed": 0.0004
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0004}
+      ]
     }
   },
   "zoom": 2,
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "sources": {
     "a": {
       "type": "geojson",
@@ -93,12 +95,12 @@
         "line-width": 10,
         "line-pattern": [
           "step", ["zoom"],
-          "generic_icon",
+          "information",
           2,
           ["match", ["string", ["get", "class"]],
-            "street", "generic_icon",
-            "path", "generic_metro",
-            "school_icon"
+            "street", "information",
+            "path", "car",
+            "school"
           ]
         ],
         "line-trim-offset": [0.3, 0.7]

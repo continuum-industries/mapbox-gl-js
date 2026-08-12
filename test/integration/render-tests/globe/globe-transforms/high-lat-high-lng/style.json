@@ -2,12 +2,18 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.008,
+      
       "width": 512,
       "height": 512,
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "skip - https://github.com/mapbox/mapbox-gl-native-internal/issues/3425"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.008}
       ]
     }
   },
@@ -26,13 +32,13 @@
       "tileSize": 256
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
       "type": "background",
       "paint": {
-        "background-pattern": "cemetery_icon"
+        "background-pattern": "cemetery"
       }
     }
 

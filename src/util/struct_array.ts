@@ -1,6 +1,6 @@
 // Note: all "sizes" are measured in bytes
 
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 
 import type {Transferable} from '../types/transferable';
 
@@ -32,7 +32,7 @@ class Struct {
     readonly _structArray: StructArray;
 
     // The following properties are defined on the prototype of sub classes.
-    size: number;
+    declare size: number;
 
     /**
      * @param {StructArray} structArray The StructArray the struct is stored in
@@ -40,7 +40,7 @@ class Struct {
      * @private
      */
     constructor(structArray: StructArray, index: number) {
-        (this as any)._structArray = structArray;
+        this._structArray = structArray;
         this._pos1 = index * this.size;
         this._pos2 = this._pos1 / 2;
         this._pos4 = this._pos1 / 4;
@@ -65,15 +65,17 @@ export type StructArrayLayout = {
 };
 
 export interface IStructArrayLayout {
-    _refreshViews(): void;
-    emplace(...args: number[]): number;
-    emplaceBack(...args: number[]): number;
+    _refreshViews: () => void;
+    emplace: (...args: number[]) => number;
+    emplaceBack: (...args: number[]) => number;
 }
 
 export type SerializedStructArray = {
     length: number;
     arrayBuffer: ArrayBuffer;
 };
+
+const EMPTY_BUFFER = new ArrayBuffer(0);
 
 /**
  * `StructArray` provides an abstraction over `ArrayBuffer` and `TypedArray`
@@ -99,24 +101,24 @@ export type SerializedStructArray = {
 class StructArray implements IStructArrayLayout {
     capacity: number;
     length: number;
-    isTransferred: boolean;
-    arrayBuffer: ArrayBuffer;
-    int8: Int8Array;
-    uint8: Uint8Array;
-    int16: Int16Array;
-    uint16: Uint16Array;
-    int32: Int32Array;
-    uint32: Uint32Array;
-    float32: Float32Array;
+    arrayBuffer!: ArrayBuffer;
+    int8!: Int8Array;
+    uint8!: Uint8Array;
+    int16!: Int16Array;
+    uint16!: Uint16Array;
+    int32!: Int32Array;
+    uint32!: Uint32Array;
+    float32!: Float32Array;
 
-    // The following properties are defined on the prototype.
-    members: Array<StructArrayMember>;
-    bytesPerElement: number;
+    // The following property is defined on the prototype.
+    declare bytesPerElement: number;
+
+    _reallocCount: number;
 
     constructor() {
-        this.isTransferred = false;
-        this.capacity = -1;
-        this.resize(0);
+        this._reallocCount = 0;
+        this.capacity = 0;
+        this.length = 0;
     }
 
     /**
@@ -126,12 +128,9 @@ class StructArray implements IStructArrayLayout {
      * @private
      */
     static serialize(array: StructArray, transferables?: Set<Transferable>): SerializedStructArray {
-        assert(!array.isTransferred);
-
         array._trim();
 
-        if (transferables) {
-            array.isTransferred = true;
+        if (transferables && array.arrayBuffer) {
             transferables.add(array.arrayBuffer);
         }
 
@@ -142,14 +141,18 @@ class StructArray implements IStructArrayLayout {
     }
 
     static deserialize(input: SerializedStructArray): StructArray {
-        const structArray: {
-            [_: string]: any;
-        } = Object.create(this.prototype);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const structArray: StructArray = Object.create(this.prototype);
         structArray.arrayBuffer = input.arrayBuffer;
         structArray.length = input.length;
-        structArray.capacity = input.arrayBuffer.byteLength / structArray.bytesPerElement;
+        if (input.arrayBuffer) {
+            structArray.capacity = input.arrayBuffer.byteLength / structArray.bytesPerElement;
+        } else {
+            structArray.capacity = 0;
+            structArray.arrayBuffer = EMPTY_BUFFER;
+        }
         structArray._refreshViews();
-        return structArray as StructArray;
+        return structArray;
     }
 
     /**
@@ -177,8 +180,17 @@ class StructArray implements IStructArrayLayout {
      * @param {number} n The new size of the array.
      */
     resize(n: number) {
-        assert(!this.isTransferred);
         this.reserve(n);
+        this.length = n;
+    }
+
+    /**
+     * Like `resize`, but allocates exactly `n` slots — no growth multiplier or
+     * default-capacity floor. Use when the final size is known up front.
+     * @param {number} n The new size of the array.
+     */
+    resizeExact(n: number) {
+        this.reserveExact(n);
         this.length = n;
     }
 
@@ -189,13 +201,39 @@ class StructArray implements IStructArrayLayout {
      */
     reserve(n: number) {
         if (n > this.capacity) {
-            this.capacity = Math.max(n, Math.floor(this.capacity * RESIZE_MULTIPLIER), DEFAULT_CAPACITY);
-            this.arrayBuffer = new ArrayBuffer(this.capacity * this.bytesPerElement);
-
-            const oldUint8Array = this.uint8;
-            this._refreshViews();
-            if (oldUint8Array) this.uint8.set(oldUint8Array);
+            this._allocate(Math.max(n, Math.floor(this.capacity * RESIZE_MULTIPLIER), DEFAULT_CAPACITY));
         }
+    }
+
+    /**
+     * Like `reserve`, but allocates exactly `n` slots — no growth multiplier or
+     * default-capacity floor. Use when the final size is known up front, so the
+     * subsequent emplaceBacks fill the buffer exactly and no `_trim` is needed.
+     * @param {number} n The exact final size of the array.
+     */
+    reserveExact(n: number) {
+        if (n > this.capacity || !this.arrayBuffer) {
+            this._allocate(n);
+        }
+    }
+
+    _allocate(capacity: number) {
+        this._reallocCount++;
+        this.capacity = capacity;
+        this.arrayBuffer = new ArrayBuffer(this.capacity * this.bytesPerElement);
+
+        const oldUint8Array = this.uint8;
+        this._refreshViews();
+        if (oldUint8Array) this.uint8.set(oldUint8Array);
+    }
+
+    /**
+     * Indicate a planned increase in size, so that any necessary allocation may
+     * be done once, ahead of time.
+     * @param {number} n The expected number of additional elements added to the array.
+     */
+    reserveForAdditional(n: number) {
+        this.reserve(this.length + n);
     }
 
     /**
@@ -214,8 +252,8 @@ class StructArray implements IStructArrayLayout {
     }
 
     destroy() {
-        this.int8 = this.uint8 = this.int16 = this.uint16 = this.int32 = this.uint32 = this.float32 = null;
-        this.arrayBuffer = (null as any);
+        this.int8 = this.uint8 = this.int16 = this.uint16 = this.int32 = this.uint32 = this.float32 = null!;
+        this.arrayBuffer = null!;
     }
 }
 

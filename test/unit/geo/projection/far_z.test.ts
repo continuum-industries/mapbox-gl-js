@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../../util/vitest';
 import {farthestPixelDistanceOnPlane, farthestPixelDistanceOnSphere} from '../../../../src/geo/projection/far_z';
@@ -27,9 +28,32 @@ describe('FarZ', () => {
         pixelsPerMeter = mercator.pixelsPerMeter(tr.center.lat, tr.worldSize);
         expect(farthestPixelDistanceOnPlane(tr, pixelsPerMeter).toFixed(3)).toBe("151.500");
 
-        tr.zoom = 22.0;
+        tr.zoom = 17.0;
         pixelsPerMeter = mercator.pixelsPerMeter(tr.center.lat, tr.worldSize);
         expect(farthestPixelDistanceOnPlane(tr, pixelsPerMeter).toFixed(3)).toBe("151.500");
+
+        // Expanded furthest distance to prevent flicker on far plane
+        tr.zoom = 22.0;
+        pixelsPerMeter = mercator.pixelsPerMeter(tr.center.lat, tr.worldSize);
+        expect(farthestPixelDistanceOnPlane(tr, pixelsPerMeter).toFixed(3)).toBe("909.000");
+    });
+
+    test('farthestPixelDistanceOnPlane extends far plane in orthographic mode', () => {
+        const tr = new Transform();
+        tr.resize(256, 128);
+        tr._orthographicProjectionAtLowPitch = true;
+
+        const mercator = getProjection({name: 'mercator'});
+        const pixelsPerMeter = mercator.pixelsPerMeter(tr.center.lat, tr.worldSize);
+
+        // Without the -10m road elevation extension this would be 192 * 1.01
+        const baseOrthoDistance = 192 * 1.01;
+        const orthoDistance = farthestPixelDistanceOnPlane(tr, pixelsPerMeter);
+        expect(orthoDistance).toBeGreaterThan(baseOrthoDistance);
+
+        // Non-orthographic should not include the road elevation extension
+        tr._orthographicProjectionAtLowPitch = false;
+        expect(farthestPixelDistanceOnPlane(tr, pixelsPerMeter)).toBe(baseOrthoDistance);
     });
 
     test('farthestPixelDistanceOnSphere', () => {

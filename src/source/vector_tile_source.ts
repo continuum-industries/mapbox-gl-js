@@ -1,7 +1,6 @@
 import {Event, ErrorEvent, Evented} from '../util/evented';
-
-import {extend, pick} from '../util/util';
-import loadTileJSON from './load_tilejson';
+import {parseExpiryData, pick} from '../util/util';
+import loadTileJSON, {parseTileJSONRequest} from './load_tilejson';
 import {postTurnstileEvent} from '../util/mapbox';
 import TileBounds from './tile_bounds';
 import {ResourceType} from '../util/ajax';
@@ -9,8 +8,13 @@ import browser from '../util/browser';
 import {cacheEntryPossiblyAdded} from '../util/tile_request_cache';
 import {DedupedRequest, loadVectorTile} from './load_vector_tile';
 import {makeFQID} from '../util/fqid';
+import {isMapboxURL} from '../util/mapbox_url';
+import {resolveTileProvider, processTileJSON} from './tile_provider';
+import {HD, prepareHD} from '../../modules/hd_main';
+import {terrainEnabled} from '../style/terrain';
+import {Standard, prepareStandard} from '../../modules/standard_main';
 
-import type {ISource} from './source';
+import type {ISource, SourceEvents, SourceVectorLayer} from './source';
 import type {OverscaledTileID} from './tile_id';
 import type {Map} from '../ui/map';
 import type Dispatcher from '../util/dispatcher';
@@ -18,9 +22,12 @@ import type Tile from './tile';
 import type {Callback} from '../types/callback';
 import type {Cancelable} from '../types/cancelable';
 import type {VectorSourceSpecification, PromoteIdSpecification} from '../style-spec/types';
+import type {TileJSON} from '../types/tilejson';
 import type Actor from '../util/actor';
+import type {WorkerInbox} from '../util/actor_messages';
 import type {LoadVectorTileResult} from './load_vector_tile';
-import type {WorkerTileResult} from './worker_source';
+import type {RequestParameters} from '../util/ajax';
+import type {WorkerSourceVectorTileRequest, WorkerSourceVectorTileResult} from './worker_source';
 
 /**
  * A source containing vector tiles in [Mapbox Vector Tile format](https://docs.mapbox.com/vector-tiles/reference/).
@@ -48,51 +55,55 @@ import type {WorkerTileResult} from './worker_source';
  * @see [Example: Add a vector tile source](https://docs.mapbox.com/mapbox-gl-js/example/vector-source/)
  * @see [Example: Add a third party vector tile source](https://docs.mapbox.com/mapbox-gl-js/example/third-party/)
  */
-class VectorTileSource extends Evented implements ISource {
+class VectorTileSource extends Evented<SourceEvents> implements ISource<'vector'> {
     type: 'vector';
+    provider?: string | false;
     id: string;
-    scope: string;
+    scope!: string;
     minzoom: number;
     maxzoom: number;
-    url: string;
+    url!: string;
     scheme: string;
     tileSize: number;
-    minTileCacheSize: number | null | undefined;
-    maxTileCacheSize: number | null | undefined;
-    roundZoom: boolean | undefined;
-    attribution: string | undefined;
+    minTileCacheSize?: number;
+    maxTileCacheSize?: number;
+    roundZoom?: boolean;
+    attribution?: string;
     // eslint-disable-next-line camelcase
-    mapbox_logo: boolean | undefined;
-    promoteId: PromoteIdSpecification | null | undefined;
+    mapbox_logo?: boolean;
+    promoteId?: PromoteIdSpecification | null;
 
-    _options: VectorSourceSpecification;
+    _options: VectorSourceSpecification & {provider?: string | false; collectResourceTiming: boolean};
     _collectResourceTiming: boolean;
     dispatcher: Dispatcher;
-    map: Map;
-    bounds: [number, number, number, number] | null | undefined;
-    tiles: Array<string>;
-    tileBounds: TileBounds;
-    reparseOverscaled: boolean | undefined;
-    isTileClipped: boolean | undefined;
-    _tileJSONRequest: Cancelable | null | undefined;
+    map!: Map;
+    bounds?: [number, number, number, number] | null;
+    tiles!: Array<string>;
+    tileBounds?: TileBounds;
+    reparseOverscaled?: boolean;
+    isTileClipped?: boolean;
+    _tileJSONRequest?: Cancelable | null;
     _loaded: boolean;
-    _tileWorkers: {
-        [key: string]: Actor;
-    };
+    _tileWorkers: Record<string, Actor<WorkerInbox>>;
     _deduped: DedupedRequest;
-    vectorLayerIds: Array<string> | undefined;
+    vectorLayers?: Array<SourceVectorLayer>;
+    vectorLayerIds?: Array<string>;
+    rasterLayers?: never;
+    rasterLayerIds?: never;
+    hasWorldviews?: boolean;
+    worldviewDefault?: string;
+    localizableLayerIds?: Set<string>;
 
     prepare: undefined;
     _clear: undefined;
 
-    constructor(id: string, options: VectorSourceSpecification & {
-        collectResourceTiming: boolean;
-    }, dispatcher: Dispatcher, eventedParent: Evented) {
+    constructor(id: string, options: VectorSourceSpecification & {provider?: string | false; collectResourceTiming: boolean}, dispatcher: Dispatcher, eventedParent: Evented) {
         super();
         this.id = id;
         this.dispatcher = dispatcher;
 
         this.type = 'vector';
+        this.provider = options.provider;
         this.minzoom = 0;
         this.maxzoom = 22;
         this.scheme = 'xyz';
@@ -101,8 +112,8 @@ class VectorTileSource extends Evented implements ISource {
         this.isTileClipped = true;
         this._loaded = false;
 
-        extend(this, pick(options, ['url', 'scheme', 'tileSize', 'promoteId']));
-        this._options = extend({type: 'vector'}, options);
+        Object.assign(this, pick(options, ['url', 'scheme', 'tileSize', 'promoteId']));
+        this._options = {type: 'vector', ...options};
 
         this._collectResourceTiming = !!options.collectResourceTiming;
 
@@ -120,29 +131,108 @@ class VectorTileSource extends Evented implements ISource {
         this._loaded = false;
         this.fire(new Event('dataloading', {dataType: 'source'}));
         const language = Array.isArray(this.map._language) ? this.map._language.join() : this.map._language;
-        const worldview = this.map._worldview;
-        this._tileJSONRequest = loadTileJSON(this._options, this.map._requestManager, language, worldview, (err, tileJSON) => {
+        const worldview = this.map.getWorldview();
+
+        const done = (err?: Error | null, tileJSON?: TileJSON | null) => {
             this._tileJSONRequest = null;
             this._loaded = true;
             if (err) {
                 if (language) console.warn(`Ensure that your requested language string is a valid BCP-47 code or list of codes. Found: ${language}`);
-                if (worldview && worldview.length !== 2) console.warn(`Requested worldview strings must be a valid ISO alpha-2 code. Found: ${worldview}`);
-
+                if (worldview) console.warn(`Requested worldview strings must be a valid ISO alpha-2 code. Found: ${worldview}`);
                 this.fire(new ErrorEvent(err));
             } else if (tileJSON) {
-                extend(this, tileJSON);
-                if (tileJSON.bounds) this.tileBounds = new TileBounds(tileJSON.bounds, this.minzoom, this.maxzoom);
+                this._setTileJSON(tileJSON);
+                if (HD.updateCrossSourceElevationGate && this.map.style) HD.updateCrossSourceElevationGate(this.map.style);
                 postTurnstileEvent(tileJSON.tiles, this.map._requestManager._customAccessToken);
-
                 // `content` is included here to prevent a race condition where `Style#updateSources` is called
                 // before the TileJSON arrives. this makes sure the tiles needed are loaded once TileJSON arrives
                 // ref: https://github.com/mapbox/mapbox-gl-js/pull/4347#discussion_r104418088
                 this.fire(new Event('data', {dataType: 'source', sourceDataType: 'metadata'}));
                 this.fire(new Event('data', {dataType: 'source', sourceDataType: 'content'}));
             }
-
             if (callback) callback(err);
+        };
+
+        this.provider = this._options.provider;
+        const tileProvider = resolveTileProvider(this._options);
+
+        if (tileProvider instanceof Error) {
+            this._loaded = true;
+            this.fire(new ErrorEvent(tileProvider));
+            if (callback) callback();
+            return;
+        }
+
+        if (this.provider && !tileProvider) {
+            this._loaded = true;
+            this.fire(new ErrorEvent(new Error(`TileProvider "${this.provider}" is not registered`)));
+            if (callback) callback();
+            return;
+        }
+
+        this._tileJSONRequest = tileProvider ?
+            this.loadTileJSONWithProvider(tileProvider, done) :
+            loadTileJSON(this._options, this.map._requestManager, language, worldview, done);
+    }
+
+    loadTileJSONWithProvider(tileProvider: {name: string; url: string}, callback: Callback<TileJSON>): Cancelable {
+        this.provider = tileProvider.name;
+        const controller = new AbortController();
+
+        const load = async () => {
+            const {request, options} = await parseTileJSONRequest(this._options, this.map._requestManager, controller.signal);
+            if (controller.signal.aborted) return;
+
+            const results = await this.dispatcher.send('loadTileProvider', {
+                name: tileProvider.name,
+                url: tileProvider.url,
+                source: this.id,
+                scope: this.scope,
+                type: this.type,
+                options,
+                request,
+            }, {signal: controller.signal});
+
+            if (controller.signal.aborted) return;
+
+            const tileJSON = results ? results.find((r) => r != null) : null;
+            const result = processTileJSON(this._options, tileJSON, this.map._requestManager);
+            if (result instanceof Error) {
+                callback(result);
+            } else {
+                callback(null, result);
+            }
+        };
+
+        load().catch((err: Error) => {
+            if (!controller.signal.aborted) callback(err);
         });
+
+        return {cancel: () => controller.abort()};
+    }
+
+    _setTileJSON(tileJSON: TileJSON) {
+        Object.assign(this, tileJSON);
+
+        this.hasWorldviews = !!tileJSON.worldview_options;
+        if (tileJSON.worldview_default) {
+            this.worldviewDefault = tileJSON.worldview_default;
+        }
+
+        if (tileJSON.vector_layers) {
+            this.vectorLayers = tileJSON.vector_layers;
+            this.vectorLayerIds = [];
+            this.localizableLayerIds = new Set();
+            for (const layer of tileJSON.vector_layers) {
+                this.vectorLayerIds.push(layer.id);
+                // Check if the layer source is localizable
+                if (tileJSON.worldview && tileJSON.worldview[layer.source]) {
+                    this.localizableLayerIds.add(layer.id);
+                }
+            }
+        }
+
+        this.tileBounds = TileBounds.fromTileJSON(tileJSON);
     }
 
     loaded(): boolean {
@@ -220,112 +310,212 @@ class VectorTileSource extends Evented implements ISource {
     }
 
     serialize(): VectorSourceSpecification {
-        return extend({}, this._options);
+        return {...this._options};
     }
 
-    loadTile(tile: Tile, callback: Callback<undefined>) {
-        const url = this.map._requestManager.normalizeTileURL(tile.tileID.canonical.url(this.tiles, this.scheme));
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        const request = this.map._requestManager.transformRequest(url, ResourceType.Tile);
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    async loadTile(tile: Tile, callback: Callback<WorkerSourceVectorTileResult | null>): Promise<void> {
+        const tileUrl = tile.tileID.canonical.url(this.tiles, this.scheme);
+        const url = this.map._requestManager.normalizeTileURL(tileUrl);
+
+        // Pick actor + state branch synchronously: this gates the re-entrant loadTile dedupe below.
+        const isFresh = !tile.actor || tile.state === 'expired';
+        if (!isFresh && tile.state === 'loading') {
+            // schedule tile reloading after it has been loaded
+            tile.reloadCallback = callback;
+            return;
+        }
+        if (isFresh) {
+            tile.actor = this._tileWorkers[url] = this._tileWorkers[url] || this.dispatcher.getActor();
+        }
+
+        const controller = new AbortController();
+        tile.request = controller;
+
+        try {
+            const request = await this.map._requestManager.transformRequest(url, ResourceType.Tile, controller.signal);
+            if (controller.signal.aborted) return callback(null);
+            this.dispatchTile(tile, url, tileUrl, request, controller, isFresh, callback);
+        } catch (err) {
+            if (controller.signal.aborted) return callback(null);
+            callback(err as Error);
+        }
+    }
+
+    private dispatchTile(tile: Tile, url: string, tileUrl: string, request: RequestParameters, controller: AbortController, isFresh: boolean, callback: Callback<WorkerSourceVectorTileResult>) {
         const lutForScope = this.map.style ? this.map.style.getLut(this.scope) : null;
-        const params = {
+        const lut = lutForScope ? {image: lutForScope.image.clone()} : null;
+
+        // Enable cross-source elevation while HD is loading so unmatched ids defer (not parse flat).
+        // Inert on non-elevation styles (no hd-road-markup buckets).
+        const crossSourceElevationActive = !!(this.map.style && this.map.style._crossSourceElevationActive);
+        const crossSourceElevationEnabled = !!(this.map.style &&
+            (crossSourceElevationActive || !HD.loaded));
+
+        const params: WorkerSourceVectorTileRequest = {
             request,
             data: undefined,
             uid: tile.uid,
             tileID: tile.tileID,
             tileZoom: tile.tileZoom,
             zoom: tile.tileID.overscaledZ,
-            lut: lutForScope ? {
-                image: lutForScope.image.clone()
-            } : null,
+            maxZoom: this.maxzoom,
+            lut,
             tileSize: this.tileSize * tile.tileID.overscaleFactor(),
             type: this.type,
             source: this.id,
             scope: this.scope,
             pixelRatio: browser.devicePixelRatio,
             showCollisionBoxes: this.map.showCollisionBoxes,
+            showElevationIdDebug: this.map.painter ? this.map.painter._debugParams.showElevationIdDebug : false,
             promoteId: this.promoteId,
-            isSymbolTile: tile.isSymbolTile,
+            renderSourceType: tile.renderSourceType,
+            frcCoverage: (() => {
+                const painter = this.map.painter;
+                const fadeRange = painter ? painter.frcCoverageFadeRange : null;
+                if (fadeRange == null) return null;
+                const snapshot = painter ? painter.frcCoverageSnapshot : null;
+                const mapZoom = this.map.transform.zoom;
+                const belowCoverageZoom = mapZoom < fadeRange[0];
+                const covTile = snapshot ? snapshot.getTileOrParent(tile.tileID.canonical) : null;
+                // Use ceil(fadeRange[1]) so integer endpoints (e.g. [14,15]) are handled correctly:
+                // overscaledZ=15 with max=15 should be filtered (>=), not skipped by a strict > test.
+                const aboveFadeMax = tile.tileID.overscaledZ >= Math.ceil(fadeRange[1]);
+                const frcMaskFromSnapshot = (snapshot && aboveFadeMax) ? snapshot.getFullCoverageMask(tile.tileID.canonical) : null;
+                return {
+                    frcMask: aboveFadeMax ? (frcMaskFromSnapshot ?? null) : null,
+                    resolved: belowCoverageZoom || snapshot != null,
+                    polygons: (covTile && covTile.frcMask !== 0) ? covTile.polygons : null,
+                    tileZoom: (covTile && covTile.frcMask !== 0) ? covTile.tileId.z : null,
+                    sourceLayers: painter ? painter.frcCoverageSourceLayers : ['road', 'structure'],
+                };
+            })(),
+            terrainEnabled: terrainEnabled(this.map.style, this.map.transform),
+            crossSourceElevationEnabled,
+            elevation: HD.buildElevationRequestParams ?
+                HD.buildElevationRequestParams(this.map, tile, crossSourceElevationActive) : null,
             brightness: this.map.style ? (this.map.style.getBrightness() || 0.0) : 0.0,
             extraShadowCaster: tile.isExtraShadowCaster,
-            tessellationStep: this.map._tessellationStep
+            tessellationStep: this.map._tessellationStep,
+            scaleFactor: this.map.getScaleFactor(),
+            worldview: this.map.getWorldview() || this.worldviewDefault,
+            indoor: this.map.getIndoorTileOptions(this.id, this.scope)
         };
+
+        // If we request a Mapbox URL, use the `worldview` param in the WorkerTile
+        // to filter out features in the localizable layers
+        // that are not visible in the current worldview.
+        if (this.hasWorldviews && isMapboxURL(tileUrl)) {
+            params.localizableLayerIds = this.localizableLayerIds;
+        }
+
         params.request.collectResourceTiming = this._collectResourceTiming;
 
-        if (!tile.actor || tile.state === 'expired') {
-            tile.actor = this._tileWorkers[url] = this._tileWorkers[url] || this.dispatcher.getActor();
-
+        if (isFresh) {
             // if workers are not ready to receive messages yet, use the idle time to preemptively
-            // load tiles on the main thread and pass the result instead of requesting a worker to do so
-            if (!this.dispatcher.ready) {
-                const cancel = loadVectorTile.call({}, params, (err?: Error | null, data?: LoadVectorTileResult | null) => {
+            // load tiles on the main thread and pass the result instead of requesting a worker to do so.
+            // Provider tiles are fetched by the provider on workers, so skip main-thread preloading.
+            if (!this.dispatcher.ready && !this.provider) {
+
+                const cancel = loadVectorTile.call({deduped: this._deduped}, params, (err?: Error | null, data?: LoadVectorTileResult | null) => {
+                    if (tile.aborted) return;
                     if (err || !data) {
                         done.call(this, err);
                     } else {
                         // the worker will skip the network request if the data is already there
                         params.data = {
-                            cacheControl: data.cacheControl,
-                            expires: data.expires,
-                            rawData: data.rawData.slice(0)
+                            rawData: data.rawData.slice(0),
+                            headers: data.headers,
                         };
-                        if (tile.actor) tile.actor.send('loadTile', params, done.bind(this), undefined, true);
+
+                        if (tile.actor) {
+                            tile.request = tile.actor.sendCancelable('loadTile', params, {}, done.bind(this));
+                        }
                     }
-                }, this._deduped, true);
-                tile.request = {cancel};
+                }, true);
+
+                // loadVectorTile uses a cancel-fn, not a signal; bridge it onto the controller so tile.request stays uniform.
+                controller.signal.addEventListener('abort', cancel, {once: true});
 
             } else {
-                tile.request = tile.actor.send('loadTile', params, done.bind(this), undefined, true);
+
+                tile.request = tile.actor.sendCancelable('loadTile', params, {}, done.bind(this));
             }
 
-        } else if (tile.state === 'loading') {
-            // schedule tile reloading after it has been loaded
-            tile.reloadCallback = callback;
-
         } else {
-            tile.request = tile.actor.send('reloadTile', params, done.bind(this));
+            tile.request = tile.actor.sendCancelable('reloadTile', params, {}, done.bind(this));
         }
 
-        function done(err?: Error | null, data?: WorkerTileResult | null) {
+        function done(this: VectorTileSource, err?: Error | null, data?: WorkerSourceVectorTileResult | null) {
             delete tile.request;
 
             if (tile.aborted)
                 return callback(null);
 
-            // @ts-expect-error - TS2339 - Property 'status' does not exist on type 'Error'.
-            if (err && err.status !== 404) {
-                return callback(err);
-            }
+            if (err) return callback(err);
 
             if (data && data.resourceTiming)
                 tile.resourceTiming = data.resourceTiming;
 
-            if (this.map._refreshExpiredTiles && data) tile.setExpiryData(data);
-            tile.loadVectorData(data, this.map.painter);
+            if (this.map._refreshExpiredTiles && data) tile.setExpiryData(parseExpiryData(data.headers));
 
-            cacheEntryPossiblyAdded(this.dispatcher);
+            // Tiles carrying HD or Standard extensions can't be deserialized until the
+            // relevant module is loaded on the main thread — unregistered classes throw
+            // on `deserializeBucket`. Gate on the loaded flags and await as needed.
+            const needsHD = data && data.containsHdExt && !HD.loaded;
+            const needsStandard = data && data.containsStandardExt && !(Standard as {loaded?: boolean}).loaded;
+            if (needsHD || needsStandard) {
+                const loads: Array<Promise<void>> = [];
+                if (needsHD) loads.push(prepareHD());
+                if (needsStandard) loads.push(prepareStandard());
+                Promise.all(loads).then(
+                    () => finishLoad.call(this),
+                    () => finishLoad.call(this),
+                );
+                return;
+            }
+            finishLoad.call(this);
 
-            callback(null);
+            function finishLoad(this: VectorTileSource) {
+                // Post-await abort check: the tile may have been cancelled while we were
+                // waiting for a module load. Silent drop matches the abort path above.
+                if (tile.aborted) return callback(null);
+                // If a required module failed to load, surface as a tile error rather
+                // than an uncaught throw from `loadVectorData`.
+                if (data && data.containsHdExt && !HD.loaded) {
+                    return callback(new Error('HD module failed to load'));
+                }
+                if (data && data.containsStandardExt && !(Standard as {loaded?: boolean}).loaded) {
+                    return callback(new Error('Standard module failed to load'));
+                }
 
-            if (tile.reloadCallback) {
-                this.loadTile(tile, tile.reloadCallback);
-                tile.reloadCallback = null;
+                tile.loadVectorData(data, this.map.painter);
+                cacheEntryPossiblyAdded(this.dispatcher);
+
+                callback(null, data);
+
+                if (tile.reloadCallback) {
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    this.loadTile(tile, tile.reloadCallback);
+                    tile.reloadCallback = null;
+                }
             }
         }
     }
 
     abortTile(tile: Tile) {
         if (tile.request) {
-            tile.request.cancel();
+            tile.request.abort();
             delete tile.request;
         }
         if (tile.actor) {
-            tile.actor.send('abortTile', {uid: tile.uid, type: this.type, source: this.id, scope: this.scope});
+            tile.actor.notify('abortTile', {uid: tile.uid, type: this.type, source: this.id, scope: this.scope});
         }
     }
 
     unloadTile(tile: Tile, _?: Callback<undefined> | null) {
         if (tile.actor) {
-            tile.actor.send('removeTile', {uid: tile.uid, type: this.type, source: this.id, scope: this.scope});
+            tile.actor.notify('removeTile', {uid: tile.uid, type: this.type, source: this.id, scope: this.scope});
         }
         tile.destroy();
     }

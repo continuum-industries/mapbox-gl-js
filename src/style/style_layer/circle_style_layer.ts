@@ -1,18 +1,19 @@
-import StyleLayer from '../style_layer';
-
+import StyleLayer, {rawLayoutMayUseHD} from '../style_layer';
+import {prepareHD} from '../../../modules/hd_worker';
 import CircleBucket from '../../data/bucket/circle_bucket';
 import {polygonIntersectsBufferedPoint} from '../../util/intersection_tests';
 import {getMaximumPaintValue, translateDistance, tilespaceTranslate} from '../query_utils';
-import properties from './circle_style_layer_properties';
-import {Transitionable, Transitioning, Layout, PossiblyEvaluated} from '../properties';
+import {getLayoutProperties, getPaintProperties} from './circle_style_layer_properties';
 import {vec4, vec3} from 'gl-matrix';
 import Point from '@mapbox/point-geometry';
 import ProgramConfiguration from '../../data/program_configuration';
-import {Ray} from '../../util/primitives';
-import assert from 'assert';
+import assert from '../../style-spec/util/assert';
 import {latFromMercatorY, mercatorZfromAltitude} from '../../geo/mercator_coordinate';
 import EXTENT from '../../style-spec/data/extent';
+import {circleDefinesValues} from '../../render/program/circle_program';
 
+import type {Transitionable, Transitioning, Layout, PossiblyEvaluated, ConfigOptions} from '../properties';
+import type {Ray} from '../../util/primitives';
 import type {FeatureState} from '../../style-spec/expression/index';
 import type Transform from '../../geo/transform';
 import type {Bucket, BucketParameters} from '../../data/bucket';
@@ -21,37 +22,43 @@ import type {LayerSpecification} from '../../style-spec/types';
 import type {TilespaceQueryGeometry} from '../query_geometry';
 import type {DEMSampler} from '../../terrain/elevation';
 import type {VectorTileFeature} from '@mapbox/vector-tile';
-import {circleDefinesValues} from '../../render/program/circle_program';
+import type {RuntimeModuleType} from '../style_layer';
 import type {CreateProgramParams} from '../../render/painter';
 import type {DynamicDefinesType} from '../../render/program/program_uniforms';
-import type {ConfigOptions} from '../properties';
 import type {LUT} from "../../util/lut";
+import type {ProgramName} from '../../render/program';
 
 class CircleStyleLayer extends StyleLayer {
-    _unevaluatedLayout: Layout<LayoutProps>;
-    layout: PossiblyEvaluated<LayoutProps>;
+    override type!: 'circle';
 
-    _transitionablePaint: Transitionable<PaintProps>;
-    _transitioningPaint: Transitioning<PaintProps>;
-    paint: PossiblyEvaluated<PaintProps>;
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
+
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        const properties = {
+            layout: getLayoutProperties(),
+            paint: getPaintProperties()
+        };
         super(layer, properties, scope, lut, options);
     }
 
-    createBucket(parameters: BucketParameters<CircleStyleLayer>): CircleBucket<CircleStyleLayer> {
+    override createBucket(parameters: BucketParameters<this>): CircleBucket<CircleStyleLayer> {
         return new CircleBucket(parameters);
     }
 
-    queryRadius(bucket: Bucket): number {
-        const circleBucket: CircleBucket<CircleStyleLayer> = (bucket as any);
+    override queryRadius(bucket: Bucket): number {
+        const circleBucket = bucket as CircleBucket<CircleStyleLayer>;
         return getMaximumPaintValue('circle-radius', this, circleBucket) +
             getMaximumPaintValue('circle-stroke-width', this, circleBucket) +
 
             translateDistance(this.paint.get('circle-translate'));
     }
 
-    queryIntersectsFeature(
+    override queryIntersectsFeature(
         queryGeometry: TilespaceQueryGeometry,
         feature: VectorTileFeature,
         featureState: FeatureState,
@@ -61,16 +68,13 @@ class CircleStyleLayer extends StyleLayer {
         pixelPosMatrix: Float32Array,
         elevationHelper?: DEMSampler | null,
     ): boolean {
-
         const translation = tilespaceTranslate(
-
             this.paint.get('circle-translate'),
             this.paint.get('circle-translate-anchor'),
-            transform.angle, queryGeometry.pixelToTileUnitsFactor);
+            transform.angle, queryGeometry.pixelToTileUnitsFactor
+        );
 
-        // @ts-expect-error - TS2339 - Property 'evaluate' does not exist on type 'unknown'.
         const size = this.paint.get('circle-radius').evaluate(feature, featureState) +
-        // @ts-expect-error - TS2339 - Property 'evaluate' does not exist on type 'unknown'.
             this.paint.get('circle-stroke-width').evaluate(feature, featureState);
 
         return queryIntersectsCircle(queryGeometry, geometry, transform, pixelPosMatrix, elevationHelper,
@@ -78,17 +82,35 @@ class CircleStyleLayer extends StyleLayer {
             this.paint.get('circle-pitch-scale') === 'map', translation, size);
     }
 
-    getProgramIds(): Array<string> {
+    override getProgramIds(): ProgramName[] {
         return ['circle'];
     }
 
-    getDefaultProgramParams(_: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
+    override getDefaultProgramParams(_: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
         const definesValues = (circleDefinesValues(this) as DynamicDefinesType[]);
         return {
             config: new ProgramConfiguration(this, {zoom, lut}),
             defines: definesValues,
             overrideFog: false
         };
+    }
+
+    override is3D(terrainEnabled?: boolean): boolean {
+        if (terrainEnabled) return false;
+
+        return !!this.layout && this.layout.get('circle-elevation-reference') !== 'none';
+    }
+
+    override hasElevation(): boolean {
+        return this.layout && this.layout.get('circle-elevation-reference') !== 'none';
+    }
+
+    override mayUse(type: RuntimeModuleType): boolean {
+        return type === 'HD' && rawLayoutMayUseHD(this, 'circle-elevation-reference', v => v === 'hd-road-markup');
+    }
+
+    override prepare(): Promise<void> {
+        return this.mayUse('HD') ? prepareHD() : Promise.resolve();
     }
 }
 
@@ -136,7 +158,7 @@ export function queryIntersectsCircle(
                 queryGeometry.tilespaceRays.map((r) => intersectAtHeight(r, z)) :
                 queryGeometry.queryGeometry.screenGeometry;
 
-            const projectedCenter = vec4.transformMat4([] as any, [reproj.x, reproj.y, reproj.z, 1], pixelPosMatrix);
+            const projectedCenter = vec4.transformMat4([], [reproj.x, reproj.y, reproj.z, 1], pixelPosMatrix);
             if (!scaleWithMap && alignWithMap) {
                 size *= projectedCenter[3] / transform.cameraToCenterDistance;
             } else if (scaleWithMap && !alignWithMap) {
@@ -159,7 +181,7 @@ export function queryIntersectsCircle(
 }
 
 function projectPoint(x: number, y: number, z: number, pixelPosMatrix: Float32Array) {
-    const point = vec4.transformMat4([] as any, [x, y, z, 1], pixelPosMatrix);
+    const point = vec4.transformMat4([], [x, y, z, 1], pixelPosMatrix);
     return new Point(point[0] / point[3], point[1] / point[3]);
 }
 

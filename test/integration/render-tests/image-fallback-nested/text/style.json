@@ -3,7 +3,11 @@
   "metadata": {
     "test": {
       "height": 128,
-      "width": 128
+      "width": 128,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00025},
+        {"platform-tag-contains": "metal", "threshold": 0.0003}
+      ]
     }
   },
   "center": [ 0, 0 ],
@@ -53,7 +57,7 @@
         "icon-image": [
             "coalesce",
             ["image", ["get", "icon"]],
-            ["image", "park"]
+            ["image", "fav-park-18"]
         ],
         "text-field": ["to-string",
             ["coalesce",
@@ -75,7 +79,7 @@
               ""
           ]],
           "blue",
-          "red" 
+          "red"
         ],
         "text-opacity": [ "case",
           ["to-boolean", ["coalesce",
@@ -83,7 +87,7 @@
               ""
           ]],
           0.2,
-          1 
+          1
         ]
       }
     }

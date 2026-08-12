@@ -1,5 +1,5 @@
 import fs from 'fs';
-import assert from 'assert';
+import assert from '../src/style-spec/util/assert';
 import spec from '../src/style-spec/reference/latest';
 import {supportsPropertyExpression, supportsZoomExpression} from '../src/style-spec/util/properties';
 
@@ -20,6 +20,7 @@ function tsEnum(values) {
     if (Array.isArray(values)) {
         return values.map(v => JSON.stringify(v)).join(' | ');
     } else {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return Object.keys(values).map(v => JSON.stringify(v)).join(' | ');
     }
 }
@@ -27,26 +28,35 @@ function tsEnum(values) {
 function tsType(property, overrideFn?: (any) => string) {
     if (overrideFn) return overrideFn(property);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (typeof property.type === 'function') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         return property.type();
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const baseType = (() => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         switch (property.type) {
         case 'never':
         case 'string':
         case 'number':
         case 'boolean':
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             return property.type;
         case 'enum':
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             return tsEnum(property.values);
         case 'array':
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (property.value === 'light-3d') {
                 return 'Array<LightsSpecification>';
             }
-            // eslint-disable-next-line no-case-declarations
+            // eslint-disable-next-line no-case-declarations, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const elementType = tsType(typeof property.value === 'string' ? {type: property.value, values: property.values} : property.value, overrideFn);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (property.length) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 return `[${Array(property.length).fill(elementType).join(', ')}]`;
             } else {
                 return `Array<${elementType}>`;
@@ -56,17 +66,20 @@ function tsType(property, overrideFn?: (any) => string) {
         case '*':
             return 'unknown';
         default:
-            return `${property.type.slice(0, 1).toUpperCase()}${property.type.slice(1)}Specification`;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            return `${property.type.split('_').map(part => part.slice(0, 1).toUpperCase() + part.slice(1)).join('')}Specification`;
         }
     })();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     if (supportsPropertyExpression(property)) {
         return `DataDrivenPropertyValueSpecification<${baseType}>`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     } else if (supportsZoomExpression(property)) {
         return `PropertyValueSpecification<${baseType}>`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     } else if (property.expression) {
-        if (property.type === 'enum') return `${baseType} | ExpressionSpecification`;
-        return `ExpressionSpecification`;
+        return `${baseType} | ExpressionSpecification`;
     } else {
         return baseType;
     }
@@ -75,8 +88,10 @@ function tsType(property, overrideFn?: (any) => string) {
 function tsProperty(key, property, overrideFn) {
     assert(property, `Property not found in the style-specification for ${key}`);
     if (key === '*') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return `[_: string]: ${tsType(property, overrideFn)}`;
     } else {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument
         return `"${key}"${property.required ? '' : '?'}: ${tsType(property, overrideFn)}${property['optional'] ? ' | null | undefined' : ''}`;
     }
 }
@@ -85,107 +100,149 @@ function tsObjectDeclaration(key, properties, overrides = {}) {
     assert(properties, `Properties not found in the style-specification for ${key}`);
 
     let experimentalTag;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (properties.experimental) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         delete properties.experimental;
         experimentalTag = tag('@experimental', 'This is experimental and subject to change in future versions.');
     }
 
-    const objectDeclaration = `export type ${key} = ${tsObject(properties, '', overrides)}`;
+    const objectDeclaration = `export type ${key} = ${tsObject(properties, '', overrides)};`;
     return experimentalTag ? [experimentalTag, objectDeclaration].join('\n') : objectDeclaration;
 }
 
 function tsObject(properties, indent, overrides = {}) {
     return `{
-${Object.keys(properties)
-        .map(k => {
-            const property = `    ${indent}${tsProperty(k, properties[k], overrides[k])}`;
+${// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    Object.keys(properties)
+        .flatMap(k => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            let property = `    ${indent}${tsProperty(k, properties[k], overrides[k])}`;
+
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (properties[k].experimental) {
+                const experimentalTag = tag('@experimental', 'This property is experimental and subject to change in future versions.', `    ${indent}`);
+                property = [experimentalTag, property].join('\n');
+            }
+
+            const result = [property];
+
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (properties[k].transition) {
                 const propertyTransition = `    ${indent}"${k}-transition"?: TransitionSpecification`;
-                return [property, propertyTransition].join(',\n');
-            } else if (properties[k].experimental) {
-                const experimentalTag = tag('@experimental', 'This property is experimental and subject to change in future versions.', `    ${indent}`);
-                return [experimentalTag, property].join('\n');
-            } else {
-                return property;
+                result.push(propertyTransition);
             }
+
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (properties[k]['use-theme']) {
+                const propertyUseTheme = `    ${indent}"${k}-use-theme"?: PropertyValueSpecification<string>`;
+                result.push(propertyUseTheme);
+            }
+
+            return result;
         })
         .join(',\n')}
 ${indent}}`;
 }
 
 function tsSourceTypeName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return key.replace(/source_(.)(.*)/, (_, _1, _2) => `${_1.toUpperCase()}${_2}Source`)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         .replace(/_dem/, 'DEM')
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         .replace(/_array/, 'Array')
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         .replace(/Geojson/, 'GeoJSON');
 }
 
 function tsSourceSpecificationTypeName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return tsSourceTypeName(key).concat('Specification');
 }
 
 function tsLightTypeName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return key.split('-').map(k => k.replace(/(.)(.*)/, (_, _1, _2) => `${_1.toUpperCase()}${_2}`)).concat('LightSpecification').join('');
 }
 
 function tsLayerName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return key.split('-').map(k => k.replace(/(.)(.*)/, (_, _1, _2) => `${_1.toUpperCase()}${_2}`)).join('');
 }
 
 function tsLayerTypeName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return tsLayerName(key).concat('Layer');
 }
 
 function tsLayerSpecificationTypeName(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return tsLayerTypeName(key).concat('Specification');
 }
 
 function tsLayer(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const layer = structuredClone(spec.layer);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     layer.type = {
         type: 'enum',
         values: [key],
         required: true
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     delete layer.ref;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     delete layer['paint.*'];
 
     if (spec[`paint_${key}`]) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.paint.type = () => {
             return tsObject(spec[`paint_${key}`], '    ');
         };
     } else {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         delete layer.paint;
     }
 
     if (spec[`layout_${key}`]) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.layout.type = () => {
             return tsObject(spec[`layout_${key}`], '    ');
         };
     } else {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         delete layer.layout;
     }
 
     if (key === 'background' || key === 'sky' || key === 'slot') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.source = {type: 'never'};
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer['source-layer'] = {type: 'never'};
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.filter = {type: 'never'};
     } else {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.source.required = true;
     }
 
     if (key === 'slot') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.minzoom = {type: 'never'};
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.maxzoom = {type: 'never'};
     }
 
     if (!spec[`layout_${key}`]) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.layout = {type: 'never'};
     }
 
     if (!spec[`paint_${key}`]) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         layer.paint = {type: 'never'};
     }
 
@@ -205,14 +262,17 @@ function tsLayer(key) {
 }
 
 function tsLight(key) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const light = spec['light-3d'];
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     light.type = {
         type: 'enum',
         values: [key],
         required: true
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     light.properties.type = () => {
         return tsObject(spec[`properties_light_${key}`], '    ');
     };
@@ -220,12 +280,21 @@ function tsLight(key) {
     return tsObjectDeclaration(tsLightTypeName(key), light);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
 const lightTypes = Object.keys(spec['light-3d'].type.values);
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
 const layerTypes = Object.keys(spec.layer.type.values);
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+const rootLayerKeys = Object.keys(spec.layer).filter(k => !['id', 'type', 'source', 'source-layer', 'metadata', 'paint', 'layout'].includes(k));
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const {source, ...updatableTerrainSpec} = spec.terrain;
+
 fs.writeFileSync('src/style-spec/types.ts', `// Generated code; do not edit. Edit build/generate-typed-style-spec.ts instead.
-/* eslint-disable */
+
+import type {UnionToIntersection} from './union-to-intersection';
 
 export type ColorSpecification = string;
 
@@ -233,9 +302,10 @@ export type FormattedSpecification = string;
 
 export type ResolvedImageSpecification = string;
 
-export type PromoteIdSpecification = {[_: string]: string} | string;
+export type PromoteIdSpecification = {[_: string]: string | ExpressionSpecification} | string | ExpressionSpecification;
 
 export type FilterSpecification =
+    | ExpressionSpecification
     | ['has', string]
     | ['!has', string]
     | ['==', string, string | number | boolean]
@@ -269,20 +339,21 @@ export type FunctionSpecification<T> = {
 };
 
 export type CameraFunctionSpecification<T> =
-    | { type: 'exponential', stops: Array<[number, T]> }
-    | { type: 'interval',    stops: Array<[number, T]> };
+    | {type: 'exponential', stops: Array<[number, T]>}
+    | {type: 'interval',    stops: Array<[number, T]>};
 
 export type SourceFunctionSpecification<T> =
-    | { type: 'exponential', stops: Array<[number, T]>, property: string, default?: T }
-    | { type: 'interval',    stops: Array<[number, T]>, property: string, default?: T }
-    | { type: 'categorical', stops: Array<[string | number | boolean, T]>, property: string, default?: T }
-    | { type: 'identity', property: string, default?: T };
+    | {type: 'exponential', stops: Array<[number, T]>, property: string, default?: T}
+    | {type: 'interval',    stops: Array<[number, T]>, property: string, default?: T}
+    | {type: 'categorical', stops: Array<[string | number | boolean, T]>, property: string, default?: T}
+    | {type: 'identity', property: string, default?: T};
 
 export type CompositeFunctionSpecification<T> =
-    | { type: 'exponential', stops: Array<[{zoom: number, value: number}, T]>, property: string, default?: T }
-    | { type: 'interval',    stops: Array<[{zoom: number, value: number}, T]>, property: string, default?: T }
-    | { type: 'categorical', stops: Array<[{zoom: number, value: string | number | boolean}, T]>, property: string, default?: T };
+    | {type: 'exponential', stops: Array<[{zoom: number, value: number}, T]>, property: string, default?: T}
+    | {type: 'interval',    stops: Array<[{zoom: number, value: number}, T]>, property: string, default?: T}
+    | {type: 'categorical', stops: Array<[{zoom: number, value: string | number | boolean}, T]>, property: string, default?: T};
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ExpressionSpecification = [string, ...any[]];
 
 export type PropertyValueSpecification<T> =
@@ -296,7 +367,8 @@ export type DataDrivenPropertyValueSpecification<T> =
     | CameraFunctionSpecification<T>
     | SourceFunctionSpecification<T>
     | CompositeFunctionSpecification<T>
-    | ExpressionSpecification;
+    | ExpressionSpecification
+    | (T extends Array<infer U> ? Array<U | ExpressionSpecification> : never);
 
 ${tsObjectDeclaration('StyleSpecification', spec.$root)}
 
@@ -304,11 +376,26 @@ ${tsObjectDeclaration('SourcesSpecification', spec.sources)}
 
 ${tsObjectDeclaration('ModelsSpecification', spec.models)}
 
+${tsObjectDeclaration('ModelLightOverridesSpecification', spec.modelLightOverrides)}
+${tsObjectDeclaration('ModelNodeOverrideSpecification', spec.modelNodeOverride)}
+${tsObjectDeclaration('ModelNodeOverridesSpecification', spec.modelNodeOverrides)}
+${tsObjectDeclaration('ModelMaterialOverrideSpecification', spec.modelMaterialOverride)}
+${tsObjectDeclaration('ModelMaterialOverridesSpecification', spec.modelMaterialOverrides)}
+${tsObjectDeclaration('ModelSourceModelsSpecification', spec.modelSourceModels)}
+${tsObjectDeclaration('ModelSourceModelSpecification', spec.modelSourceModel)}
+
+${tsObjectDeclaration('IconsetsSpecification', spec.iconsets)}
+
 ${tsObjectDeclaration('LightSpecification', spec.light)}
 
 ${tsObjectDeclaration('TerrainSpecification', spec.terrain)}
+${tsObjectDeclaration('TerrainSpecificationUpdate', updatableTerrainSpec)}
 
 ${tsObjectDeclaration('FogSpecification', spec.fog)}
+
+${tsObjectDeclaration('SnowSpecification', spec.snow)}
+
+${tsObjectDeclaration('RainSpecification', spec.rain)}
 
 ${tsObjectDeclaration('CameraSpecification', spec.camera)}
 
@@ -318,23 +405,50 @@ ${tsObjectDeclaration('ProjectionSpecification', spec.projection)}
 
 ${tsObjectDeclaration('ImportSpecification', spec.import)}
 
+${tsObjectDeclaration('IndoorSpecification', spec.indoor)}
+
+${tsObjectDeclaration('IndoorSourceSpecification', spec.indoor_source)}
+
 ${tsObjectDeclaration('ConfigSpecification', spec.config)}
 
 ${tsObjectDeclaration('SchemaSpecification', spec.schema)}
 
 ${tsObjectDeclaration('OptionSpecification', spec.option)}
 
-${spec.source.map(key => {
+${tsObjectDeclaration('FeaturesetsSpecification', spec.featuresets)}
+
+${tsObjectDeclaration('FeaturesetSpecification', spec.featureset)}
+
+${tsObjectDeclaration('SelectorSpecification', spec.selector)}
+
+${tsObjectDeclaration('SelectorPropertySpecification', spec.selectorProperty)}
+
+${tsObjectDeclaration('AppearanceSpecification', spec.appearance)}
+
+${// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    spec.source.map(key => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const sourceSpecName = tsSourceSpecificationTypeName(key);
         if (sourceSpecName === 'GeoJSONSourceSpecification') {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             return tsObjectDeclaration(sourceSpecName, spec[key], {data: () => 'GeoJSON.GeoJSON | string'});
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         return tsObjectDeclaration(sourceSpecName, spec[key]);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     }).join('\n\n')}
 
 export type SourceSpecification =
-${spec.source.map(key => `    | ${tsSourceSpecificationTypeName(key)}`).join('\n')}
+${// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    spec.source.map(key => `    | ${tsSourceSpecificationTypeName(key)}`// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    ).join('\n')};
+
+export type IconsetSpecification =
+${// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    spec.iconset.map(key => `    | ${// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        tsObject(spec[key], '    ')}`// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    ).join('\n')};
 
 export type ModelSpecification = ${tsType(spec.model)};
 
@@ -347,6 +461,12 @@ ${layerTypes.map(key => tsLayer(key)).join('\n\n')}
 
 export type LayerSpecification =
 ${layerTypes.map(key => `    | ${tsLayerSpecificationTypeName(key)}`).join('\n')};
+
+export type LayoutSpecification = UnionToIntersection<NonNullable<LayerSpecification['layout']>>;
+
+export type PaintSpecification = UnionToIntersection<NonNullable<LayerSpecification['paint']>>;
+
+export type LayerBaseSpecification = Pick<LayerSpecification, ${rootLayerKeys.map(k => JSON.stringify(k)).join(' | ')}>;
 
 // Aliases for easier migration from @types/mapbox-gl
 
@@ -371,17 +491,9 @@ ${alias('AnyLayer', 'LayerSpecification')}
 
 ${layerTypes.map(key => alias(tsLayerTypeName(key), tsLayerSpecificationTypeName(key))).join('\n\n')}
 
-/**
- * @deprecated
- */
-export type AnyLayout =
-${layerTypes.filter(key => !!spec[`layout_${key}`]).map(key => `    | ${tsLayerName(key)}Layout`).join('\n')};
+${alias('AnyLayout', 'LayoutSpecification')}
 
-/**
- * @deprecated
- */
-export type AnyPaint =
-${layerTypes.filter(key => !!spec[`paint_${key}`]).map(key => `    | ${tsLayerName(key)}Paint`).join('\n')};
+${alias('AnyPaint', 'PaintSpecification')}
 
 ${alias('Expression', 'ExpressionSpecification')}
 

@@ -1,40 +1,63 @@
 import ValidationError from '../error/validation_error';
-import getType from '../util/get_type';
+import {getType, isObject} from '../util/get_type';
 import validate from './validate';
+import {TRANSITION_KEY_RE, USE_THEME_KEY_RE} from '../util/properties';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
 
-export default function validateLight(options: ValidationOptions): Array<ValidationError> {
+type LightValidatorOptions = {
+    key: string;
+    value: unknown;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
+};
+
+export default function validateLight(options: LightValidatorOptions): ValidationError[] {
     const light = options.value;
     const styleSpec = options.styleSpec;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const lightSpec = styleSpec.light;
     const style = options.style;
 
-    let errors = [];
-
-    const rootType = getType(light);
     if (light === undefined) {
-        return errors;
-    } else if (rootType !== 'object') {
-        errors = errors.concat([new ValidationError('light', light, `object expected, ${rootType} found`)]);
-        return errors;
+        return [];
     }
 
-    for (const key in light) {
-        const transitionMatch = key.match(/^(.*)-transition$/);
+    if (!isObject(light)) {
+        return [new ValidationError('light', light, `object expected, ${getType(light)} found`)];
+    }
 
-        if (transitionMatch && lightSpec[transitionMatch[1]] && lightSpec[transitionMatch[1]].transition) {
+    let errors: ValidationError[] = [];
+    for (const key in light) {
+        const transitionMatch = key.match(TRANSITION_KEY_RE);
+        const useThemeMatch = key.match(USE_THEME_KEY_RE);
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        if (useThemeMatch && lightSpec[useThemeMatch[1]!]) {
             errors = errors.concat(validate({
                 key,
                 value: light[key],
+                valueSpec: {type: 'string'},
+                style,
+                styleSpec
+            }));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        } else if (transitionMatch && lightSpec[transitionMatch[1]!] && lightSpec[transitionMatch[1]!]!.transition) {
+            errors = errors.concat(validate({
+                key,
+                value: light[key],
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 valueSpec: styleSpec.transition,
                 style,
                 styleSpec
             }));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         } else if (lightSpec[key]) {
             errors = errors.concat(validate({
                 key,
                 value: light[key],
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 valueSpec: lightSpec[key],
                 style,
                 styleSpec

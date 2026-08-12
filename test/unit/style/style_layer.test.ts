@@ -1,9 +1,11 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import createStyleLayer from '../../../src/style/create_style_layer';
 import FillStyleLayer from '../../../src/style/style_layer/fill_style_layer';
-import {extend} from '../../../src/util/util';
 import Color from '../../../src/style-spec/util/color';
+
+import type {SymbolLayerSpecification} from '../../../src';
 
 describe('StyleLayer', () => {
     test('instantiates the correct subclass', () => {
@@ -103,11 +105,13 @@ describe('StyleLayer#setPaintProperty', () => {
         layer.setPaintProperty('fill-outline-color', '#f00');
         layer.updateTransitions({});
         layer.recalculate({zoom: 0});
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(layer.paint.get('fill-outline-color').value).toEqual({kind: 'constant', value: new Color(1, 0, 0, 1)});
 
         layer.setPaintProperty('fill-outline-color', undefined);
         layer.updateTransitions({});
         layer.recalculate({zoom: 0});
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(layer.paint.get('fill-outline-color').value).toEqual({kind: 'constant', value: new Color(0, 0, 1, 1)});
     });
 
@@ -193,6 +197,7 @@ describe('StyleLayer#setLayoutProperty', () => {
         layer.setLayoutProperty('text-transform', null);
         layer.recalculate({zoom: 0});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(layer.layout.get('text-transform').value).toEqual({kind: 'constant', value: 'none'});
         expect(layer.getLayoutProperty('text-transform')).toEqual(undefined);
     });
@@ -202,23 +207,36 @@ describe('StyleLayer#setLayoutProperty', () => {
         layer.setLayoutProperty('visibility', 'none');
         expect(layer.getLayoutProperty('visibility')).toEqual('none');
     });
+
+    test('updates visibility for clip layer', () => {
+        const layer = createStyleLayer({
+            id: 'clip',
+            type: 'clip',
+            source: 'composite',
+            layout: {
+                visibility: 'none'
+            }
+        });
+
+        expect(layer.getLayoutProperty('visibility')).toEqual('none');
+        expect(layer.isHidden(0)).toBeTruthy();
+    });
 });
 
 describe('StyleLayer#serialize', () => {
     function createSymbolLayer(layer) {
-        return extend({
-            id: 'symbol',
+        return {id: 'symbol',
             type: 'symbol',
             paint: {
                 'text-color': 'blue'
             },
             layout: {
                 'text-transform': 'uppercase'
-            }
-        }, layer);
+            }, ...layer};
     }
 
     test('serializes layers', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(createStyleLayer(createSymbolLayer()).serialize()).toEqual(createSymbolLayer());
     });
 
@@ -230,10 +248,12 @@ describe('StyleLayer#serialize', () => {
             }
         };
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(createStyleLayer(createSymbolLayer({paint: layerPaint})).serialize().paint).toEqual(layerPaint);
     });
 
     test('serializes added paint properties', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setPaintProperty('text-halo-color', 'orange');
 
@@ -242,6 +262,7 @@ describe('StyleLayer#serialize', () => {
     });
 
     test('serializes added layout properties', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setLayoutProperty('text-size', 20);
 
@@ -250,6 +271,7 @@ describe('StyleLayer#serialize', () => {
     });
 
     test('serializes "visibility" of "visible"', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setLayoutProperty('visibility', 'visible');
 
@@ -257,6 +279,7 @@ describe('StyleLayer#serialize', () => {
     });
 
     test('serializes "visibility" of "none"', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setLayoutProperty('visibility', 'none');
 
@@ -264,6 +287,7 @@ describe('StyleLayer#serialize', () => {
     });
 
     test('serializes "visibility" of undefined', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setLayoutProperty('visibility', undefined);
 
@@ -273,19 +297,34 @@ describe('StyleLayer#serialize', () => {
 
 describe('StyleLayer#serialize', () => {
     function createSymbolLayer(layer) {
-        return extend({
-            id: 'symbol',
+        return {id: 'symbol',
             type: 'symbol',
             paint: {
                 'text-color': 'blue'
             },
             layout: {
                 'text-transform': 'uppercase'
-            }
-        }, layer);
+            },
+            appearances: [
+                {
+                    "condition": ["==", ["feature-state", "availability"], "partial"],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "orange"}}],
+                        "icon-size": 1.1
+                    }
+                },
+                {
+                    "condition": ["==", ["feature-state", "availability"], "none"],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                        "icon-size": 1
+                    }
+                }
+            ], ...layer};
     }
 
     test('serializes layers', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(createStyleLayer(createSymbolLayer()).serialize()).toEqual(createSymbolLayer());
     });
 
@@ -297,10 +336,12 @@ describe('StyleLayer#serialize', () => {
             }
         };
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(createStyleLayer(createSymbolLayer({paint: layerPaint})).serialize().paint).toEqual(layerPaint);
     });
 
     test('serializes added paint properties', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setPaintProperty('text-halo-color', 'orange');
 
@@ -309,6 +350,7 @@ describe('StyleLayer#serialize', () => {
     });
 
     test('serializes added layout properties', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const layer = createStyleLayer(createSymbolLayer());
         layer.setLayoutProperty('text-size', 20);
 
@@ -322,3 +364,113 @@ describe('StyleLayer#serialize', () => {
         expect(layer.paint).toBeTruthy();
     });
 });
+
+describe('StyleLayer#appearances', () => {
+    function createSymbolLayer(layer): SymbolLayerSpecification {
+        return {id: 'symbol',
+            type: 'symbol',
+            paint: {
+                'text-color': 'blue'
+            },
+            layout: {
+                'text-transform': 'uppercase'
+            },
+            appearances: [
+                {
+                    "condition": ["==", ["feature-state", "availability"], "partial"],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "orange"}}],
+                        "icon-size": 1.1
+                    }
+                },
+                {
+                    "name": "No availability",
+                    "condition": ["==", ["feature-state", "availability"], "none"],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                        "icon-size": 1
+                    }
+                },
+                {
+                    "name": "Boolean condition",
+                    "condition": true,
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                        "icon-size": 1
+                    }
+                },
+                {
+                    "name": "Feature property",
+                    "condition": ["==", ["get", "prop"], "A"],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                        "icon-size": 1
+                    }
+                },
+                {
+                    "name": "Zoom-based expression",
+                    "condition": ["==", ["zoom"], 10],
+                    "properties": {
+                        "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                        "icon-size": 1
+                    }
+                }
+            ], ...layer};
+    }
+
+    test('Correctly parses appearances', () => {
+
+        const symbolLayer = createSymbolLayer();
+
+        const styleLayer = createStyleLayer(symbolLayer);
+        const appearances = styleLayer.getAppearances();
+
+        expect(appearances.length).toEqual(symbolLayer.appearances.length);
+        appearances.forEach((a, index) => {
+            expect(a.getName(), symbolLayer.appearances[index].name);
+            const properties = a.getUnevaluatedLayoutProperties();
+            Object.keys(symbolLayer.appearances[index].properties).forEach(k => {
+                expect(properties._properties.properties[k]).toBeDefined();
+            });
+
+            expect(a.getName(), symbolLayer.appearances[index].name);
+            expect(a.getCondition().expression.serialize(), symbolLayer.appearances[index].condition);
+        });
+    });
+
+    test('Correctly checks conditions', () => {
+
+        const symbolLayer = createSymbolLayer();
+
+        const styleLayer = createStyleLayer(symbolLayer);
+        const appearances = styleLayer.getAppearances();
+
+        expect(appearances[0].isActive({})).toBe(false);
+        expect(appearances[0].isActive({featureState: {availability: 'none'}})).toBe(false);
+        expect(appearances[0].isActive({featureState: {availability: 'partial'}})).toBe(true);
+        expect(appearances[1].isActive({featureState: {availability: 'none'}})).toBe(true);
+        expect(appearances[1].isActive({featureState: {availability: 'partial'}})).toBe(false);
+        expect(appearances[2].isActive({})).toBe(true);
+        expect(appearances[3].isActive({feature: {properties: {prop: "A"}}})).toBe(true);
+        expect(appearances[3].isActive({feature: {properties: {prop: "B"}}})).toBe(false);
+        expect(appearances[4].isActive({globals: {zoom: 10}})).toBe(true);
+        expect(appearances[4].isActive({globals: {zoom: 11}})).toBe(false);
+    });
+
+    test('Properties evaluate to the correct value', () => {
+
+        const symbolLayer = createSymbolLayer();
+
+        const styleLayer = createStyleLayer(symbolLayer);
+        const appearances = styleLayer.getAppearances();
+
+        appearances.forEach((a, index) => {
+            const properties = a.getUnevaluatedLayoutProperties();
+            Object.keys(symbolLayer.appearances[index].properties).forEach(k => {
+                expect(properties.getValue(k)).toEqual(symbolLayer.appearances[index].properties[k]);
+            });
+        });
+
+    });
+});
+

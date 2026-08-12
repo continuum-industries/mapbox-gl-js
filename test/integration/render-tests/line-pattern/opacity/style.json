@@ -3,7 +3,10 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "skip-test": [
+        {"platform-tag-contains": "native-linux", "reason": "Flaky on Linux: https://github.com/mapbox/mapbox-gl-native/issues/15320"}
+      ]
     }
   },
   "sources": {
@@ -56,7 +59,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "a",
@@ -65,7 +68,7 @@
       "paint": {
         "line-width": 2,
         "line-opacity": 0.5,
-        "line-pattern": "generic_icon"
+        "line-pattern": "information"
       }
     },
     {
@@ -75,7 +78,7 @@
       "paint": {
         "line-width": 4,
         "line-opacity": 0.5,
-        "line-pattern": "generic_icon"
+        "line-pattern": "information"
       }
     },
     {
@@ -85,7 +88,7 @@
       "paint": {
         "line-width": 8,
         "line-opacity": 0.5,
-        "line-pattern": "generic_icon"
+        "line-pattern": "information"
       }
     }
   ]

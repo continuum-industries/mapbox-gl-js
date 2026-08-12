@@ -1,19 +1,22 @@
 import {Event, Evented} from '../util/evented';
 import {getArrayBuffer} from '../util/ajax';
 import browser from '../util/browser';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {isWorker} from '../util/util';
+
 import type {Callback} from '../types/callback';
 
-const status = {
+export const rtlPluginStatus = {
     unavailable: 'unavailable', // Not loaded
     deferred: 'deferred', // The plugin URL has been specified, but loading has been deferred
     loading: 'loading', // request in-flight
+    parsing: 'parsing',
+    parsed: 'parsed',
     loaded: 'loaded',
     error: 'error'
 };
 
-export type PluginStatus = typeof status[keyof typeof status];
+export type PluginStatus = typeof rtlPluginStatus[keyof typeof rtlPluginStatus];
 
 export type PluginState = {
     pluginStatus: PluginStatus;
@@ -24,17 +27,18 @@ type PluginStateSyncCallback = (state: PluginState) => void;
 let _completionCallback = null;
 
 //Variables defining the current state of the plugin
-let pluginStatus: PluginStatus = status.unavailable;
+let pluginStatus: PluginStatus = rtlPluginStatus.unavailable;
 let pluginURL: string | null | undefined = null;
 
-export const triggerPluginCompletionEvent = function(error?: Error | null) {
-    // NetworkError's are not correctly reflected by the plugin status which prevents reloading plugin
-// @ts-expect-error - TS2339 - Property 'indexOf' does not exist on type 'never'.
-    if (error && typeof error === 'string' && error.indexOf('NetworkError') > -1) {
-        pluginStatus = status.error;
+export const triggerPluginCompletionEvent = function (error?: Error | string | null) {
+    // Reset plugin status on any error so the consumer's callback can retry
+    // `setRTLTextPlugin` without hitting the "cannot be called multiple times" guard.
+    if (error) {
+        pluginStatus = rtlPluginStatus.error;
     }
 
     if (_completionCallback) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         _completionCallback(error);
     }
 };
@@ -43,13 +47,17 @@ function sendPluginStateToWorker() {
     evented.fire(new Event('pluginStateChange', {pluginStatus, pluginURL}));
 }
 
-export const evented: Evented = new Evented();
+type EventRegistry = {
+    'pluginStateChange': PluginState;
+};
 
-export const getRTLTextPluginStatus = function(): PluginStatus {
+export const evented = new Evented<EventRegistry>();
+
+export const getRTLTextPluginStatus = function (): PluginStatus {
     return pluginStatus;
 };
 
-export const registerForPluginStateChange = function(callback: PluginStateSyncCallback): PluginStateSyncCallback {
+export const registerForPluginStateChange = function (callback: PluginStateSyncCallback): PluginStateSyncCallback {
     // Do an initial sync of the state
     callback({pluginStatus, pluginURL});
     // Listen for all future state changes
@@ -57,19 +65,19 @@ export const registerForPluginStateChange = function(callback: PluginStateSyncCa
     return callback;
 };
 
-export const clearRTLTextPlugin = function() {
-    pluginStatus = status.unavailable;
+export const clearRTLTextPlugin = function () {
+    pluginStatus = rtlPluginStatus.unavailable;
     pluginURL = null;
 };
 
-export const setRTLTextPlugin = function(url: string, callback?: Callback<{
+export const setRTLTextPlugin = function (url: string, callback?: Callback<{
     err: Error | null | undefined;
 }> | null, deferred: boolean = false) {
-    if (pluginStatus === status.deferred || pluginStatus === status.loading || pluginStatus === status.loaded) {
+    if (pluginStatus === rtlPluginStatus.deferred || pluginStatus === rtlPluginStatus.loading || pluginStatus === rtlPluginStatus.loaded) {
         throw new Error('setRTLTextPlugin cannot be called multiple times.');
     }
     pluginURL = browser.resolveURL(url);
-    pluginStatus = status.deferred;
+    pluginStatus = rtlPluginStatus.deferred;
     _completionCallback = callback;
     sendPluginStateToWorker();
 
@@ -79,64 +87,68 @@ export const setRTLTextPlugin = function(url: string, callback?: Callback<{
     }
 };
 
-export const downloadRTLTextPlugin = function() {
-    if (pluginStatus !== status.deferred || !pluginURL) {
+export const downloadRTLTextPlugin = function () {
+    if (pluginStatus !== rtlPluginStatus.deferred || !pluginURL) {
         throw new Error('rtl-text-plugin cannot be downloaded unless a pluginURL is specified');
     }
-    pluginStatus = status.loading;
+    pluginStatus = rtlPluginStatus.loading;
     sendPluginStateToWorker();
     if (pluginURL) {
-        getArrayBuffer({url: pluginURL}, (error) => {
-            if (error) {
-                triggerPluginCompletionEvent(error);
-            } else {
-                pluginStatus = status.loaded;
+        getArrayBuffer({url: pluginURL})
+            .then(() => {
+                pluginStatus = rtlPluginStatus.loaded;
                 sendPluginStateToWorker();
-            }
-        });
+            })
+            .catch((err: Error) => { triggerPluginCompletionEvent(err); });
     }
 };
 
-export const plugin: {
-    applyArabicShaping: any | null | undefined;
-    processBidirectionalText: (arg1: string, arg2: Array<number>) => Array<string> | null | undefined;
-    processStyledBidirectionalText: (arg1: string, arg2: Array<number>, arg3: Array<number>) => Array<[string, Array<number>]> | null | undefined;
+export type RtlTextPlugin = {
+    applyArabicShaping?: (arg1: string) => string;
+    processBidirectionalText?: (arg1: string, arg2: Array<number>) => Array<string>;
+    processStyledBidirectionalText?: (arg1: string, arg2: Array<number>, arg3: Array<number>) => Array<[string, Array<number>]>;
     isLoaded: () => boolean;
     isLoading: () => boolean;
     setState: (state: PluginState) => void;
+    isParsing: () => boolean;
     isParsed: () => boolean;
     getPluginURL: () => string | null | undefined;
-} = {
+};
+
+export const plugin: RtlTextPlugin = {
     applyArabicShaping: null,
     processBidirectionalText: null,
     processStyledBidirectionalText: null,
     isLoaded() {
-        return pluginStatus === status.loaded || // Main Thread: loaded if the completion callback returned successfully
+        return pluginStatus === rtlPluginStatus.loaded || // Main Thread: loaded if the completion callback returned successfully
             plugin.applyArabicShaping != null; // Web-worker: loaded if the plugin functions have been compiled
     },
     isLoading() { // Main Thread Only: query the loading status, this function does not return the correct value in the worker context.
-        return pluginStatus === status.loading;
+        return pluginStatus === rtlPluginStatus.loading;
     },
     setState(state: PluginState) { // Worker thread only: this tells the worker threads that the plugin is available on the Main thread
-        assert(isWorker(), 'Cannot set the state of the rtl-text-plugin when not in the web-worker context');
+        assert(isWorker(self), 'Cannot set the state of the rtl-text-plugin when not in the web-worker context');
 
         pluginStatus = state.pluginStatus;
         pluginURL = state.pluginURL;
     },
-    isParsed(): boolean {
-        assert(isWorker(), 'rtl-text-plugin is only parsed on the worker-threads');
+    isParsing(): boolean {
+        assert(isWorker(self), 'rtl-text-plugin is only parsed on the worker-threads');
 
-        return plugin.applyArabicShaping != null &&
-            plugin.processBidirectionalText != null &&
-            plugin.processStyledBidirectionalText != null;
+        return pluginStatus === rtlPluginStatus.parsing;
+    },
+    isParsed(): boolean {
+        assert(isWorker(self), 'rtl-text-plugin is only parsed on the worker-threads');
+
+        return pluginStatus === rtlPluginStatus.parsed;
     },
     getPluginURL(): string | null | undefined {
-        assert(isWorker(), 'rtl-text-plugin url can only be queried from the worker threads');
+        assert(isWorker(self), 'rtl-text-plugin url can only be queried from the worker threads');
         return pluginURL;
     }
 };
 
-export const lazyLoadRTLTextPlugin = function() {
+export const lazyLoadRTLTextPlugin = function () {
     if (!plugin.isLoading() &&
         !plugin.isLoaded() &&
         getRTLTextPluginStatus() === 'deferred'

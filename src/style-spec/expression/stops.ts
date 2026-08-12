@@ -13,12 +13,13 @@ export function findStopLessThanOrEqualTo(stops: Array<number>, input: number): 
     let lowerIndex = 0;
     let upperIndex = lastIndex;
     let currentIndex = 0;
-    let currentValue, nextValue;
+    let currentValue: number;
+    let nextValue: number;
 
     while (lowerIndex <= upperIndex) {
         currentIndex = Math.floor((lowerIndex + upperIndex) / 2);
-        currentValue = stops[currentIndex];
-        nextValue = stops[currentIndex + 1];
+        currentValue = stops[currentIndex]!;
+        nextValue = stops[currentIndex + 1]!;
 
         if (currentValue <= input) {
             if (currentIndex === lastIndex || input < nextValue) { // Search complete

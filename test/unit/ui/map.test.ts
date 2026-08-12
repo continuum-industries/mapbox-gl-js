@@ -1,8 +1,8 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
-import {describe, test, beforeEach, afterEach, expect, waitFor, vi, createMap} from '../../util/vitest';
+import {describe, test, beforeEach, afterEach, expect, waitFor, vi, createMap, createStyleJSON} from '../../util/vitest';
 import {createStyle, createStyleSource} from './map/util';
 import {getPNGResponse} from '../../util/network';
-import {extend} from '../../../src/util/util';
 import {Map} from '../../../src/ui/map';
 import Actor from '../../../src/util/actor';
 import LngLat from '../../../src/geo/lng_lat';
@@ -12,10 +12,14 @@ import {ErrorEvent} from '../../../src/util/evented';
 import simulate, {constructTouch} from '../../util/simulate_interaction';
 import {fixedNum} from '../../util/fixed';
 import {makeFQID} from '../../../src/util/fqid';
+import {ImageId} from '../../../src/style-spec/expression/types/image_id';
+import {createConstElevationDEM, setMockElevationTerrain} from '../../util/dem_mock';
+import {getGlobalWorkerPool} from '../../../src/util/worker_pool_factory';
 
 // Mock implementation of elevation
 const createElevation = (func, exaggeration) => {
     return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         _exaggeration: exaggeration,
         isDataAvailableAtPoint(_) {
             return true;
@@ -24,13 +28,13 @@ const createElevation = (func, exaggeration) => {
             return this.getAtPoint(point, def) || 0;
         },
         getAtPoint(point, def) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             return func(point) * this.exaggeration() || def;
         },
         getForTilePoints() {
             return false;
         },
         getMinElevationBelowMSL: () => 0,
-
         exaggeration() {
             return this._exaggeration;
         }
@@ -83,7 +87,7 @@ describe('Map', () => {
         const container = window.document.createElement('div');
         Object.defineProperty(container, 'offsetWidth', {value: 512});
         Object.defineProperty(container, 'offsetHeight', {value: 512});
-        createMap({accessToken:'notAToken'});
+        createMap({accessToken: 'notAToken'});
     });
 
     describe('disables handlers', () => {
@@ -114,6 +118,7 @@ describe('Map', () => {
                 options[handlerName] = false;
                 const map = createMap(options);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(map[handlerName].isEnabled()).toBeFalsy();
             });
         });
@@ -172,6 +177,7 @@ describe('Map', () => {
             const source = map.getSource('geojson');
             const fakeTileId = new OverscaledTileID(0, 0, 0, 0, 0);
             map.style.getOwnSourceCache('geojson')._tiles[fakeTileId.key] = new Tile(fakeTileId);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             map.style.getOwnSourceCache('geojson')._tiles[fakeTileId.key].state = tileState;
 
             return {map, source};
@@ -206,12 +212,14 @@ describe('Map', () => {
             const {map, source} = await setupIsSourceLoaded('loaded');
             await new Promise(resolve => {
                 map.on("data", (e) => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     if (source._data.features[0].properties.name === 'Null Island' && e.sourceDataType === 'metadata') {
                         expect(e.isSourceLoaded).toEqual(true);
                         resolve();
                     }
                 });
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 source.setData({
                     'type': 'FeatureCollection',
                     'features': [{
@@ -230,7 +238,7 @@ describe('Map', () => {
             return new window.Response(res);
         });
         const map = createMap({
-            style: extend(createStyle(), {
+            style: Object.assign(createStyle(), {
                 sources: {
                     mapbox: {
                         type: 'vector',
@@ -267,7 +275,7 @@ describe('Map', () => {
         };
 
         const map = createMap({
-            style: extend(createStyle(), {
+            style: Object.assign(createStyle(), {
                 sources: {
                     mapbox: {
                         type: "geojson",
@@ -327,7 +335,7 @@ describe('Map', () => {
             expect(map.stop.called).toBeFalsy();
         });
 
-        test('fires movestart, move, resize, and moveend events', async () => {
+        test('fires movestart, move, resize, and moveend events', () => {
             const map = createMap(),
                 events: Array<any> = [];
 
@@ -345,10 +353,10 @@ describe('Map', () => {
         });
 
         test('listen to window resize event', () => {
-            window.addEventListener = function(type) {
+            window.addEventListener = function (type) {
                 if (type === 'resize') {
                     //restore empty function not to mess with other tests
-                    window.addEventListener = function() {};
+                    window.addEventListener = function () {};
                 }
             };
 
@@ -433,6 +441,7 @@ describe('Map', () => {
         const stub = vi.spyOn(console, 'error').mockImplementation(() => {});
         map.updateImage('image', {});
         expect(stub).toHaveBeenCalledTimes(1);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(stub.mock.calls[0][0].message).toMatch('The map has no image with that id');
     });
 
@@ -479,7 +488,7 @@ describe('Map', () => {
 
             expect(map._queryFogOpacity([0.5, 0])).toEqual(0.5963390859543484);
             expect(map._queryFogOpacity([0, 0.5])).toEqual(0.31817612773293763);
-            expect(map._queryFogOpacity([-0.5, 0])).toEqual(0.0021931905967484703);
+            expect(map._queryFogOpacity([-0.5, 0])).toEqual(0.0021931905967484643);
             expect(map._queryFogOpacity([-0.5, -0.5])).toEqual(0.4147318524978687);
 
             expect(map._queryFogOpacity([2, 0])).toEqual(1.0);
@@ -490,7 +499,7 @@ describe('Map', () => {
             map.transform.fov = 30;
 
             expect(map._queryFogOpacity([0.5, 0])).toEqual(0.5917784571074153);
-            expect(map._queryFogOpacity([0, 0.5])).toEqual(0.2567224170602245);
+            expect(map._queryFogOpacity([0, 0.5])).toEqual(0.2567224170602246);
             expect(map._queryFogOpacity([-0.5, 0])).toEqual(0);
             expect(map._queryFogOpacity([-0.5, -0.5])).toEqual(0.2727527139608868);
         });
@@ -552,18 +561,33 @@ describe('Map', () => {
     });
 
     describe('#queryRenderedFeatures', () => {
-        const defaultParams = {scope: '', availableImages: [], serializedLayers: {}};
         test('if no arguments provided', async () => {
             await new Promise(resolve => {
                 createMap({}, (err, map) => {
                     expect(err).toBeFalsy();
                     vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
 
                     const output = map.queryRenderedFeatures();
 
-                    const args = map.style.queryRenderedFeatures.mock.calls[0];
-                    expect(args[0]).toBeTruthy();
-                    expect(args[1]).toEqual(defaultParams);
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args1 = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[0]).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[1]).toEqual(undefined);
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[2]).toEqual(map.transform);
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args2 = map.style.queryRenderedFeatureset.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[0]).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[1]).toEqual(undefined);
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[2]).toEqual(map.transform);
+
                     expect(output).toEqual([]);
                     resolve();
                 });
@@ -575,13 +599,28 @@ describe('Map', () => {
                 createMap({}, (err, map) => {
                     expect(err).toBeFalsy();
                     vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
 
                     const output = map.queryRenderedFeatures(map.project(new LngLat(0, 0)));
 
-                    const args = map.style.queryRenderedFeatures.mock.calls[0];
-                    expect(args[0]).toEqual({x: 100, y: 100}); // query geometry
-                    expect(args[1]).toEqual(defaultParams); // params
-                    expect(args[2]).toEqual(map.transform); // transform
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args1 = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[0]).toEqual({x: 100, y: 100}); // query geometry
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[1]).toEqual(undefined); // options
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[2]).toEqual(map.transform); // transform
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args2 = map.style.queryRenderedFeatureset.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[0]).toEqual({x: 100, y: 100}); // query geometry
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[1]).toEqual(undefined); // options
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[2]).toEqual(map.transform); // transform
+
                     expect(output).toEqual([]);
                     resolve();
                 });
@@ -594,12 +633,79 @@ describe('Map', () => {
                 createMap({}, (err, map) => {
                     expect(err).toBeFalsy();
                     vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
 
                     const output = map.queryRenderedFeatures({filter: ['all']});
 
-                    const args = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args1 = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[0]).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[1]).toEqual({filter: ['all']});
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args2 = map.style.queryRenderedFeatureset.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[0]).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[1]).toEqual({filter: ['all']});
+
+                    expect(output).toEqual([]);
+                    resolve();
+                });
+            });
+        });
+
+        test('if there are only "featureset" in "params"', async () => {
+            const style = createStyleJSON({
+                featuresets: {featureset: {selectors: [{layer: 'layer1'}]}},
+                layers: [{type: 'background', id: 'layer1'}]
+            });
+
+            await new Promise(resolve => {
+                createMap({style}, (err, map) => {
+                    expect(err).toBeFalsy();
+                    vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
+
+                    const output = map.queryRenderedFeatures({target: {featuresetId: 'featureset'}});
+
+                    expect(map.style.queryRenderedFeatures).toHaveBeenCalledTimes(0);
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args = map.style.queryRenderedFeatureset.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     expect(args[0]).toBeTruthy();
-                    expect(args[1]).toEqual({...defaultParams, filter: ['all']});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args[1]).toEqual({target: {featuresetId: 'featureset'}});
+
+                    expect(output).toEqual([]);
+                    resolve();
+                });
+            });
+        });
+
+        test('if there are only "layers" in "params"', async () => {
+            const style = createStyleJSON({layers: [{type: 'background', id: 'layer1'}]});
+
+            await new Promise(resolve => {
+                createMap({style}, (err, map) => {
+                    expect(err).toBeFalsy();
+                    vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
+
+                    const output = map.queryRenderedFeatures({layers: ['layer1']});
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args0 = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args0[0]).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args0[1]).toEqual({layers: ['layer1']});
+
+                    expect(map.style.queryRenderedFeatureset).toHaveBeenCalledTimes(0);
+
                     expect(output).toEqual([]);
                     resolve();
                 });
@@ -611,13 +717,28 @@ describe('Map', () => {
                 createMap({}, (err, map) => {
                     expect(err).toBeFalsy();
                     vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
 
                     const output = map.queryRenderedFeatures(map.project(new LngLat(0, 0)), {filter: ['all']});
 
-                    const args = map.style.queryRenderedFeatures.mock.calls[0];
-                    expect(args[0]).toEqual({x: 100, y: 100});
-                    expect(args[1]).toEqual({...defaultParams, filter: ['all']});
-                    expect(args[2]).toEqual(map.transform);
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args1 = map.style.queryRenderedFeatures.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[0]).toEqual({x: 100, y: 100});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[1]).toEqual({filter: ['all']});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args1[2]).toEqual(map.transform);
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const args2 = map.style.queryRenderedFeatureset.mock.calls[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[0]).toEqual({x: 100, y: 100});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[1]).toEqual({filter: ['all']});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(args2[2]).toEqual(map.transform);
+
                     expect(output).toEqual([]);
                     resolve();
                 });
@@ -629,10 +750,15 @@ describe('Map', () => {
                 createMap({}, (err, map) => {
                     expect(err).toBeFalsy();
                     vi.spyOn(map.style, 'queryRenderedFeatures');
+                    vi.spyOn(map.style, 'queryRenderedFeatureset');
 
                     map.queryRenderedFeatures(map.project(new LngLat(360, 0)));
 
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     expect(map.style.queryRenderedFeatures.mock.calls[0][0]).toEqual({x: 612, y: 100});
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(map.style.queryRenderedFeatureset.mock.calls[0][0]).toEqual({x: 612, y: 100});
+
                     resolve();
                 });
             });
@@ -665,7 +791,7 @@ describe('Map', () => {
 
         test('sets and gets language property', async () => {
             const map = createMap({
-                style: extend(createStyle(), {
+                style: Object.assign(createStyle(), {
                     sources: {
                         mapbox: {
                             type: 'vector',
@@ -684,10 +810,11 @@ describe('Map', () => {
 
             await new Promise(resolve => {
                 source.on("data", (e) => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     if (e.sourceDataType === 'metadata') {
                         setTimeout(() => {
                             expect(clearSourceSpy).toHaveBeenCalledTimes(1);
-                            expect(clearSourceSpy.mock.calls[clearSourceSpy.mock.calls.length - 1][0]).toEqual('mapbox');
+                            expect(clearSourceSpy.mock.calls.at(-1)[0]).toEqual('mapbox');
                             resolve();
                         }, 0);
                     }
@@ -729,7 +856,7 @@ describe('Map', () => {
 
         test('sets and gets worldview property', async () => {
             const map = createMap({
-                style: extend(createStyle(), {
+                style: Object.assign(createStyle(), {
                     sources: {
                         mapbox: {
                             type: 'vector',
@@ -748,10 +875,11 @@ describe('Map', () => {
 
             await new Promise(resolve => {
                 source.on("data", e => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     if (e.sourceDataType === 'metadata') {
                         setTimeout(() => {
                             expect(clearSourceSpy).toHaveBeenCalledTimes(1);
-                            expect(clearSourceSpy.mock.calls[clearSourceSpy.mock.calls.length - 1][0]).toEqual('mapbox');
+                            expect(clearSourceSpy.mock.calls.at(-1)[0]).toEqual('mapbox');
                             resolve();
                         }, 0);
                     }
@@ -816,7 +944,10 @@ describe('Map', () => {
         // Wait for render to trigger
         await waitFor(map, "render");
         // Wait for idle state (final frame rendered)
+        expect(map.idle()).toBeFalsy();
         await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         if (timer) clearTimeout(timer);
         await new Promise(resolve => {
             timer = setTimeout(() => {
@@ -826,10 +957,51 @@ describe('Map', () => {
         });
     });
 
+    test('idle for invisible layers with transitions', async () => {
+        const style = createStyle();
+        style.sources.mapbox = {
+            type: 'vector',
+            minzoom: 1,
+            maxzoom: 10,
+            tiles: ['/test/util/fixtures/{z}/{x}/{y}.pbf']
+        };
+        style.layers.push({
+            id: 'layerId',
+            type: 'circle',
+            source: 'mapbox',
+            'source-layer': 'sourceLayer',
+            layout: {
+                'visibility': 'none'
+            },
+            paint: {
+                'circle-radius': 10.0
+            }
+        });
+
+        const map = createMap({style});
+
+        await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
+
+        // Modify paint property while visibility is none/visible
+        // Both should result in reporting of idle state
+        map.setLayoutProperty('layerId', 'visibility', 'visible');
+        map.setPaintProperty('layerId', 'circle-radius', 20.0);
+        await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
+
+        map.setLayoutProperty('layerId', 'visibility', 'none');
+        map.setPaintProperty('layerId', 'circle-radius', 30.0);
+        await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
+    });
+
     test('no render after idle event', async () => {
         const style = createStyle();
         const map = createMap({style});
+        expect(map.idle()).toBeFalsy();
         await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
         map.on('render', expect.unreachable);
         setTimeout(() => {}, 100);
     });
@@ -839,14 +1011,16 @@ describe('Map', () => {
         const map = createMap({style, fadeDuration: 0});
         await waitFor(map, "idle");
         map.zoomTo(0.5, {duration: 100});
+        expect(map.idle()).toBeFalsy();
         expect(map.isMoving()).toBeTruthy();
         await waitFor(map, "idle");
+        expect(map.idle()).toBeTruthy();
         expect(!map.isMoving()).toBeTruthy();
     });
 
     test('#removeLayer restores Map#loaded() to true', async () => {
         const map = createMap({
-            style: extend(createStyle(), {
+            style: Object.assign(createStyle(), {
                 sources: {
                     mapbox: {
                         type: 'vector',
@@ -876,6 +1050,7 @@ describe('Map', () => {
         const map = createMap({interactive: true});
         map.flyTo({center: [200, 0], duration: 100});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.mousedown(map.getCanvasContainer());
         expect(map.isEasing()).toEqual(false);
 
@@ -886,6 +1061,7 @@ describe('Map', () => {
         const map = createMap({interactive: false});
         map.flyTo({center: [200, 0], duration: 100});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.mousedown(map.getCanvasContainer());
         expect(map.isEasing()).toEqual(true);
 
@@ -896,6 +1072,7 @@ describe('Map', () => {
         const map = createMap({interactive: true});
         map.flyTo({center: [200, 0], duration: 100});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.touchstart(map.getCanvasContainer(), {touches: [constructTouch(map.getCanvasContainer(), {target: map.getCanvas(), clientX: 0, clientY: 0})]});
         expect(map.isEasing()).toEqual(false);
 
@@ -906,6 +1083,7 @@ describe('Map', () => {
         const map = createMap({interactive: false});
         map.flyTo({center: [200, 0], duration: 100});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.touchstart(map.getCanvasContainer());
         expect(map.isEasing()).toEqual(true);
 
@@ -943,16 +1121,18 @@ describe('Map', () => {
 
         afterEach(() => {
             const [index] = Object.entries(window.document.styleSheets[0].cssRules).find(([, rule]: [any, any]) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 return rule.selectorText === '.mapboxgl-canary';
             });
-            try { window.document.body.removeChild(container); } catch (err: any) { /* noop */ }
-            try { window.document.styleSheets[0].deleteRule(index); } catch (err: any) { /* noop */ }
+            try { window.document.body.removeChild(container); } catch (err) { /* noop */ }
+            try { window.document.styleSheets[0].deleteRule(index); } catch (err) { /* noop */ }
         });
 
         test('should not warn when CSS is present', async () => {
             const stub = vi.spyOn(console, 'warn');
             await new Promise(resolve => {
                 setTimeout(() => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                     new Map({container, testMode: true});
                     resolve();
                 }, 0);
@@ -985,9 +1165,9 @@ describe('Map', () => {
     test('map fires `styleimagemissing` for missing icons', async () => {
         const map = createMap();
 
-        const id = "missing-image";
+        const id = ImageId.from('missing-image');
 
-        let called: any;
+        let called: string;
 
         await new Promise(resolve => {
             map.on("styleimagemissing", e => {
@@ -997,7 +1177,7 @@ describe('Map', () => {
             });
             expect(map.hasImage(id)).toBeFalsy();
             map.style.imageManager.getImages([id], '', () => {
-                expect(called).toEqual(id);
+                expect(called).toEqual(id.name);
                 expect(map.hasImage(id)).toBeTruthy();
             });
         });
@@ -1095,6 +1275,7 @@ describe('Map', () => {
 
         beforeEach(() => {
             map = createMap();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             version = map.version;
         });
 
@@ -1104,9 +1285,12 @@ describe('Map', () => {
         });
         test('cannot be set', () => {
             expect(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 map.version = "2.0.0-beta.9";
             }).toThrowError(TypeError);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(map.version).not.toBe("2.0.0-beta.9");
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(map.version).toBe(version);
         });
     });
@@ -1134,6 +1318,7 @@ describe('Map', () => {
 
         test('elevation with exaggeration', () => {
             const map = createMap();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             map.transform.elevation = createElevation((point) => point.x + point.y, 0.1);
 
             let elevation = map.queryTerrainElevation([0, 0]);
@@ -1182,6 +1367,8 @@ describe('Map', () => {
             });
 
             await waitFor(map, "load");
+            // Wait for the deferred terrain renderer to be created (required for correct globe matrix calculation)
+            await vi.waitUntil(() => !!map.painter._terrain, {timeout: 3000});
             // On the Globe
             expect(map.isPointOnSurface([45, 45])).toEqual(true);
             expect(map.isPointOnSurface([135, 45])).toEqual(true);
@@ -1213,6 +1400,30 @@ describe('Map', () => {
             expect(map.isPointOnSurface([100, 85])).toEqual(false);
         });
     });
+
+    test('#getGlyphsUrl/setGlyphsUrl', async () => {
+        const map = createMap();
+
+        await waitFor(map, 'style.load');
+        expect(map.getGlyphsUrl()).toEqual(undefined);
+
+        map.setGlyphsUrl('https://localhost/fonts/v1/{fontstack}/{range}.pbf');
+        expect(map.getGlyphsUrl()).toEqual('https://localhost/fonts/v1/{fontstack}/{range}.pbf');
+    });
+
+    test('#remove cleans up all workers on maps with terrain or vector icons', async () => {
+        const pool = getGlobalWorkerPool();
+        const numActive = pool.numActive();
+        const map = createMap();
+        const TILE_SIZE = 128;
+        const zeroDem = createConstElevationDEM(0, TILE_SIZE);
+        await waitFor(map, 'style.load');
+        setMockElevationTerrain(map, zeroDem, TILE_SIZE);
+        await waitFor(map, 'render');
+        expect(pool.numActive()).toEqual(numActive + 1);
+        map.remove();
+        expect(pool.numActive()).toEqual(numActive);
+    });
 });
 
 test('Disallow usage of FQID separator in the public APIs', async () => {
@@ -1225,54 +1436,108 @@ test('Disallow usage of FQID separator in the public APIs', async () => {
     map.getLayer(null);
     map.getSource(undefined);
 
-    map.getLayer(makeFQID('id', 'scope'));
-    map.addLayer({id: makeFQID('id', 'scope')});
-    map.moveLayer(makeFQID('id', 'scope'));
-    map.removeLayer(makeFQID('id', 'scope'));
+    const fqid = makeFQID('id', 'scope');
 
-    map.getLayoutProperty(makeFQID('id', 'scope'));
-    map.setLayoutProperty(makeFQID('id', 'scope'));
+    map.getLayer(fqid);
+    map.addLayer({id: fqid});
+    map.moveLayer(fqid);
+    map.removeLayer(fqid);
 
-    map.getPaintProperty(makeFQID('id', 'scope'));
-    map.setPaintProperty(makeFQID('id', 'scope'));
+    map.getLayoutProperty(fqid);
+    map.setLayoutProperty(fqid);
 
-    map.setLayerZoomRange(makeFQID('id', 'scope'));
+    map.getPaintProperty(fqid);
+    map.setPaintProperty(fqid);
 
-    map.getFilter(makeFQID('id', 'scope'));
-    map.setFilter(makeFQID('id', 'scope'));
+    map.setLayerZoomRange(fqid);
 
-    map.getSource(makeFQID('id', 'scope'));
-    map.addSource(makeFQID('id', 'scope'));
-    map.removeSource(makeFQID('id', 'scope'));
-    map.isSourceLoaded(makeFQID('id', 'scope'));
+    map.getFilter(fqid);
+    map.setFilter(fqid);
 
-    map.getFeatureState({source: makeFQID('id', 'scope')});
-    map.setFeatureState({source: makeFQID('id', 'scope')});
-    map.removeFeatureState({source: makeFQID('id', 'scope')});
+    map.getSource(fqid);
+    map.addSource(fqid);
+    map.removeSource(fqid);
+    map.isSourceLoaded(fqid);
 
-    map.querySourceFeatures(makeFQID('id', 'scope'));
-    map.queryRenderedFeatures([0, 0], {layers: [makeFQID('id', 'scope')]});
+    map.getFeatureState({source: fqid});
+    map.setFeatureState({source: fqid});
+    map.removeFeatureState({source: fqid});
 
-    map.on('click', makeFQID('id', 'scope'), () => {});
-    map.once('click', makeFQID('id', 'scope'), () => {});
-    map.off('click', makeFQID('id', 'scope'));
+    map.querySourceFeatures(fqid);
+    map.queryRenderedFeatures([0, 0], {layers: [fqid]});
+    map.queryRenderedFeatures([0, 0], {target: {layerId: fqid}});
+    map.queryRenderedFeatures([0, 0], {target: {featuresetId: fqid, importId: fqid}});
 
-    const callCount = 24;
+    map.on('click', fqid, () => {});
+    map.once('click', fqid, () => {});
+    map.off('click', fqid);
+
+    const callCount = 26;
     expect(spy.mock.calls.length).toEqual(callCount);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const event0 = spy.mock.calls[0][0];
 
     expect(event0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(event0.error.message).toMatch(/can't be empty/);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const event1 = spy.mock.calls[1][0];
 
     expect(event1).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(event1.error.message).toMatch(/can't be empty/);
 
     for (let i = 2; i <= callCount - 1; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const event = spy.mock.calls[i][0];
         expect(event).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(event.error.message).toMatch(/can't contain special symbols/);
     }
+});
+
+describe('Map#setLayerProperty', () => {
+    test('fires the appearances telemetry event', async () => {
+        const map = createMap({
+            style: {
+                version: 8,
+                sources: {},
+                layers: [{id: 'bg', type: 'background'}]
+            }
+        });
+        await waitFor(map, 'style.load');
+        const telemetrySpy = vi.spyOn(map, '_postAddingAppearancesToStyleEvent').mockImplementation(() => {});
+        map.setLayerProperty('bg', 'appearances', []);
+        expect(telemetrySpy).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('Map#getLayerProperty', () => {
+    test('delegates to the style and returns the value', async () => {
+        const map = createMap({
+            style: {
+                version: 8,
+                sources: {},
+                layers: [{id: 'bg', type: 'background', minzoom: 3, maxzoom: 12}]
+            }
+        });
+        await waitFor(map, 'style.load');
+        expect(map.getLayerProperty('bg', 'minzoom')).toBe(3);
+        expect(map.getLayerProperty('bg', 'maxzoom')).toBe(12);
+    });
+
+    test('returns undefined for unknown layer', async () => {
+        const map = createMap();
+        await waitFor(map, 'style.load');
+        expect(map.getLayerProperty('nonexistent', 'minzoom')).toBeUndefined();
+    });
+
+    test('returns null for FQID-shaped ids', async () => {
+        const map = createMap();
+        map.on('error', () => {});
+        await waitFor(map, 'style.load');
+        expect(map.getLayerProperty(makeFQID('id', 'scope'), 'minzoom')).toBeNull();
+    });
 });

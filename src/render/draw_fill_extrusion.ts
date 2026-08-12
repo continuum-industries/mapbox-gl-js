@@ -3,10 +3,9 @@ import StencilMode from '../gl/stencil_mode';
 import ColorMode from '../gl/color_mode';
 import CullFaceMode from '../gl/cull_face_mode';
 import EXTENT from '../style-spec/data/extent';
+import ResolvedImage from '../style-spec/expression/types/resolved_image';
 import FillExtrusionBucket, {
-    GroundEffect,
     fillExtrusionHeightLift,
-    PartData,
     ELEVATION_SCALE,
     ELEVATION_OFFSET,
     HIDDEN_BY_REPLACEMENT,
@@ -15,34 +14,47 @@ import {
     fillExtrusionUniformValues,
     fillExtrusionDepthUniformValues,
     fillExtrusionPatternUniformValues,
-    fillExtrusionGroundEffectUniformValues
 } from './program/fill_extrusion_program';
 import Point from '@mapbox/point-geometry';
-import {OverscaledTileID, neighborCoord} from '../source/tile_id';
-import assert from 'assert';
-import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
+import {neighborCoord} from '../source/tile_id';
+import assert from '../style-spec/util/assert';
+import {mercatorXfromLng, mercatorYfromLat, getMetersPerPixelAtLatitude} from '../geo/mercator_coordinate';
 import {globeToMercatorTransition} from '../geo/projection/globe_util';
 import Color from '../style-spec/util/color';
-import Context from '../gl/context';
-import {Terrain} from '../terrain/terrain';
-import Tile from '../source/tile';
-import {calculateGroundShadowFactor} from '../../3d-style/render/shadow_renderer';
+import {lerp} from '../style-spec/util/lerp';
+import {calculateGroundShadowFactor} from '../../3d-style/render/shadow_utils';
 import {RGBAImage} from '../util/image';
 import Texture from './texture';
-
-import type Painter from './painter';
-import type SourceCache from '../source/source_cache';
-import type FillExtrusionStyleLayer from '../style/style_layer/fill_extrusion_style_layer';
-import {Frustum} from '../util/primitives';
-import {mat4} from "gl-matrix";
 import {getCutoffParams} from './cutoff';
+import {Standard, prepareStandard} from '../../modules/standard_main';
+import {Frustum} from '../util/primitives';
 import {ZoomDependentExpression} from '../style-spec/expression/index';
+import browser from '../util/browser';
+import {PerformanceUtils} from '../util/performance';
+
+import type {vec3} from 'gl-matrix';
+import type {UniformValues} from './uniform_binding';
+import type {DynamicDefinesType} from './program/program_uniforms';
+import type FillExtrusionStyleLayer from '../style/style_layer/fill_extrusion_style_layer';
+import type SourceCache from '../source/source_cache';
+import type Painter from './painter';
+import type Tile from '../source/tile';
+import type {ITerrainRenderer} from './terrain_plugin';
+import type Context from '../gl/context';
+import type VertexBuffer from '../gl/vertex_buffer';
+import type {OverscaledTileID} from '../source/tile_id';
+import type {GroundEffect, PartData} from '../data/bucket/fill_extrusion_bucket';
+import type {
+    FillExtrusionDepthUniformsType,
+    FillExtrusionPatternUniformsType,
+} from './program/fill_extrusion_program';
+import type {ProjectionSpecification} from '../style-spec/types';
+import type {Bucket} from '../data/bucket';
 
 export default draw;
 
-type GroundEffectSubpassType = 'clear' | 'sdf' | 'color';
-
 function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLayer, coords: Array<OverscaledTileID>) {
+    const perfStartTime = PerformanceUtils.now();
     const opacity = layer.paint.get('fill-extrusion-opacity');
     const context = painter.context;
     const gl = context.gl;
@@ -51,6 +63,8 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
     if (opacity === 0) {
         return;
     }
+
+    const mrt = painter.emissiveMode === 'mrt-fallback';
 
     // Update replacement used with model layer conflation
     const conflateLayer = painter.conflationActive && painter.style.isLayerClipped(layer, source.getSource());
@@ -62,7 +76,7 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
     if (terrain || conflateLayer) {
         for (const coord of coords) {
             const tile = source.getTile(coord);
-            const bucket: FillExtrusionBucket | null | undefined = (tile.getBucket(layer) as any);
+            const bucket = tile.getBucket(layer) as FillExtrusionBucket;
             if (!bucket) {
                 continue;
             }
@@ -85,12 +99,11 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
             }
         }
         const depthMode = shadowRenderer.getShadowPassDepthMode();
-        const colorMode = shadowRenderer.getShadowPassColorMode();
 
-        drawExtrusionTiles(painter, source, layer, coords, depthMode, StencilMode.disabled, colorMode, conflateLayer);
+        drawExtrusionTiles(painter, source, layer, coords, depthMode, StencilMode.disabled, ColorMode.disabled, conflateLayer);
     } else if (painter.renderPass === 'translucent') {
 
-        const noPattern = !layer.paint.get('fill-extrusion-pattern').constantOr((1 as any));
+        const noPattern = !layer.paint.get('fill-extrusion-pattern').constantOr(1);
 
         const color = layer.paint.get('fill-extrusion-color').constantOr(Color.white);
 
@@ -126,7 +139,12 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
         const noGlobe = painter.transform.projection.name !== 'globe';
         const immediateMode = noTerrain && noGlobe;
 
-        if (lighting3DMode && noPattern && (immediateMode || rtt)) {
+        const useGroundEffects = lighting3DMode && noPattern && (immediateMode || rtt);
+        if (useGroundEffects && !Standard.drawGroundEffect) {
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            prepareStandard();
+        }
+        if (useGroundEffects && Standard.drawGroundEffect) {
             assert(immediateMode ? !rtt : !!rtt);
 
             const opacity = layer.paint.get('fill-extrusion-opacity');
@@ -134,13 +152,19 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
             const aoRadius = layer.paint.get('fill-extrusion-ambient-occlusion-ground-radius');
             const floodLightIntensity = layer.paint.get('fill-extrusion-flood-light-intensity');
 
-            const floodLightColor = layer.paint.get('fill-extrusion-flood-light-color').toRenderColor(layer.lut).toArray01().slice(0, 3);
+            const floodLightIgnoreLut = layer.paint.get('fill-extrusion-flood-light-color-use-theme').constantOr("default") === 'none';
+
+            const floodLightColor = layer.paint.get('fill-extrusion-flood-light-color').toNonPremultipliedRenderColor(floodLightIgnoreLut ? null : layer.lut).toArray01().slice(0, 3) as [number, number, number];
 
             const aoEnabled = aoIntensity > 0 && aoRadius > 0;
 
             const floodLightEnabled = floodLightIntensity > 0;
 
-            const lerp = (a: number, b: number, t: number) => { return (1 - t) * a + t * b; };
+            const groundEffectProps = new GroundEffectProperties();
+            groundEffectProps.translate = layer.paint.get('fill-extrusion-translate');
+            groundEffectProps.translateAnchor = layer.paint.get('fill-extrusion-translate-anchor');
+            groundEffectProps.edgeRadius = layer.layout.get('fill-extrusion-edge-radius');
+            groundEffectProps.cutoffFadeRange = layer.paint.get('fill-extrusion-cutoff-fade-range');
 
             const passImmediate = (aoPass: boolean) => {
                 const depthMode = painter.depthModeForSublayer(1, DepthMode.ReadOnly, gl.LEQUAL, true);
@@ -151,11 +175,10 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
 
                 if (!showOverdraw) {
                     // Mark the alpha channel with the DF values (that determine the intensity of the effects). No color is written.
-                    // @ts-expect-error - TS2345 - Argument of type '{ func: 519; mask: 255; }' is not assignable to parameter of type 'StencilTest'.
                     const stencilSdfPass = new StencilMode({func: gl.ALWAYS, mask: 0xFF}, 0xFF, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
                     const colorSdfPass = new ColorMode([gl.ONE, gl.ONE, gl.ONE, gl.ONE], Color.transparent, [false, false, false, true], gl.MIN);
 
-                    drawGroundEffect(painter, source, layer, coords, depthMode, stencilSdfPass, colorSdfPass, CullFaceMode.disabled, aoPass, 'sdf', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, false);
+                    Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, stencilSdfPass, colorSdfPass, CullFaceMode.disabled, aoPass, 'sdf', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, false);
                 }
 
                 {
@@ -163,14 +186,26 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
                     const stencilColorPass = showOverdraw ? StencilMode.disabled : new StencilMode({func: gl.EQUAL, mask: 0xFF}, 0xFF, 0xFF, gl.KEEP, gl.DECR, gl.DECR);
                     const colorColorPass = showOverdraw ? painter.colorModeForRenderPass() : new ColorMode([gl.ONE_MINUS_DST_ALPHA, gl.DST_ALPHA, gl.ONE, gl.ONE], Color.transparent, [true, true, true, true]);
 
-                    drawGroundEffect(painter, source, layer, coords, depthMode, stencilColorPass, colorColorPass, CullFaceMode.disabled, aoPass, 'color', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, false);
+                    Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, stencilColorPass, colorColorPass, CullFaceMode.disabled, aoPass, 'color', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, false);
                 }
             };
 
             if (rtt) {
-                const passDraped = (aoPass: boolean, renderNeighbors: boolean, framebufferCopyTexture?: Texture) => {
-                    assert(framebufferCopyTexture);
+                const createFramebufferCopyTexture = () => {
+                    const width = terrain.drapeBufferSize[0];
+                    const height = terrain.drapeBufferSize[1];
+                    let framebufferCopyTexture = terrain.framebufferCopyTexture;
+                    if (!framebufferCopyTexture || (framebufferCopyTexture && (framebufferCopyTexture.size[0] !== width || framebufferCopyTexture.size[1] !== height))) {
+                        if (framebufferCopyTexture) framebufferCopyTexture.destroy();
+                        framebufferCopyTexture = terrain.framebufferCopyTexture = new Texture(context,
+                            new RGBAImage({width, height}), gl.RGBA8);
+                    }
+                    framebufferCopyTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+                    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+                    return framebufferCopyTexture;
+                };
 
+                const passDraped = (aoPass: boolean, renderNeighbors: boolean, framebufferCopyTexture?: Texture) => {
                     const depthMode = painter.depthModeForSublayer(1, DepthMode.ReadOnly, gl.LEQUAL, false);
                     const t = aoPass ? layer.paint.get('fill-extrusion-ambient-occlusion-ground-attenuation') : layer.paint.get('fill-extrusion-flood-light-ground-attenuation');
 
@@ -180,17 +215,22 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
                         // Clear framebuffer's alpha channel to 1 since we're using gl.MIN blend operation in the subsequent steps.
                         const colorMode = new ColorMode([gl.ONE, gl.ONE, gl.ONE, gl.ONE], Color.transparent, [false, false, false, true]);
 
-                        drawGroundEffect(painter, source, layer, coords, depthMode, StencilMode.disabled, colorMode, CullFaceMode.disabled, aoPass, 'clear', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
+                        Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, StencilMode.disabled, colorMode, CullFaceMode.disabled, aoPass, 'clear', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
                     }
 
                     {
                         // Mark the alpha channel with the DF values (that determine the intensity of the effects). No color is written.
-                        // @ts-expect-error - TS2345 - Argument of type '{ func: 519; mask: 255; }' is not assignable to parameter of type 'StencilTest'.
                         const stencilSdfPass = new StencilMode({func: gl.ALWAYS, mask: 0xFF}, 0xFF, 0xFF, gl.KEEP, gl.KEEP, gl.REPLACE);
                         const colorSdfPass = new ColorMode([gl.ONE, gl.ONE, gl.ONE, gl.ONE], Color.transparent, [false, false, false, true], gl.MIN);
 
-                        drawGroundEffect(painter, source, layer, coords, depthMode, stencilSdfPass, colorSdfPass, CullFaceMode.disabled, aoPass, 'sdf', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
+                        Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, stencilSdfPass, colorSdfPass, CullFaceMode.disabled, aoPass, 'sdf', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
                     }
+
+                    if (mrt && !aoPass) {
+                        // Save the alpha channel with the DF values, so it can be used later in the 'emissive' pass.
+                        framebufferCopyTexture = createFramebufferCopyTexture();
+                    }
+                    assert(framebufferCopyTexture);
 
                     {
                         // Draw the effects. The inverse of the alpha channel is used so that in the next pass we can correctly incorporate it with the emissive strength values that are also encoded in the alpha channel (now present in the texture).
@@ -198,10 +238,10 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
                         const stencilColorPass = new StencilMode({func: gl.EQUAL, mask: 0xFF}, 0xFF, 0xFF, gl.KEEP, gl.DECR, gl.DECR);
                         const colorColorPass = new ColorMode([srcColorFactor, gl.DST_ALPHA, gl.ONE_MINUS_DST_ALPHA, gl.ZERO], Color.transparent, [true, true, true, true]);
 
-                        drawGroundEffect(painter, source, layer, coords, depthMode, stencilColorPass, colorColorPass, CullFaceMode.disabled, aoPass, 'color', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
+                        Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, stencilColorPass, colorColorPass, CullFaceMode.disabled, aoPass, 'color', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors);
                     }
 
-                    {
+                    if (!mrt || aoPass) {
                         // Re-write to the alpha channel of the framebuffer based on existing values (of ground effects) and emissive values (saved to texture in earlier step).
                         // Note that in draped mode an alpha value of 1 indicates fully emissiveness for a fragment and a value of 0 means fully lit (3d lighting).
 
@@ -210,26 +250,29 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
                         const blendEquation = aoPass ? gl.FUNC_ADD : gl.MAX;
                         const colorMode = new ColorMode([gl.ONE, gl.ONE, gl.ONE, dstAlphaFactor], Color.transparent, [false, false, false, true], blendEquation);
 
-                        drawGroundEffect(painter, source, layer, coords, depthMode, StencilMode.disabled, colorMode, CullFaceMode.disabled, aoPass, 'clear', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors, framebufferCopyTexture);
+                        Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, StencilMode.disabled, colorMode, CullFaceMode.disabled, aoPass, 'clear', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors, framebufferCopyTexture);
+                    } else {
+                        // Write emissive values to the secondary render target. This is a fallback for dual-source blending not being available.
+                        // The emissive strength values are read from the 'framebufferCopyTexture' and are blended with the existing emissive values using gl.MAX.
+                        // This pass is required because it's not possible to render to multiple render targets with different blend modes.
+                        gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]);
+                        const stencilColorPass = new StencilMode({func: gl.EQUAL, mask: 0xFF}, 0xFE, 0xFF, gl.KEEP, gl.DECR, gl.DECR);
+                        const colorColorPass = new ColorMode([gl.ONE, gl.ONE, gl.ONE, gl.ONE], Color.transparent, [true, false, false, false], gl.MAX);
+
+                        Standard.drawGroundEffect(groundEffectProps, painter, source, layer, coords, depthMode, stencilColorPass, colorColorPass, CullFaceMode.disabled, aoPass, 'emissive', opacity, aoIntensity, aoRadius, floodLightIntensity, floodLightColor, attenuation, conflateLayer, renderNeighbors, framebufferCopyTexture);
+                        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
                     }
                 };
 
                 if (aoEnabled || floodLightEnabled) {
                     painter.prepareDrawTile();
-                    let framebufferCopyTexture;
-                    // Save the alpha channel of the framebuffer used by emissive layers.
-                    if (terrain) { // Condition is anywyas guaranteed by rtt variable. Used only to suppress flow errors.
-                        const width = terrain.drapeBufferSize[0];
-                        const height = terrain.drapeBufferSize[1];
-                        framebufferCopyTexture = terrain.framebufferCopyTexture;
-                        if (!framebufferCopyTexture || (framebufferCopyTexture && (framebufferCopyTexture.size[0] !== width || framebufferCopyTexture.size[1] !== height))) {
-                            if (framebufferCopyTexture) framebufferCopyTexture.destroy();
-                            framebufferCopyTexture = terrain.framebufferCopyTexture = new Texture(context,
-                                new RGBAImage({width, height}), gl.RGBA);
-                        }
-                        framebufferCopyTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
-                        gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, width, height, 0);
+
+                    let framebufferCopyTexture: Texture | undefined;
+                    if (!mrt || aoEnabled) {
+                        // Save the alpha channel of the framebuffer used by emissive layers.
+                        framebufferCopyTexture = createFramebufferCopyTexture();
                     }
+
                     // Render ground AO.
                     if (aoEnabled) {
                         passDraped(true, false, framebufferCopyTexture);
@@ -248,9 +291,16 @@ function draw(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLa
                 if (floodLightEnabled) {
                     passImmediate(false);
                 }
+
+                if (aoEnabled || floodLightEnabled) {
+                    // Reset clipping masks so follow-up rendering code can reliably use the stencil buffer.
+                    painter.resetStencilClippingMasks();
+                }
             }
         }
     }
+
+    PerformanceUtils.measureWithDetails(PerformanceUtils.GROUP_RENDERING, `FillExtrusion.draw(${painter.renderPass})`, "FillExtrusion", perfStartTime);
 }
 
 function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLayer, coords: Array<OverscaledTileID>, depthMode: DepthMode, stencilMode: StencilMode, colorMode: ColorMode, replacementActive: boolean) {
@@ -259,12 +309,15 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
     const gl = context.gl;
     const tr = painter.transform;
     const patternProperty = layer.paint.get('fill-extrusion-pattern');
+    const patternTransition = layer.paint.get('fill-extrusion-pattern-cross-fade');
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const constantPattern = patternProperty.constantOr(null);
 
-    const image = patternProperty.constantOr((1 as any));
+    const image = patternProperty.constantOr(1);
     const opacity = layer.paint.get('fill-extrusion-opacity');
     const lighting3DMode = painter.style.enable3dLights();
     const aoRadius = (lighting3DMode && !image) ? layer.paint.get('fill-extrusion-ambient-occlusion-wall-radius') : layer.paint.get('fill-extrusion-ambient-occlusion-radius');
-    const ao = [layer.paint.get('fill-extrusion-ambient-occlusion-intensity'), aoRadius];
+    const ao: [number, number] = [layer.paint.get('fill-extrusion-ambient-occlusion-intensity'), aoRadius];
     const edgeRadius = layer.layout.get('fill-extrusion-edge-radius');
 
     const zeroRoofRadius = edgeRadius > 0 && !layer.paint.get('fill-extrusion-rounded-roof');
@@ -272,15 +325,26 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
     const heightLift = tr.projection.name === 'globe' ? fillExtrusionHeightLift() : 0;
     const isGlobeProjection = tr.projection.name === 'globe';
     const globeToMercator = isGlobeProjection ? globeToMercatorTransition(tr.zoom) : 0.0;
-    const mercatorCenter = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
+    const mercatorCenter: [number, number] = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
 
-    const floodLightColor = (layer.paint.get('fill-extrusion-flood-light-color').toRenderColor(layer.lut).toArray01().slice(0, 3) as any);
+    const floodLightColorUseTheme = layer.paint.get('fill-extrusion-flood-light-color-use-theme').constantOr('default') === 'none';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+    const floodLightColor = (layer.paint.get('fill-extrusion-flood-light-color').toNonPremultipliedRenderColor(floodLightColorUseTheme ? null : layer.lut).toArray01().slice(0, 3) as any);
     const floodLightIntensity = layer.paint.get('fill-extrusion-flood-light-intensity');
     const verticalScale = layer.paint.get('fill-extrusion-vertical-scale');
+    const wallMode = layer.paint.get('fill-extrusion-line-width').constantOr(1.0) !== 0.0;
+    const heightAlignment = layer.paint.get('fill-extrusion-height-alignment');
+    const baseAlignment = layer.paint.get('fill-extrusion-base-alignment');
 
     const cutoffParams = getCutoffParams(painter, layer.paint.get('fill-extrusion-cutoff-fade-range'));
-    const emissiveStrength = layer.paint.get('fill-extrusion-emissive-strength');
-    const baseDefines = ([] as any);
+    const frontCutoffArray = layer.paint.get('fill-extrusion-front-cutoff');
+    const frontCutoffParams = computeFrontCutoffParams(tr.pitch, frontCutoffArray, !!painter.terrain);
+    const frontCutoffEnabled = frontCutoffParams[2] < 1.0;
+    if (frontCutoffEnabled) {
+        painter.maxFrontCutoffRawStart = Math.max(painter.maxFrontCutoffRawStart, frontCutoffArray[0]);
+    }
+
+    const baseDefines: DynamicDefinesType[] = [];
     if (isGlobeProjection) {
         baseDefines.push('PROJECTION_GLOBE_VIEW');
     }
@@ -301,12 +365,19 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
     if (cutoffParams.shouldRenderCutoff) {
         baseDefines.push('RENDER_CUTOFF');
     }
+    if (frontCutoffEnabled) {
+        baseDefines.push('RENDER_FRONT_CUTOFF');
+    }
+    if (wallMode) {
+        baseDefines.push('RENDER_WALL_MODE');
+    }
 
-    let singleCascadeDefines;
+    let singleCascadeDefines: DynamicDefinesType[] | undefined;
 
     const isShadowPass = painter.renderPass === 'shadow';
     const shadowRenderer = painter.shadowRenderer;
     const drawDepth = isShadowPass && !!shadowRenderer;
+    const cullFaceMode = isShadowPass ? CullFaceMode.disabled : CullFaceMode.backCCW;
     if (painter.shadowRenderer) painter.shadowRenderer.useNormalOffset = true;
 
     let groundShadowFactor: [number, number, number] = [0, 0, 0];
@@ -317,6 +388,12 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
             groundShadowFactor = calculateGroundShadowFactor(painter.style, directionalLight, ambientLight);
         }
 
+        if (!isShadowPass) {
+            baseDefines.push('RENDER_SHADOWS');
+            if (shadowRenderer.useNormalOffset) {
+                baseDefines.push('NORMAL_OFFSET');
+            }
+        }
         singleCascadeDefines = baseDefines.concat(['SHADOWS_SINGLE_CASCADE']);
     }
 
@@ -324,7 +401,7 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
     const stats = layer.getLayerRenderingStats();
     for (const coord of coords) {
         const tile = source.getTile(coord);
-        const bucket: FillExtrusionBucket | null | undefined = (tile.getBucket(layer) as any);
+        const bucket = tile.getBucket(layer) as FillExtrusionBucket;
         if (!bucket || bucket.projection.name !== tr.projection.name) continue;
 
         let singleCascade = false;
@@ -334,6 +411,26 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
 
         const affectedByFog = painter.isTileAffectedByFog(coord);
         const programConfiguration = bucket.programConfigurations.get(layer.id);
+
+        let transitionableConstantPattern = false;
+        if (constantPattern && tile.imageAtlas) {
+            const atlas = tile.imageAtlas;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            const pattern = ResolvedImage.from(constantPattern);
+            const primaryPatternImage = pattern.getPrimary().scaleSelf(browser.devicePixelRatio).toString();
+            const secondaryPatternImageVariant = pattern.getSecondary();
+            const primaryPosTo = atlas.patternPositions.get(primaryPatternImage);
+            const secondaryPosTo = secondaryPatternImageVariant ? atlas.patternPositions.get(secondaryPatternImageVariant.scaleSelf(browser.devicePixelRatio).toString()) : null;
+
+            transitionableConstantPattern = !!primaryPosTo && !!secondaryPosTo;
+
+            if (primaryPosTo) programConfiguration.setConstantPatternPositions(primaryPosTo, secondaryPosTo);
+        }
+
+        if (patternTransition > 0 && (transitionableConstantPattern || !!programConfiguration.getPatternTransitionVertexBuffer('fill-extrusion-pattern'))) {
+            baseDefines.push('FILL_EXTRUSION_PATTERN_TRANSITION');
+        }
+
         const program = painter.getOrCreateProgram(programName,
             {config: programConfiguration, defines: singleCascade ? singleCascadeDefines : baseDefines, overrideFog: affectedByFog});
 
@@ -343,12 +440,12 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
         }
 
         if (!bucket.centroidVertexBuffer) {
-            const attrIndex: number | undefined = program.attributes['a_centroid_pos'];
-            if (attrIndex !== undefined) gl.vertexAttrib2f(attrIndex, 0, 0);
+            const attrIndex = program.getAttributeLocation(gl, 'a_centroid_pos');
+            if (attrIndex !== -1) gl.vertexAttribI4ui(attrIndex, 0, 0, 0, 0);
         }
 
         if (!isShadowPass && shadowRenderer) {
-            shadowRenderer.setupShadows(tile.tileID.toUnwrapped(), program, 'vector-tile', tile.tileID.overscaledZ);
+            shadowRenderer.setupShadows(tile.tileID.toUnwrapped(), program, 'vector-tile');
         }
 
         if (image) {
@@ -359,22 +456,16 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
             programConfiguration.updatePaintBuffers();
         }
 
-        const constantPattern = patternProperty.constantOr(null);
-        if (constantPattern && tile.imageAtlas) {
-            const atlas = tile.imageAtlas;
-            const posTo = atlas.patternPositions[constantPattern.toString()];
-            if (posTo) programConfiguration.setConstantPatternPositions(posTo);
-        }
-
         const shouldUseVerticalGradient = layer.paint.get('fill-extrusion-vertical-gradient');
-        let uniformValues;
+        const lineWidthScale = 1.0 / bucket.tileToMeter;
+        let uniformValues: UniformValues<FillExtrusionDepthUniformsType | FillExtrusionPatternUniformsType>;
         if (isShadowPass && shadowRenderer) {
-            if (frustumCullShadowCaster(tile.tileID, bucket, painter)) {
+            if (frustumCullShadowCaster(tile.tileID, bucket.maxHeight, painter)) {
                 continue;
             }
             const tileMatrix = shadowRenderer.calculateShadowPassMatrixFromTile(tile.tileID.toUnwrapped());
 
-            uniformValues = fillExtrusionDepthUniformValues(tileMatrix, roofEdgeRadius, verticalScale);
+            uniformValues = fillExtrusionDepthUniformValues(tileMatrix, roofEdgeRadius, lineWidthScale, verticalScale, heightAlignment, baseAlignment);
         } else {
             const matrix = painter.translatePosMatrix(
                 coord.expandedProjMatrix,
@@ -384,15 +475,15 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
                 layer.paint.get('fill-extrusion-translate-anchor'));
 
             const invMatrix = tr.projection.createInversionMatrix(tr, coord.canonical);
-
+            const lighting3DMode = program.fixedDefines.includes('LIGHTING_3D_MODE');
             if (image) {
-                // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'boolean'.
-                uniformValues = fillExtrusionPatternUniformValues(matrix, painter, shouldUseVerticalGradient, opacity, ao, roofEdgeRadius, coord,
-                    tile, heightLift, globeToMercator, mercatorCenter, invMatrix, floodLightColor, verticalScale);
+                uniformValues = fillExtrusionPatternUniformValues(matrix, painter, shouldUseVerticalGradient, opacity, ao, roofEdgeRadius, lineWidthScale, coord,
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                    tile, heightLift, heightAlignment, baseAlignment, globeToMercator, mercatorCenter, invMatrix, floodLightColor, verticalScale, patternTransition, lighting3DMode);
             } else {
-                // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'boolean'.
-                uniformValues = fillExtrusionUniformValues(matrix, painter, shouldUseVerticalGradient, opacity, ao, roofEdgeRadius, coord,
-                    heightLift, globeToMercator, mercatorCenter, invMatrix, floodLightColor, verticalScale, floodLightIntensity, groundShadowFactor, emissiveStrength);
+                uniformValues = fillExtrusionUniformValues(matrix, painter, shouldUseVerticalGradient, opacity, ao, roofEdgeRadius, lineWidthScale, coord,
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                    heightLift, heightAlignment, baseAlignment, globeToMercator, mercatorCenter, invMatrix, floodLightColor, verticalScale, floodLightIntensity, groundShadowFactor, frontCutoffParams, lighting3DMode);
             }
         }
 
@@ -418,11 +509,12 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
                 }
             }
         }
-        const dynamicBuffers = [];
+        const dynamicBuffers: Array<VertexBuffer | null | undefined> = [];
         if (painter.terrain || replacementActive) dynamicBuffers.push(bucket.centroidVertexBuffer);
         if (isGlobeProjection) dynamicBuffers.push(bucket.layoutVertexExtBuffer);
+        if (wallMode) dynamicBuffers.push(bucket.wallVertexBuffer);
 
-        program.draw(painter, context.gl.TRIANGLES, depthMode, stencilMode, colorMode, CullFaceMode.backCCW,
+        program.draw(painter, context.gl.TRIANGLES, depthMode, stencilMode, colorMode, cullFaceMode,
             uniformValues, layer.id, bucket.layoutVertexBuffer, bucket.indexBuffer,
             segments, layer.paint, painter.transform.zoom,
             programConfiguration, dynamicBuffers);
@@ -434,7 +526,7 @@ function drawExtrusionTiles(painter: Painter, source: SourceCache, layer: FillEx
 function updateReplacement(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLayer, coords: Array<OverscaledTileID>, layerIndex: number) {
     for (const coord of coords) {
         const tile = source.getTile(coord);
-        const bucket: FillExtrusionBucket | null | undefined = (tile.getBucket(layer) as any);
+        const bucket = tile.getBucket(layer) as FillExtrusionBucket;
         if (!bucket) {
             continue;
         }
@@ -443,122 +535,36 @@ function updateReplacement(painter: Painter, source: SourceCache, layer: FillExt
     }
 }
 
-function drawGroundEffect(painter: Painter, source: SourceCache, layer: FillExtrusionStyleLayer, coords: Array<OverscaledTileID>, depthMode: DepthMode, stencilMode: StencilMode, colorMode: ColorMode, cullFaceMode: CullFaceMode, aoPass: boolean, subpass: GroundEffectSubpassType, opacity: number, aoIntensity: number, aoRadius: number, floodLightIntensity: number, floodLightColor: any, attenuation: number, replacementActive: boolean, renderNeighbors: boolean, framebufferCopyTexture?: Texture | null) {
-    const context = painter.context;
-    const gl = context.gl;
-    const tr = painter.transform;
-    const zoom = painter.transform.zoom;
-    const defines = ([] as any);
+export class GroundEffectProperties {
+    translate: [number, number] = [0, 0];
+    translateAnchor: 'map' | 'viewport' = 'map';
+    edgeRadius: number = 0;
+    cutoffFadeRange: number = 0;
+}
 
-    const cutoffParams = getCutoffParams(painter, layer.paint.get('fill-extrusion-cutoff-fade-range'));
-    if (subpass === 'clear') {
-        defines.push('CLEAR_SUBPASS');
-        if (framebufferCopyTexture) {
-            defines.push('CLEAR_FROM_TEXTURE');
-            context.activeTexture.set(gl.TEXTURE0);
-            framebufferCopyTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
-        }
-    } else if (subpass === 'sdf') {
-        defines.push('SDF_SUBPASS');
-    }
-    if (replacementActive) {
-        defines.push('HAS_CENTROID');
-    }
-    if (cutoffParams.shouldRenderCutoff) {
-        defines.push('RENDER_CUTOFF');
-    }
-    const edgeRadius = layer.layout.get('fill-extrusion-edge-radius');
+export interface BucketWithGroundEffect extends Bucket {
+    groundEffect: GroundEffect;
+    tileToMeter: number;
+    projection: ProjectionSpecification;
+}
 
-    const renderGroundEffectTile = (coord: OverscaledTileID, groundEffect: GroundEffect, segments: any, matrix: Float32Array, meterToTile: number) => {
-        const programConfiguration = groundEffect.programConfigurations.get(layer.id);
-        const affectedByFog = painter.isTileAffectedByFog(coord);
-        const program = painter.getOrCreateProgram('fillExtrusionGroundEffect', {config: programConfiguration, defines, overrideFog: affectedByFog});
-
-        const ao = [aoIntensity, aoRadius * meterToTile];
-
-        const edgeRadiusTile = zoom >= 17 ? 0 : edgeRadius * meterToTile;
-        const fbSize = framebufferCopyTexture ? framebufferCopyTexture.size[0] : 0;
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type '[number, number]'.
-        const uniformValues = fillExtrusionGroundEffectUniformValues(painter, matrix, opacity, aoPass, meterToTile, ao, floodLightIntensity, floodLightColor, attenuation, edgeRadiusTile, fbSize);
-
-        const dynamicBuffers = [];
-        if (replacementActive) dynamicBuffers.push(groundEffect.hiddenByLandmarkVertexBuffer);
-
-        painter.uploadCommonUniforms(context, program, coord.toUnwrapped(), null, cutoffParams);
-
-        program.draw(painter, context.gl.TRIANGLES, depthMode, stencilMode, colorMode, cullFaceMode,
-            uniformValues, layer.id, groundEffect.vertexBuffer, groundEffect.indexBuffer,
-            segments, layer.paint, zoom,
-            programConfiguration, dynamicBuffers);
-    };
-
-    for (const coord of coords) {
-        const tile = source.getTile(coord);
-        const bucket: FillExtrusionBucket | null | undefined = (tile.getBucket(layer) as any);
-        if (!bucket || bucket.projection.name !== tr.projection.name || !bucket.groundEffect || (bucket.groundEffect && !bucket.groundEffect.hasData())) continue;
-
-        const groundEffect: GroundEffect = (bucket.groundEffect as any);
-        const meterToTile = 1 / bucket.tileToMeter;
-        {
-            const matrix = painter.translatePosMatrix(
-                coord.projMatrix,
-                tile,
-
-                layer.paint.get('fill-extrusion-translate'),
-                layer.paint.get('fill-extrusion-translate-anchor'));
-
-            const segments = groundEffect.getDefaultSegment();
-            renderGroundEffectTile(coord, groundEffect, segments, matrix, meterToTile);
-        }
-
-        if (renderNeighbors) {
-            for (let i = 0; i < 4; i++) {
-                const nCoord = neighborCoord[i](coord);
-                const nTile = source.getTile(nCoord);
-                if (!nTile) continue;
-
-                const nBucket: FillExtrusionBucket | null | undefined = (nTile.getBucket(layer) as any);
-                if (!nBucket || nBucket.projection.name !== tr.projection.name || !nBucket.groundEffect || (nBucket.groundEffect && !nBucket.groundEffect.hasData())) continue;
-
-                const nGroundEffect: GroundEffect = (nBucket.groundEffect as any);
-                assert(nGroundEffect.regionSegments);
-
-                let translation, regionId;
-                if (i === 0) { // left
-                    translation = [-EXTENT, 0, 0];
-                    regionId = 1;
-                } else if (i === 1) { // right
-                    translation = [EXTENT, 0, 0];
-                    regionId = 0;
-                } else if (i === 2) { // top
-                    translation = [0, -EXTENT, 0];
-                    regionId = 3;
-                } else { // bottom
-                    translation = [0, EXTENT, 0];
-                    regionId = 2;
-                }
-
-                const segments = nGroundEffect.regionSegments[regionId];
-                // No geometry from the neighbour tile intersects the current tile.
-                if (!segments) continue;
-
-                const proj = new Float32Array(16);
-                mat4.translate(proj, coord.projMatrix, translation);
-                const matrix = painter.translatePosMatrix(
-                    proj,
-                    tile,
-
-                    layer.paint.get('fill-extrusion-translate'),
-                    layer.paint.get('fill-extrusion-translate-anchor'));
-                renderGroundEffectTile(coord, nGroundEffect, segments, matrix, meterToTile);
-            }
-        }
-    }
+export function computeFrontCutoffParams(pitchRad: number, frontCutoffArray: [number, number, number], terrainActive: boolean): [number, number, number] {
+    const frontCutoffEnabled = frontCutoffArray[2] < 1.0 && !terrainActive;
+    if (!frontCutoffEnabled) return [0, 0, 1];
+    const pitchDeg = pitchRad * 180 / Math.PI;
+    if (pitchDeg < 15) return [-0.5, frontCutoffArray[1], frontCutoffArray[2]];
+    const t = Math.min(1, Math.max(0, (pitchDeg - 15) / 5));
+    const pitchBlend = t * t * (3 - 2 * t);
+    return [
+        -0.5 * (1 - pitchBlend) + frontCutoffArray[0] * pitchBlend,
+        frontCutoffArray[1],
+        frontCutoffArray[2]
+    ];
 }
 
 // Flat roofs array is prepared in the bucket, except for buildings that are on tile borders.
 // For them, join pieces, calculate joined size here, and then upload data.
-function updateBorders(context: Context, source: SourceCache, coord: OverscaledTileID, bucket: FillExtrusionBucket, layer: FillExtrusionStyleLayer, terrain: Terrain | null | undefined, reconcileReplacementState: boolean) {
+function updateBorders(context: Context, source: SourceCache, coord: OverscaledTileID, bucket: FillExtrusionBucket, layer: FillExtrusionStyleLayer, terrain: ITerrainRenderer | null | undefined, reconcileReplacementState: boolean) {
     if (bucket.centroidVertexArray.length === 0) {
         bucket.createCentroidsBuffer();
     }
@@ -566,6 +572,13 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
     const demTile = terrain ? terrain.findDEMTileFor(coord) : null;
     if ((!demTile || !demTile.dem) && !reconcileReplacementState) {
         return;     // defer update until an elevation tile is available.
+    }
+    // invalidate border computation if DEM tile has updated since last border update
+    if (terrain && demTile && demTile.dem) {
+        if (bucket.selfDEMTileTimestamp !== demTile.dem._timestamp) {
+            bucket.borderDoneWithNeighborZ = [-1, -1, -1, -1];
+            bucket.selfDEMTileTimestamp = demTile.dem._timestamp;
+        }
     }
 
     const reconcileReplacement = (centroid1: PartData, centroid2: PartData) => {
@@ -581,6 +594,15 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
 
     const encodeHeightAsCentroid = (height: number) => {
         return new Point(Math.ceil((height + ELEVATION_OFFSET) * ELEVATION_SCALE), 0);
+    };
+
+    // Encode both elevation (in x) and border position (in y) for border-crossing buildings.
+    // y uses marker y&7==7: bits 0-2=7, bits 3-4=borderID, bits 5-15=coord/4
+    const encodeBorderElevationWithPosition = (height: number, borderIndex: number, coordAlongBorder: number) => {
+        const x = Math.ceil((height + ELEVATION_OFFSET) * ELEVATION_SCALE);
+        const coord = Math.floor(Math.max(0, Math.min(EXTENT - 1, coordAlongBorder)) / 4);
+        const y = (coord << 5) | ((borderIndex & 0x3) << 3) | 7;
+        return new Point(x, y);
     };
 
     const getLoadedBucket = (nid: OverscaledTileID) => {
@@ -632,18 +654,16 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
         if (!terrain) {
             return 0;
         }
-        const points = [[verticalEdge ? edge : min, verticalEdge ? min : edge, 0], [verticalEdge ? edge : max, verticalEdge ? max : edge, 0]];
+        const points: vec3[] = [[verticalEdge ? edge : min, verticalEdge ? min : edge, 0], [verticalEdge ? edge : max, verticalEdge ? max : edge, 0]];
 
         const coord3 = maxOffsetFromBorder < 0 ? EXTENT + maxOffsetFromBorder : maxOffsetFromBorder;
-        const thirdPoint = [verticalEdge ? coord3 : (min + max) / 2, verticalEdge ? (min + max) / 2 : coord3, 0];
+        const thirdPoint: vec3 = [verticalEdge ? coord3 : (min + max) / 2, verticalEdge ? (min + max) / 2 : coord3, 0];
         if ((edge === 0 && maxOffsetFromBorder < 0) || (edge !== 0 && maxOffsetFromBorder > 0)) {
             // Third point is inside neighbor tile, not in the |coord| tile.
-            // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type 'vec3'.
             terrain.getForTilePoints(neighborTileID, [thirdPoint], true, neighborDEMTile);
         } else {
             points.push(thirdPoint);
         }
-        // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
         terrain.getForTilePoints(coord, points, true, demTile);
         return Math.max(points[0][2], points[1][2], thirdPoint[2]) / terrain.exaggeration();
     };
@@ -662,18 +682,27 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
         if (!nBucket || !(nBucket instanceof FillExtrusionBucket)) {
             continue;
         }
+
+        // Look up the neighbor DEM tile
+        const neighborDEMTile = terrain ? terrain.findDEMTileFor(nid) : null;
+        if ((!neighborDEMTile || !neighborDEMTile.dem) && !reconcileReplacementState) {
+            continue;
+        }
+
+        // invalidate border computation if neighbour DEM tile has updated since last border update
+        if (terrain && neighborDEMTile && neighborDEMTile.dem) {
+            if (bucket.borderDEMTileTimestamp[i] !== neighborDEMTile.dem._timestamp) {
+                bucket.borderDoneWithNeighborZ[i] = -1;
+                bucket.borderDEMTileTimestamp[i] = neighborDEMTile.dem._timestamp;
+            }
+        }
+
         if (bucket.borderDoneWithNeighborZ[i] === nBucket.canonical.z) {
             continue;
         }
 
         if (nBucket.centroidVertexArray.length === 0) {
             nBucket.createCentroidsBuffer();
-        }
-
-        // Look up the neighbor DEM tile
-        const neighborDEMTile = terrain ? terrain.findDEMTileFor(nid) : null;
-        if ((!neighborDEMTile || !neighborDEMTile.dem) && !reconcileReplacementState) {
-            continue;
         }
 
         const j = (i < 2 ? 1 : 5) - i;
@@ -694,21 +723,102 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
             }
             bucket.borderDoneWithNeighborZ[i] = nBucket.canonical.z;
             nBucket.borderDoneWithNeighborZ[j] = bucket.canonical.z;
+            continue;
         }
 
+        // Try building_id-based matching first
+        const neighborBuildingIdMap: Map<number, number> = new Map();
+        const matchedByBuildingIdA: Set<number> = new Set();
+        const matchedByBuildingIdB: Set<number> = new Set();
+        for (let bi = 0; bi < b.length; bi++) {
+            const nPartB = nBucket.featuresOnBorder[b[bi]];
+            if (nPartB.buildingId !== undefined) {
+                neighborBuildingIdMap.set(nPartB.buildingId, bi);
+            }
+        }
+
+        // Match border features by building_id
         for (const ia of a) {
             const partA = bucket.featuresOnBorder[ia];
-            const centroidA = bucket.centroidData[partA.centroidDataIndex];
+            const centroidA = bucket.centroidData.get(partA.centroidDataIndex);
+            if (partA.buildingId === undefined) continue;
+
+            const bi = neighborBuildingIdMap.get(partA.buildingId);
+            if (bi === undefined) continue;
+
+            const partB = nBucket.featuresOnBorder[b[bi]];
+            const centroidB = nBucket.centroidData.get(partB.centroidDataIndex);
+
+            matchedByBuildingIdA.add(ia);
+            matchedByBuildingIdB.add(bi);
+
+            if (reconcileReplacementState) {
+                reconcileReplacement(centroidA, centroidB);
+            }
+
+            // Average both tiles' centroid positions along the border for consistent front cutoff.
+            // Fall back to BorderCentroidData's own centroid when groupCentroidPos is unset
+            // (features without building_id property that are stitched by feature ID).
+            const posA = (centroidA.groupCentroidPos.x !== 0 || centroidA.groupCentroidPos.y !== 0) ?
+                centroidA.groupCentroidPos : partA.centroid();
+            const posB = (centroidB.groupCentroidPos.x !== 0 || centroidB.groupCentroidPos.y !== 0) ?
+                centroidB.groupCentroidPos : partB.centroid();
+            const coordAlongBorder = (i < 2) ?
+                Math.round((posA.y + posB.y) / 2) :
+                Math.round((posA.x + posB.x) / 2);
+            const moreThanOneBorderIntersected = partA.intersectsCount() > 1 || partB.intersectsCount() > 1;
+
+            {
+                let height = 0;
+                if (neighborDEMTile && neighborDEMTile.dem && !moreThanOneBorderIntersected) {
+                    const span = projectCombinedSpanToBorder[i](centroidA, centroidB);
+                    const edge = (i % 2) ? EXTENT - 1 : 0;
+                    height = flatBase(span[0], Math.min(EXTENT - 1, span[1]), edge, neighborDEMTile, nid, i < 2, span[2]);
+                }
+                // Each half encodes its own border index so the shader reconstructs
+                // the correct tile-local position that maps to the same world point.
+                centroidA.centroidXY = encodeBorderElevationWithPosition(height, i, coordAlongBorder);
+                centroidB.centroidXY = encodeBorderElevationWithPosition(height, j, coordAlongBorder);
+            }
+            bucket.writeCentroidToBuffer(centroidA);
+            nBucket.writeCentroidToBuffer(centroidB);
+
+            // Propagate the same encoded centroid to all parts of this building,
+            // including hidden border children that weren't directly matched.
+            if (partA.buildingId !== undefined) {
+                for (const part of bucket.centroidData) {
+                    if (part.buildingId === partA.buildingId && part !== centroidA) {
+                        part.centroidXY = centroidA.centroidXY;
+                        bucket.writeCentroidToBuffer(part);
+                    }
+                }
+                for (const part of nBucket.centroidData) {
+                    if (part.buildingId === partA.buildingId && part !== centroidB) {
+                        part.centroidXY = centroidB.centroidXY;
+                        nBucket.writeCentroidToBuffer(part);
+                    }
+                }
+            }
+        }
+
+        // Fallback: geometric overlap matching for parts NOT matched by building_id
+        for (const ia of a) {
+            if (matchedByBuildingIdA.has(ia)) continue;
+
+            const partA = bucket.featuresOnBorder[ia];
+            const centroidA = bucket.centroidData.get(partA.centroidDataIndex);
             assert(partA.borders);
-            const partABorderRange = (partA.borders as any)[i];
+            const partABorderRange = partA.borders[i];
 
             // Find all nBucket parts that share the border overlap
-            let partB;
+            /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
+            let partB: any;
             while (ib < b.length) {
+                if (matchedByBuildingIdB.has(ib)) { ib++; continue; }
                 // Pass all that are before the overlap
                 partB = nBucket.featuresOnBorder[b[ib]];
                 assert(partB.borders);
-                const partBBorderRange = (partB.borders)[j];
+                const partBBorderRange = (partB.borders)[j] as [number, number];
                 if (partBBorderRange[1] > partABorderRange[0] + error ||
                     partBBorderRange[0] > partABorderRange[0] - error) {
                     break;
@@ -718,12 +828,13 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
             }
 
             if (partB && ib < b.length) {
-                const saveIb = ib;
+                let saveIb = ib;
                 let count = 0;
+                // Collect all overlapping parts on the edge, to make sure it is only one.
                 while (true) {
-                    // Collect all parts overlapping parta on the edge, to make sure it is only one.
+                    if (matchedByBuildingIdB.has(ib)) { if (++ib === b.length) break; partB = nBucket.featuresOnBorder[b[ib]]; continue; }
                     assert(partB.borders);
-                    const partBBorderRange = (partB.borders)[j];
+                    const partBBorderRange = (partB.borders)[j] as [number, number];
                     if (partBBorderRange[0] > partABorderRange[1] - error) {
                         break;
                     }
@@ -733,15 +844,22 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
                     }
                     partB = nBucket.featuresOnBorder[b[ib]];
                 }
+                // Find first non-matched saveIb
+                while (saveIb < b.length && matchedByBuildingIdB.has(saveIb)) saveIb++;
+                if (saveIb >= b.length) { bucket.showCentroid(partA); continue; }
                 partB = nBucket.featuresOnBorder[b[saveIb]];
-                if (count > 1) {
-                    // if it can be concluded that it is the piece of the same feature,
-                    // use it, even following features (inner details) overlap on border edge.
+                let doReconcile = false;
+                if (count >= 1) {
+                    // If it can be concluded that it is the piece of the same feature,
+                    // use it, even if following features (inner details) overlap on border edge.
                     assert(partB.borders);
-                    const partBBorderRange = (partB.borders)[j];
+                    const partBBorderRange = (partB.borders)[j] as [number, number];
                     if (Math.abs(partABorderRange[0] - partBBorderRange[0]) < error &&
                         Math.abs(partABorderRange[1] - partBBorderRange[1]) < error) {
                         count = 1;
+                        // In some cases count could be 1 but a different feature, here we make sure
+                        // we are reconciling the same feature
+                        doReconcile = true;
                         ib = saveIb + 1;
                     }
                 } else if (count === 0) {
@@ -750,14 +868,14 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
                     continue;
                 }
 
-                const centroidB = nBucket.centroidData[partB.centroidDataIndex];
-                if (reconcileReplacementState && count === 1) {
+                const centroidB = nBucket.centroidData.get(partB.centroidDataIndex);
+                if (reconcileReplacementState && doReconcile) {
                     reconcileReplacement(centroidA, centroidB);
                 }
 
                 const moreThanOneBorderIntersected = partA.intersectsCount() > 1 || partB.intersectsCount() > 1;
                 if (count > 1) {
-                    ib = saveIb;    // rewind unprocessed ib so that it is processed again for the next ia.
+                    ib = saveIb; // rewind unprocessed ib so that it is processed again for the next ia
                     centroidA.centroidXY = centroidB.centroidXY = new Point(0, 0);
                 } else if (neighborDEMTile && neighborDEMTile.dem && !moreThanOneBorderIntersected) {
                     // If any of a or b crosses more than one tile edge, don't support flat roof.
@@ -766,10 +884,9 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
                     // one is point of span that has maximum offset to border.
                     const span = projectCombinedSpanToBorder[i](centroidA, centroidB);
                     const edge = (i % 2) ? EXTENT - 1 : 0;
-
                     const height = flatBase(span[0], Math.min(EXTENT - 1, span[1]), edge, neighborDEMTile, nid, i < 2, span[2]);
                     centroidA.centroidXY = centroidB.centroidXY = encodeHeightAsCentroid(height);
-                }  else if (moreThanOneBorderIntersected) {
+                } else if (moreThanOneBorderIntersected) {
                     centroidA.centroidXY = centroidB.centroidXY = new Point(0, 0);
                 } else {
                     centroidA.centroidXY = bucket.encodeBorderCentroid(partA);
@@ -781,6 +898,7 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
             } else {
                 bucket.showCentroid(partA);
             }
+            /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any */
         }
 
         bucket.borderDoneWithNeighborZ[i] = nBucket.canonical.z;
@@ -792,51 +910,56 @@ function updateBorders(context: Context, source: SourceCache, coord: OverscaledT
     }
 }
 
-const XAxis = [1, 0, 0];
-const YAxis = [0, 1, 0];
-const ZAxis = [0, 0, 1];
+const XAxis: vec3 = [1, 0, 0];
+const YAxis: vec3 = [0, 1, 0];
+const ZAxis: vec3 = [0, 0, 1];
 
-function frustumCullShadowCaster(id: OverscaledTileID, bucket: FillExtrusionBucket, painter: Painter): boolean {
+// Pass-invariant state for frustumCullShadowCaster. Within a shadow pass the camera frustum,
+// shadow direction, SAT edge set, and world size are all fixed — only per-tile height/volume
+// change. Cached on the Painter (per-Map) and keyed by frameCounter and cascade index.
+export type ShadowCullCache = {
+    frame: number;
+    cascade: number;
+    cameraFrustum: Frustum;
+    edges: vec3[];
+    shadowDir: vec3;
+    ws: number;
+    zoom: number;
+};
+
+export function frustumCullShadowCaster(id: OverscaledTileID, bucketMaxHeight: number, painter: Painter): boolean {
     const transform = painter.transform;
     const shadowRenderer = painter.shadowRenderer;
-    if (!shadowRenderer) {
-        return true;
+    if (!shadowRenderer) return true;
+
+    const frame = painter.frameCounter;
+    const cascade = painter.currentShadowCascade;
+    let cache = painter._shadowCullCache;
+    if (!cache || cache.frame !== frame || cache.cascade !== cascade) {
+        const ws = transform.tileSize * shadowRenderer._cascades[cascade].scale;
+        const zoom = transform.scaleZoom(ws);
+        const sd = shadowRenderer.shadowDirection;
+        const shadowDir: vec3 = [sd[0], sd[1], -sd[2]];
+        const edges: vec3[] = [XAxis, YAxis, ZAxis, shadowDir, [shadowDir[0], 0, shadowDir[2]], [0, shadowDir[1], shadowDir[2]]];
+        const isGlobe = transform.projection.name === 'globe';
+        const cameraFrustum = Frustum.fromInvProjectionMatrix(transform.invProjMatrix, transform.worldSize, zoom, !isGlobe);
+        cache = {frame, cascade, cameraFrustum, edges, shadowDir, ws, zoom};
+        painter._shadowCullCache = cache;
     }
+    const {cameraFrustum, edges, shadowDir, ws, zoom} = cache;
 
-    const unwrappedId = id.toUnwrapped();
-
-    const ws = transform.tileSize * shadowRenderer._cascades[painter.currentShadowCascade].scale;
-
-    let height = bucket.maxHeight;
+    let height = bucketMaxHeight;
     if (transform.elevation) {
         const minmax = transform.elevation.getMinMaxForTile(id);
-        if (minmax) {
-            height += minmax.max;
-        }
+        if (minmax) height += minmax.max;
     }
-    const shadowDir = [...shadowRenderer.shadowDirection];
-    shadowDir[2] = -shadowDir[2];
+    height /= getMetersPerPixelAtLatitude(transform.center.lat, zoom);
 
-    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
-    const tileShadowVolume = shadowRenderer.computeSimplifiedTileShadowVolume(unwrappedId, height, ws, shadowDir);
-    if (!tileShadowVolume) {
-        return false;
-    }
+    const tileShadowVolume = shadowRenderer.computeSimplifiedTileShadowVolume(id.toUnwrapped(), height, ws, shadowDir);
+    if (!tileShadowVolume) return false;
 
-    // Projected shadow volume has 3-6 unique edge direction vectors.
-    // These are used for computing remaining separating axes for the intersection test
-    const edges = [XAxis, YAxis, ZAxis, shadowDir, [shadowDir[0], 0, shadowDir[2]], [0, shadowDir[1], shadowDir[2]]];
-    const isGlobe = transform.projection.name === 'globe';
-    const zoom = transform.scaleZoom(ws);
-    const cameraFrustum = Frustum.fromInvProjectionMatrix(transform.invProjMatrix, transform.worldSize, zoom, !isGlobe);
-    const cascadeFrustum = shadowRenderer.getCurrentCascadeFrustum();
-    // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
-    if (cameraFrustum.intersectsPrecise(tileShadowVolume.vertices, tileShadowVolume.planes, edges) === 0) {
-        return true;
-    }
-    // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
-    if (cascadeFrustum.intersectsPrecise(tileShadowVolume.vertices, tileShadowVolume.planes, edges) === 0) {
-        return true;
-    }
+    const {vertices, planes} = tileShadowVolume;
+    if (cameraFrustum.intersectsPrecise(vertices, planes, edges) === 0) return true;
+    if (shadowRenderer.getCurrentCascadeFrustum().intersectsPrecise(vertices, planes, edges) === 0) return true;
     return false;
 }

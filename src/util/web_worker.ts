@@ -1,28 +1,14 @@
 import WorkerClass from './worker_class';
-import type {Class} from '../types/class';
-import type {WorkerSource} from '../source/worker_source';
 
-type MessageListener = (
-    arg1: {
-        data: any;
-    },
-) => unknown;
-
-// The main thread interface. Provided by Worker in a browser environment,
-// and MessageBus below in a node environment.
-export interface WorkerInterface {
-    addEventListener(type: 'message', listener: MessageListener): void;
-    removeEventListener(type: 'message', listener: MessageListener): void;
-    postMessage(message?: any): void;
-    terminate(): void;
-}
-
-export interface WorkerGlobalScopeInterface {
-    importScripts(...urls: Array<string>): void;
-    registerWorkerSource?: (arg1: string, arg2: Class<WorkerSource>) => void;
-    registerRTLTextPlugin?: (_?: any) => void;
-}
-
-export default function(): WorkerInterface {
-    return (WorkerClass.workerClass != null) ? new WorkerClass.workerClass() : (new self.Worker(WorkerClass.workerUrl, WorkerClass.workerParams) as any); // eslint-disable-line new-cap
+export function createWorker(name?: string): Worker {
+    // eslint-disable-next-line new-cap
+    if (WorkerClass.workerClass != null) return new WorkerClass.workerClass();
+    // The worker bundle is valid as classic or module, but only the
+    // module form permits `import.meta`. Downstream bundlers (Vite, Rolldown,
+    // webpack5+) instrument every dynamic import() they see by injecting
+    // `import.meta.url`.
+    // In a classic worker that throws "Cannot use 'import.meta' outside a module"
+    // the instant it parses, killing the worker silently while the main thread keeps
+    // running normally.
+    return new self.Worker(WorkerClass.workerUrl, ({name, type: 'module', ...WorkerClass.workerParams}));
 }

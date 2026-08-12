@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect} from '../../util/vitest';
 import TileCache from '../../../src/source/tile_cache';
@@ -14,6 +15,7 @@ const tileC = {tileID: idC};
 const tileD = {tileID: idD};
 
 function keysExpected(cache, ids) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
     expect(cache.order).toEqual(ids.map((id) => id.key));
 }
 

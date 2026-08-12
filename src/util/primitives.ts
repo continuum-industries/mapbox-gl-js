@@ -1,9 +1,35 @@
-import {vec3, vec4} from 'gl-matrix';
-import assert from 'assert';
-import {UnwrappedTileID} from '../source/tile_id';
-
-import type {mat4} from 'gl-matrix';
+import {vec2, vec3, vec4} from 'gl-matrix';
+import assert from '../style-spec/util/assert';
 import {register} from './web_worker_transfer';
+
+import type {UnwrappedTileID} from '../source/tile_id';
+import type {mat4} from 'gl-matrix';
+
+class Ray2D {
+    pos: vec2;
+    dir: vec2;
+
+    constructor(pos_: vec2, dir_: vec2) {
+        this.pos = pos_;
+        this.dir = dir_;
+    }
+
+    intersectsPlane(pt: vec2, normal: vec2, out: vec2): boolean {
+        const D = vec2.dot(normal, this.dir);
+
+        // ray is parallel to plane, so it misses
+        if (Math.abs(D) < 1e-6) { return false; }
+
+        const t = (
+            (pt[0] - this.pos[0]) * normal[0] +
+            (pt[1] - this.pos[1]) * normal[1]) / D;
+
+        out[0] = this.pos[0] + this.dir[0] * t;
+        out[1] = this.pos[1] + this.dir[1] * t;
+
+        return true;
+    }
+}
 
 class Ray {
     pos: vec3;
@@ -100,42 +126,37 @@ class FrustumCorners {
         this.horizon = horizon_;
     }
 
-    static fromInvProjectionMatrix(invProj: Array<number>, horizonFromTop: number, viewportHeight: number): FrustumCorners {
-        const TLClip = [-1, 1, 1];
-        const TRClip = [1, 1, 1];
-        const BRClip = [1, -1, 1];
-        const BLClip = [-1, -1, 1];
+    static fromInvProjectionMatrix(invProj: mat4, horizonFromTop: number, viewportHeight: number): FrustumCorners {
+        const TLClip: vec3 = [-1, 1, 1];
+        const TRClip: vec3 = [1, 1, 1];
+        const BRClip: vec3 = [1, -1, 1];
+        const BLClip: vec3 = [-1, -1, 1];
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyMat4'.
-        const TL = vec3.transformMat4(TLClip as [number, number, number], TLClip as [number, number, number], invProj);
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyMat4'.
-        const TR = vec3.transformMat4(TRClip as [number, number, number], TRClip as [number, number, number], invProj);
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyMat4'.
-        const BR = vec3.transformMat4(BRClip as [number, number, number], BRClip as [number, number, number], invProj);
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyMat4'.
-        const BL = vec3.transformMat4(BLClip as [number, number, number], BLClip as [number, number, number], invProj);
+        const TL = vec3.transformMat4(TLClip, TLClip, invProj) as [number, number, number];
+        const TR = vec3.transformMat4(TRClip, TRClip, invProj) as [number, number, number];
+        const BR = vec3.transformMat4(BRClip, BRClip, invProj) as [number, number, number];
+        const BL = vec3.transformMat4(BLClip, BLClip, invProj) as [number, number, number];
 
-        // @ts-expect-error - TS2345 - Argument of type 'vec3' is not assignable to parameter of type '[number, number, number]'.
         return new FrustumCorners(TL, TR, BR, BL, horizonFromTop / viewportHeight);
     }
 }
 
-function projectPoints(points: Array<vec3>, origin: vec3, axis: vec3): [number, number] {
+function projectPoints(points: Array<vec3>, origin: vec3, axis: vec3, out: [number, number]): [number, number] {
+    const ox = origin[0], oy = origin[1], oz = origin[2];
+    const ax = axis[0], ay = axis[1], az = axis[2];
     let min = Infinity;
     let max = -Infinity;
 
-    const vec = [];
-    for (const point of points) {
-        // @ts-expect-error - TS2345 - Argument of type '[]' is not assignable to parameter of type 'vec3'.
-        vec3.sub(vec as [], point, origin);
-        // @ts-expect-error - TS2345 - Argument of type '[]' is not assignable to parameter of type 'ReadonlyVec3'.
-        const projection = vec3.dot(vec as [], axis);
-
-        min = Math.min(min, projection);
-        max = Math.max(max, projection);
+    for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const proj = (p[0] - ox) * ax + (p[1] - oy) * ay + (p[2] - oz) * az;
+        if (proj < min) min = proj;
+        if (proj > max) max = proj;
     }
 
-    return [min, max];
+    out[0] = min;
+    out[1] = max;
+    return out;
 }
 
 function intersectsFrustum(frustum: Frustum, aabbPoints: Array<vec3>): number {
@@ -146,8 +167,7 @@ function intersectsFrustum(frustum: Frustum, aabbPoints: Array<vec3>): number {
         let pointsInside = 0;
 
         for (let i = 0; i < aabbPoints.length; i++) {
-            // @ts-expect-error - TS2365 - Operator '+=' cannot be applied to types 'number' and 'boolean'. | TS2345 - Argument of type 'vec4' is not assignable to parameter of type 'ReadonlyVec3'.
-            pointsInside += vec3.dot(plane, aabbPoints[i]) + plane[3] >= 0;
+            pointsInside += +(vec3.dot(plane, aabbPoints[i]) + plane[3] >= 0);
         }
 
         if (pointsInside === 0)
@@ -160,9 +180,11 @@ function intersectsFrustum(frustum: Frustum, aabbPoints: Array<vec3>): number {
     return fullyInside ? 2 : 1;
 }
 
+const preciseProjScratch: [number, number] = [0, 0];
+
 function intersectsFrustumPrecise(frustum: Frustum, aabbPoints: Array<vec3>): number {
     for (const proj of frustum.projections) {
-        const projectedAabb = projectPoints(aabbPoints, frustum.points[0], proj.axis);
+        const projectedAabb = projectPoints(aabbPoints, frustum.points[0], proj.axis, preciseProjScratch);
 
         if (proj.projection[1] < projectedAabb[0] || proj.projection[0] > projectedAabb[1]) {
             return 0;
@@ -189,19 +211,16 @@ const FAR_TR = 5;
 const FAR_BR = 6;
 const FAR_BL = 7;
 
-function pointsInsideOfPlane(points: Array<vec3>, plane: vec4): number {
-    let pointsInside = 0;
-    const p = [0, 0, 0, 0];
+// Returns true if at least one point satisfies a*x + b*y + c*z + d >= 0 (i.e. is on the plane's
+// inside). intersectsPrecise only cares about the zero-points-inside case, so we short-circuit
+// on the first inside point rather than counting.
+function anyPointInsideOfPlane(points: Array<vec3>, plane: vec4): boolean {
+    const a = plane[0], b = plane[1], c = plane[2], d = plane[3];
     for (let i = 0; i < points.length; i++) {
-        p[0] = points[i][0];
-        p[1] = points[i][1];
-        p[2] = points[i][2];
-        p[3] = 1.0;
-        if (vec4.dot(p as [number, number, number, number], plane) >= 0) {
-            pointsInside++;
-        }
+        const p = points[i];
+        if (a * p[0] + b * p[1] + c * p[2] + d >= 0) return true;
     }
-    return pointsInside;
+    return false;
 }
 
 class Frustum {
@@ -212,69 +231,64 @@ class Frustum {
     frustumEdges: Array<vec3>;
 
     constructor(points_?: FrustumPoints | null, planes_?: FrustumPlanes | null) {
-        this.points = points_ || (new Array(8).fill([0, 0, 0]) as any);
-        this.planes = planes_ || (new Array(6).fill([0, 0, 0, 0]) as any);
-        this.bounds = Aabb.fromPoints((this.points as any));
+        this.points = points_ || (new Array(8).fill([0, 0, 0]) as FrustumPoints);
+        this.planes = planes_ || (new Array(6).fill([0, 0, 0, 0]) as FrustumPlanes);
+        this.bounds = Aabb.fromPoints(this.points);
         this.projections = [];
 
         // Precompute a set of separating axis candidates for precise intersection tests.
         // These axes are computed as follows: (edges of aabb) x (edges of frustum)
         this.frustumEdges = [
-            vec3.sub([] as any, this.points[NEAR_BR], this.points[NEAR_BL]),
-            vec3.sub([] as any, this.points[NEAR_TL], this.points[NEAR_BL]),
-            vec3.sub([] as any, this.points[FAR_TL], this.points[NEAR_TL]),
-            vec3.sub([] as any, this.points[FAR_TR], this.points[NEAR_TR]),
-            vec3.sub([] as any, this.points[FAR_BR], this.points[NEAR_BR]),
-            vec3.sub([] as any, this.points[FAR_BL], this.points[NEAR_BL])
+            vec3.sub([], this.points[NEAR_BR], this.points[NEAR_BL]),
+            vec3.sub([], this.points[NEAR_TL], this.points[NEAR_BL]),
+            vec3.sub([], this.points[FAR_TL], this.points[NEAR_TL]),
+            vec3.sub([], this.points[FAR_TR], this.points[NEAR_TR]),
+            vec3.sub([], this.points[FAR_BR], this.points[NEAR_BR]),
+            vec3.sub([], this.points[FAR_BL], this.points[NEAR_BL]),
         ];
 
         for (const edge of this.frustumEdges) {
             // Cross product [1, 0, 0] x [a, b, c] == [0, -c, b]
             // Cross product [0, 1, 0] x [a, b, c] == [c, 0, -a]
-            const axis0 = [0, -edge[2], edge[1]];
-            const axis1 = [edge[2], 0, -edge[0]];
+            const axis0: vec3 = [0, -edge[2], edge[1]];
+            const axis1: vec3 = [edge[2], 0, -edge[0]];
 
             this.projections.push({
-                // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type 'vec3'.
                 axis: axis0,
-                // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
-                projection: projectPoints((this.points as any), this.points[0], axis0)
+                projection: projectPoints(this.points, this.points[0], axis0, [0, 0])
             });
 
             this.projections.push({
-                // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type 'vec3'.
                 axis: axis1,
-                // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
-                projection: projectPoints((this.points as any), this.points[0], axis1)
+                projection: projectPoints(this.points, this.points[0], axis1, [0, 0])
             });
         }
     }
 
-    static fromInvProjectionMatrix(invProj: Float64Array, worldSize: number, zoom: number, zInMeters: boolean): Frustum {
+    static fromInvProjectionMatrix(invProj: mat4, worldSize: number, zoom: number, zInMeters: boolean): Frustum {
         const clipSpaceCorners = [
             [-1, 1, -1, 1],
-            [ 1, 1, -1, 1],
-            [ 1, -1, -1, 1],
+            [1, 1, -1, 1],
+            [1, -1, -1, 1],
             [-1, -1, -1, 1],
             [-1, 1, 1, 1],
-            [ 1, 1, 1, 1],
-            [ 1, -1, 1, 1],
+            [1, 1, 1, 1],
+            [1, -1, 1, 1],
             [-1, -1, 1, 1]
-        ];
+        ] as vec4[];
 
         const scale = Math.pow(2, zoom);
 
         // Transform frustum corner points from clip space to tile space
-        const frustumCoords = clipSpaceCorners
-            .map(v => {
-                // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyVec4'.
-                const s = vec4.transformMat4([] as any, v, invProj);
+        const frustumCoords: vec4[] = clipSpaceCorners
+            .map((v) => {
+                const s = vec4.transformMat4([], v, invProj);
                 const k = 1.0 / s[3] / worldSize * scale;
                 // Z scale in meters.
                 return vec4.mul(s, s, [k, k, zInMeters ? 1.0 / s[3] : k, k]);
             });
 
-        const frustumPlanePointIndices = [
+        const frustumPlanePointIndices: vec3[] = [
             [NEAR_TL, NEAR_TR, NEAR_BR], // near
             [FAR_BR, FAR_TR, FAR_TL],    // far
             [NEAR_TL, NEAR_BL, FAR_BL],  // left
@@ -283,60 +297,77 @@ class Frustum {
             [NEAR_TL, FAR_TL, FAR_TR]    // top
         ];
 
-        // @ts-expect-error - TS2345 - Argument of type '(p: vec3) => any' is not assignable to parameter of type '(value: number[], index: number, array: number[][]) => any'.
         const frustumPlanes = frustumPlanePointIndices.map((p: vec3) => {
-            // @ts-expect-error - TS2345 - Argument of type 'vec4' is not assignable to parameter of type 'ReadonlyVec3'.
-            const a = vec3.sub([] as any, frustumCoords[p[0]], frustumCoords[p[1]]);
-            // @ts-expect-error - TS2345 - Argument of type 'vec4' is not assignable to parameter of type 'ReadonlyVec3'.
-            const b = vec3.sub([] as any, frustumCoords[p[2]], frustumCoords[p[1]]);
-            const n = vec3.normalize([] as any, vec3.cross([] as any, a, b));
-            // @ts-expect-error - TS2345 - Argument of type 'vec4' is not assignable to parameter of type 'ReadonlyVec3'.
+            const a = vec3.sub([], frustumCoords[p[0]], frustumCoords[p[1]]);
+            const b = vec3.sub([], frustumCoords[p[2]], frustumCoords[p[1]]);
+            const n = vec3.normalize([], vec3.cross([], a, b)) as [number, number, number];
             const d = -vec3.dot(n, frustumCoords[p[1]]);
-            // @ts-expect-error - TS2339 - Property 'concat' does not exist on type 'vec3'.
             return n.concat(d);
-        });
-        const frustumPoints = [];
+        }) as FrustumPlanes;
+
+        const frustumPoints: vec3[] = [];
         for (let i = 0; i < frustumCoords.length; i++) {
             frustumPoints.push([frustumCoords[i][0], frustumCoords[i][1], frustumCoords[i][2]]);
         }
-        return new Frustum((frustumPoints as any), (frustumPlanes as any));
+        return new Frustum(frustumPoints as FrustumPoints, frustumPlanes);
     }
 
-    // Performs precise intersection test between the frustum and the provided convex hull.
-    // The hull consits of vertices, faces (defined as planes) and a list of edges.
-    // Intersection test is performed using separating axis theoreom.
+    // Precise intersection test between the frustum and a convex hull (vertices + face planes
+    // + edges) via separating axis theorem. The SAT axis is not normalized — comparisons of
+    // projA/projB are invariant under a common positive scale, we only skip exact-zero axes
+    // where the two edges are parallel. Projection loops are inlined so the JIT keeps axis
+    // and origin components in registers across all points.
     intersectsPrecise(vertices: Array<vec3>, faces: Array<vec4>, edges: Array<vec3>): number {
-        // Check if any of the provided faces defines a separating axis
         for (let i = 0; i < faces.length; i++) {
-            if (!pointsInsideOfPlane(vertices, faces[i])) {
-                return 0;
-            }
+            if (!anyPointInsideOfPlane(vertices, faces[i])) return 0;
         }
-        // Check if any of the frustum planes defines a separating axis
         for (let i = 0; i < this.planes.length; i++) {
-            if (!pointsInsideOfPlane(vertices, this.planes[i])) {
-                return 0;
-            }
+            if (!anyPointInsideOfPlane(vertices, this.planes[i])) return 0;
         }
+
+        const points = this.points;
+        const ox = points[0][0], oy = points[0][1], oz = points[0][2];
 
         for (const edge of edges) {
             for (const frustumEdge of this.frustumEdges) {
-                const axis = vec3.cross([] as any, edge, frustumEdge);
-                const len  = vec3.length(axis);
-                if (len === 0) {
-                    continue;
+                // axis = edge × frustumEdge
+                const ax = edge[1] * frustumEdge[2] - edge[2] * frustumEdge[1];
+                const ay = edge[2] * frustumEdge[0] - edge[0] * frustumEdge[2];
+                const az = edge[0] * frustumEdge[1] - edge[1] * frustumEdge[0];
+                if (ax === 0 && ay === 0 && az === 0) continue;
+
+                let minA = Infinity, maxA = -Infinity;
+                for (let k = 0; k < points.length; k++) {
+                    const p = points[k];
+                    const d = (p[0] - ox) * ax + (p[1] - oy) * ay + (p[2] - oz) * az;
+                    if (d < minA) minA = d;
+                    if (d > maxA) maxA = d;
+                }
+                let minB = Infinity, maxB = -Infinity;
+                for (let k = 0; k < vertices.length; k++) {
+                    const v = vertices[k];
+                    const d = (v[0] - ox) * ax + (v[1] - oy) * ay + (v[2] - oz) * az;
+                    if (d < minB) minB = d;
+                    if (d > maxB) maxB = d;
                 }
 
-                vec3.scale(axis, axis, 1 / len);
-                const projA = projectPoints((this.points as any), this.points[0], axis);
-                const projB = projectPoints((vertices as any), this.points[0], axis);
-
-                if (projA[0] > projB[1] || projB[0] > projA[1]) {
-                    return 0;
-                }
+                if (minA > maxB || minB > maxA) return 0;
             }
         }
         return 1;
+    }
+
+    containsPoint(point: vec3): boolean {
+        for (const plane of this.planes) {
+            const normal: vec3 = [plane[0], plane[1], plane[2]];
+            const distance = plane[3];
+
+            // If the point is behind any of the frustum's planes, it's outside the frustum
+            if (vec3.dot(normal, point) + distance < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
 }
@@ -347,15 +378,14 @@ class Aabb {
     center: vec3;
 
     static fromPoints(points: Array<vec3>): Aabb {
-        const min = [Infinity, Infinity, Infinity];
-        const max = [-Infinity, -Infinity, -Infinity];
+        const min : vec3 = [Infinity, Infinity, Infinity];
+        const max : vec3 = [-Infinity, -Infinity, -Infinity];
 
         for (const p of points) {
-            vec3.min(min as [number, number, number], min as [number, number, number], p);
-            vec3.max(max as [number, number, number], max as [number, number, number], p);
+            vec3.min(min, min, p);
+            vec3.max(max, max, p);
         }
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
         return new Aabb(min, max);
     }
 
@@ -376,6 +406,25 @@ class Aabb {
         return Aabb.fromPoints(corners);
     }
 
+    // A fast version of applyTransform. Note that it breaks down for non-uniform
+    // scale and complex projection matrices.
+    static applyTransformFast(aabb: Aabb, transform: mat4): Aabb {
+        const min : vec3 = [transform[12], transform[13], transform[14]];
+        const max : vec3 = [...min];
+
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                const value = transform[j * 4 + i];
+                const a = value * aabb.min[j];
+                const b = value * aabb.max[j];
+                min[i] += Math.min(a, b);
+                max[i] += Math.max(a, b);
+            }
+        }
+
+        return new Aabb(min, max);
+    }
+
     static projectAabbCorners(aabb: Aabb, transform: mat4): Array<vec3> {
         const corners = aabb.getCorners();
 
@@ -388,7 +437,7 @@ class Aabb {
     constructor(min_: vec3, max_: vec3) {
         this.min = min_;
         this.max = max_;
-        this.center = vec3.scale([] as any, vec3.add([] as any, this.min, this.max), 0.5);
+        this.center = vec3.scale([], vec3.add([], this.min, this.max), 0.5);
     }
 
     quadrant(index: number): Aabb {
@@ -457,14 +506,13 @@ class Aabb {
         }
 
         // Perform intersection test against flattened (z === 0) aabb
-        const aabbPoints = [
+        const aabbPoints: vec3[] = [
             [this.min[0], this.min[1], 0.0],
             [this.max[0], this.min[1], 0.0],
             [this.max[0], this.max[1], 0.0],
             [this.min[0], this.max[1], 0.0]
         ];
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
         return intersectsFrustum(frustum, aabbPoints);
     }
 
@@ -493,14 +541,13 @@ class Aabb {
         }
 
         // Perform intersection test against flattened (z === 0) aabb
-        const aabbPoints = [
+        const aabbPoints: vec3[] = [
             [this.min[0], this.min[1], 0.0],
             [this.max[0], this.min[1], 0.0],
             [this.max[0], this.max[1], 0.0],
             [this.min[0], this.max[1], 0.0]
         ];
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
         return intersectsFrustumPrecise(frustum, aabbPoints);
     }
 
@@ -550,5 +597,14 @@ export {
     Aabb,
     Frustum,
     FrustumCorners,
-    Ray
+    Ray,
+    Ray2D,
+    NEAR_TL,
+    NEAR_TR,
+    NEAR_BR,
+    NEAR_BL,
+    FAR_TL,
+    FAR_TR,
+    FAR_BR,
+    FAR_BL
 };

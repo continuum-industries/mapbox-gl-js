@@ -1,21 +1,22 @@
 import Point from '@mapbox/point-geometry';
-import type {Map} from '../map';
 import {indexTouches} from './handler_util';
 import {bindAll, isFullscreen} from '../../util/util';
 import * as DOM from '../../util/dom';
+
+import type {Map} from '../map';
 import type {Handler, HandlerResult} from '../handler';
 
 export default class TouchPanHandler implements Handler {
     _map: Map;
     _el: HTMLElement;
-    _enabled: boolean;
-    _active: boolean;
-    _touches: Partial<Record<string | number, Point>>;
+    _enabled!: boolean;
+    _active!: boolean;
+    _touches!: Partial<Record<string | number, Point>>;
     _minTouches: number;
     _clickTolerance: number;
-    _sum: Point;
-    _alertContainer: HTMLElement;
-    _alertTimer: number;
+    _sum!: Point;
+    _alertContainer!: HTMLElement;
+    _alertTimer!: number;
 
     constructor(map: Map, options: {
         clickTolerance: number;
@@ -153,8 +154,7 @@ export default class TouchPanHandler implements Handler {
 
         clearTimeout(this._alertTimer);
 
-        // @ts-expect-error - TS2322 - Type 'Timeout' is not assignable to type 'number'.
-        this._alertTimer = setTimeout(() => {
+        this._alertTimer = window.setTimeout(() => {
             this._alertContainer.classList.remove('mapboxgl-touch-pan-blocker-show');
             this._alertContainer.removeAttribute("role");
         }, 500);

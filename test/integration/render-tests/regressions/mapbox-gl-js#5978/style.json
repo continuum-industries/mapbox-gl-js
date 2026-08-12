@@ -2,11 +2,19 @@
   "version": 8,
   "metadata": {
     "test": {
+      
+      "pixelRatio": 2,
       "width": 64,
-      "height": 64
+      "height": 64,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0023},
+        {"platform-tag-contains": "native-android-gl-mali", "threshold": 0.0035},
+        {"platform-tag-contains": "native-android-gl-powervr", "threshold": 0.007},
+        {"platform-tag-contains": "metal", "threshold": 0.0035}
+      ]
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "sources": {
     "a": {
       "type": "geojson",
@@ -48,7 +56,7 @@
       "source": "a",
       "paint": {
         "line-width": 4,
-        "line-pattern": "oneway_road"
+        "line-pattern": "border-dot-13"
       }
     },
     {
@@ -57,7 +65,7 @@
       "source": "b",
       "paint": {
         "line-width": 30,
-        "line-pattern": "default_3"
+        "line-pattern": "rectangle-yellow-2"
       }
     }
   ]

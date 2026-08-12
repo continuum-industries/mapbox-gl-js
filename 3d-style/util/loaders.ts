@@ -1,93 +1,71 @@
 /* eslint-disable new-cap */
 
-import config from '../../src/util/config';
-import browser from '../../src/util/browser';
-import Dispatcher from '../../src/util/dispatcher';
-import getWorkerPool from '../../src/util/global_worker_pool';
-import {Evented} from '../../src/util/evented';
-import {isWorker, warnOnce} from '../../src/util/util';
-import assert from 'assert';
+import assert from '../../src/style-spec/util/assert';
+import {getDracoUrl, getMeshoptUrl} from '../../src/util/config';
+import {warnOnce} from '../../src/util/util';
 import {DracoDecoderModule} from './draco_decoder_gltf';
-import {MeshoptDecoder} from './meshopt_decoder';
+import {MeshoptDecoderModule} from './meshopt_decoder';
+import {PerformanceUtils} from '../../src/util/performance';
+import {getArrayBuffer} from '../../src/util/ajax';
 
-import type {Class} from '../../src/types/class';
+import type {vec3, mat4, quat} from 'gl-matrix';
+import type {TextureImage} from '../../src/render/texture';
+import type {MaterialDescription, Sampler} from '../data/model';
 
-let dispatcher = null;
-
-let dracoLoading: Promise<any> | undefined;
-let dracoUrl: string | null | undefined;
-let draco: any;
-let meshoptUrl: string | null | undefined;
-let meshopt: any;
-
-export function getDracoUrl(): string {
-// @ts-expect-error - TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'? | TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'?
-    if (isWorker() && self.worker && self.worker.dracoUrl) {
-        // @ts-expect-error - TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'?
-        return self.worker.dracoUrl;
-    }
-
-    return dracoUrl ? dracoUrl : config.DRACO_URL;
+interface DracoDecoder {
+    DecodeArrayToMesh: (data: Uint8Array, length: number, mesh: DracoMesh) => boolean;
+    GetTrianglesUInt16Array: (mesh: DracoMesh, size: number, ptr: number) => void;
+    GetTrianglesUInt32Array: (mesh: DracoMesh, size: number, ptr: number) => void;
+    GetAttributeByUniqueId: (mesh: DracoMesh, id: number) => unknown;
+    GetAttributeDataArrayForAllPoints: (mesh: DracoMesh, attr: unknown, type: unknown, size: number, ptr: number) => void;
+    destroy: () => void;
 }
 
-export function setDracoUrl(url: string) {
-    dracoUrl = browser.resolveURL(url);
-
-    if (!dispatcher) {
-        dispatcher = new Dispatcher(getWorkerPool(), new Evented());
-    }
-
-    // Sets the Draco URL in all workers.
-    dispatcher.broadcast('setDracoUrl', dracoUrl);
+interface DracoMesh {
+    destroy: () => void;
 }
+
+interface DracoModule {
+    Decoder: new () => DracoDecoder;
+    Mesh: new () => DracoMesh;
+    memory: {buffer: ArrayBuffer};
+    _malloc: (size: number) => number;
+    _free: (ptr: number) => void;
+    [key: string]: unknown;
+}
+
+interface MeshoptModule {
+    decodeGltfBuffer: (target: Uint8Array, count: number, stride: number, source: Uint8Array, mode: string, filter: string) => void;
+}
+
+let draco: DracoModule | null = null;
+let dracoLoading: Promise<void> | null = null;
+let meshopt: MeshoptModule | null = null;
+let meshoptLoading: Promise<void> | null = null;
 
 function waitForDraco() {
     if (draco) return;
-    if (dracoLoading) return dracoLoading;
-
-    dracoLoading = DracoDecoderModule(fetch(getDracoUrl()));
-
-    return dracoLoading.then((module) => {
-        draco = module;
-        dracoLoading = undefined;
+    if (dracoLoading != null) return dracoLoading;
+    const startTime = PerformanceUtils.now();
+    dracoLoading = DracoDecoderModule(fetch(getDracoUrl())).then((module) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        draco = module as any as DracoModule;
+        dracoLoading = null;
+        PerformanceUtils.measureWithDetails(PerformanceUtils.GROUP_COMMON, "waitForDraco", "Models", startTime);
     });
-}
-
-export function getMeshoptUrl(): string {
-// @ts-expect-error - TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'? | TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'?
-    if (isWorker() && self.worker && self.worker.meshoptUrl) {
-        // @ts-expect-error - TS2551 - Property 'worker' does not exist on type 'Window & typeof globalThis'. Did you mean 'Worker'?
-        return self.worker.meshoptUrl;
-    }
-
-    if (meshoptUrl) return meshoptUrl;
-
-    const detector = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 3, 2, 0, 0, 5, 3, 1, 0, 1, 12, 1, 0, 10, 22, 2, 12, 0, 65, 0, 65, 0, 65, 0, 252, 10, 0, 0, 11, 7, 0, 65, 0, 253, 15, 26, 11]);
-
-    if (typeof WebAssembly !== 'object') {
-        throw new Error("WebAssembly not supported, cannot instantiate meshoptimizer");
-    }
-
-    meshoptUrl = WebAssembly.validate(detector) ? config.MESHOPT_SIMD_URL : config.MESHOPT_URL;
-
-    return meshoptUrl;
-}
-
-export function setMeshoptUrl(url: string) {
-    meshoptUrl = browser.resolveURL(url);
-    if (!dispatcher) {
-        dispatcher = new Dispatcher(getWorkerPool(), new Evented());
-    }
-    // Sets the Meshopt URL in all workers.
-    dispatcher.broadcast('setMeshoptUrl', meshoptUrl);
+    return dracoLoading;
 }
 
 function waitForMeshopt() {
     if (meshopt) return;
-    const decoder = MeshoptDecoder(fetch(getMeshoptUrl()));
-    return decoder.ready.then(() => {
-        meshopt = decoder;
+    if (meshoptLoading != null) return meshoptLoading;
+    const startTime = PerformanceUtils.now();
+    meshoptLoading = MeshoptDecoderModule(fetch(getMeshoptUrl())).then((module) => {
+        meshopt = module;
+        meshoptLoading = null;
+        PerformanceUtils.measureWithDetails(PerformanceUtils.GROUP_COMMON, "waitForMeshopt", "Models", startTime);
     });
+    return meshoptLoading;
 }
 
 export const GLTF_BYTE = 5120;
@@ -98,7 +76,7 @@ export const GLTF_UINT = 5125;
 export const GLTF_FLOAT = 5126;
 
 export const GLTF_TO_ARRAY_TYPE: {
-    [type: number]: Class<ArrayBufferView>;
+    [type: number]: Int8ArrayConstructor | Uint8ArrayConstructor | Int16ArrayConstructor | Uint16ArrayConstructor | Uint32ArrayConstructor | Float32ArrayConstructor;
 } = {
     [GLTF_BYTE]: Int8Array,
     [GLTF_UBYTE]: Uint8Array,
@@ -127,14 +105,18 @@ export const GLTF_COMPONENTS = {
     MAT4: 16
 } as const;
 
-type GLTFAccessor = {
+export type GLTFAccessor = {
     count: number;
-    type: string;
+    type: 'SCALAR' | 'VEC2' | 'VEC3' | 'VEC4' | 'MAT2' | 'MAT3' | 'MAT4';
     componentType: number;
     bufferView?: number;
+    byteOffset?: number;
+    min?: vec3;
+    max?: vec3;
 };
 
-type GLTFPrimitive = {
+export type GLTFPrimitive = {
+    material?: number;
     indices: number;
     attributes: {
         [id: string]: number;
@@ -149,22 +131,72 @@ type GLTFPrimitive = {
     };
 };
 
-function setAccessorBuffer(buffer: ArrayBuffer, accessor: GLTFAccessor, gltf: any) {
+type Extension = {
+    buffer: number;
+    byteLength: number;
+    byteOffset: number;
+    byteStride: number;
+    count: number;
+    filter: string;
+    mode: 'ATTRIBUTES';
+};
+
+type GLTFBufferView = {
+    buffer: number;
+    byteOffset?: number;
+    byteLength: number;
+    byteStride?: number;
+    extensions?: Record<string, Extension>;
+};
+
+export type GLTFNode = {
+    matrix: mat4;
+    rotation: quat;
+    translation: vec3;
+    scale: vec3;
+    mesh: number;
+    extras: Record<string, unknown>;
+    children: number[];
+    name?: string;
+    extensions?: Record<string, unknown>;
+};
+
+export type GLTF = {
+    json?: {
+        accessors: GLTFAccessor[];
+        asset?: {extras: Record<string, boolean>};
+        buffers?: Array<{uri: string; byteLength: number}>;
+        bufferViews: GLTFBufferView[];
+        extensionsUsed?: string[];
+        images?: Array<{uri?: string; bufferView?: number; mimeType: string}>;
+        materials: MaterialDescription[];
+        meshes?: Array<{primitives: GLTFPrimitive[]}>;
+        nodes: GLTFNode[];
+        samplers?: Sampler[];
+        scene: number;
+        scenes?: Array<{name?: string; nodes: number[]}>;
+        textures?: Array<{source?: number; sampler?: number}>;
+    };
+    images: TextureImage[];
+    buffers: ArrayBuffer[];
+};
+
+function setAccessorBuffer(buffer: ArrayBuffer, accessor: GLTFAccessor, gltf: GLTF) {
     const bufferViewIndex = gltf.json.bufferViews.length;
     const bufferIndex = gltf.buffers.length;
-
     accessor.bufferView = bufferViewIndex;
 
     gltf.json.bufferViews[bufferViewIndex] = {
         buffer: bufferIndex,
         byteLength: buffer.byteLength
     };
+
     gltf.buffers[bufferIndex] = buffer;
 }
 
 const DRACO_EXT = 'KHR_draco_mesh_compression';
 
-function loadDracoMesh(primitive: GLTFPrimitive, gltf: any) {
+function loadDracoMesh(primitive: GLTFPrimitive, gltf: GLTF) {
     const config = primitive.extensions && primitive.extensions[DRACO_EXT];
     if (!config) return;
 
@@ -177,7 +209,6 @@ function loadDracoMesh(primitive: GLTFPrimitive, gltf: any) {
 
     const indexAccessor = gltf.json.accessors[primitive.indices];
     const IndexArrayType = GLTF_TO_ARRAY_TYPE[indexAccessor.componentType];
-    // @ts-expect-error - TS2339 - Property 'BYTES_PER_ELEMENT' does not exist on type 'Class<ArrayBufferView>'.
     const indicesSize = indexAccessor.count * IndexArrayType.BYTES_PER_ELEMENT;
 
     const ptr = draco._malloc(indicesSize);
@@ -194,11 +225,11 @@ function loadDracoMesh(primitive: GLTFPrimitive, gltf: any) {
         const attribute = decoder.GetAttributeByUniqueId(mesh, config.attributes[attributeId]);
         const accessor = gltf.json.accessors[primitive.attributes[attributeId]];
         const ArrayType = GLTF_TO_ARRAY_TYPE[accessor.componentType];
-        const dracoTypeName = GLTF_TO_DRACO_TYPE[accessor.componentType];
+        const dracoTypeName = GLTF_TO_DRACO_TYPE[accessor.componentType] as string;
 
         const numComponents = GLTF_COMPONENTS[accessor.type];
+
         const numValues = accessor.count * numComponents;
-        // @ts-expect-error - TS2339 - Property 'BYTES_PER_ELEMENT' does not exist on type 'Class<ArrayBufferView>'.
         const dataSize = numValues * ArrayType.BYTES_PER_ELEMENT;
 
         const ptr = draco._malloc(dataSize);
@@ -216,19 +247,24 @@ function loadDracoMesh(primitive: GLTFPrimitive, gltf: any) {
 
 const MESHOPT_EXT = 'EXT_meshopt_compression';
 
-function loadMeshoptBuffer(bufferView: any, gltf: any) {
+function loadMeshoptBuffer(bufferView: GLTFBufferView, gltf: GLTF) {
+    if (!(bufferView.extensions && bufferView.extensions[MESHOPT_EXT])) return;
+    const config = bufferView.extensions[MESHOPT_EXT];
 
-    if (!(bufferView.extensions && bufferView.extensions[ MESHOPT_EXT ])) return;
-    const config = bufferView.extensions[ MESHOPT_EXT ];
     const byteOffset = config.byteOffset || 0;
     const byteLength = config.byteLength || 0;
 
     const buffer = gltf.buffers[config.buffer];
+
     const source = new Uint8Array(buffer, byteOffset, byteLength);
+
     const target = new Uint8Array(config.count * config.byteStride);
     meshopt.decodeGltfBuffer(target, config.count, config.byteStride, source, config.mode, config.filter);
+
     bufferView.buffer = gltf.buffers.length;
+
     bufferView.byteOffset = 0;
+
     gltf.buffers[bufferView.buffer] = target.buffer;
 
     delete bufferView.extensions[MESHOPT_EXT];
@@ -244,49 +280,38 @@ function resolveUrl(url: string, baseUrl?: string) {
     return (new URL(url, baseUrl)).href;
 }
 
-function loadBuffer(buffer: {
-    uri: string;
-    byteLength: number;
-}, gltf: any, index: number, baseUrl?: string) {
-    return fetch(resolveUrl(buffer.uri, baseUrl))
-        .then(response => response.arrayBuffer())
-        .then(arrayBuffer => {
-            assert(arrayBuffer.byteLength >= buffer.byteLength);
-            gltf.buffers[index] = arrayBuffer;
-        });
+async function loadBuffer(buffer: {uri: string; byteLength: number}, gltf: GLTF, index: number, baseUrl?: string, signal?: AbortSignal): Promise<void> {
+    const response = await fetch(resolveUrl(buffer.uri, baseUrl), {signal});
+    const arrayBuffer = await response.arrayBuffer();
+    assert(arrayBuffer.byteLength >= buffer.byteLength);
+    gltf.buffers[index] = arrayBuffer;
 }
 
-function getGLTFBytes(gltf: any, bufferViewIndex: number): Uint8Array {
+function getGLTFBytes(gltf: GLTF, bufferViewIndex: number): Uint8Array<ArrayBuffer> {
     const bufferView = gltf.json.bufferViews[bufferViewIndex];
     const buffer = gltf.buffers[bufferView.buffer];
-    return new Uint8Array(buffer, bufferView.byteOffset || 0, bufferView.byteLength);
+    return new Uint8Array<ArrayBuffer>(buffer, bufferView.byteOffset || 0, bufferView.byteLength);
 }
 
-function loadImage(img: {
-    uri?: string;
-    bufferView?: number;
-    mimeType: string;
-}, gltf: any, index: number, baseUrl?: string) {
+async function loadImage(img: {uri?: string; bufferView?: number; mimeType: string}, gltf: GLTF, index: number, baseUrl?: string, signal?: AbortSignal): Promise<void> {
     if (img.uri) {
         const uri = resolveUrl(img.uri, baseUrl);
-        return fetch(uri)
-            .then(response => response.blob())
-            .then(blob => createImageBitmap(blob))
-            .then(imageBitmap => {
-                gltf.images[index] = imageBitmap;
-            });
+        const response = await fetch(uri, {signal});
+        const blob = await response.blob();
+        const imageBitmap = await createImageBitmap(blob);
+        gltf.images[index] = imageBitmap;
     } else if (img.bufferView !== undefined) {
         const bytes = getGLTFBytes(gltf, img.bufferView);
         const blob = new Blob([bytes], {type: img.mimeType});
-        return createImageBitmap(blob)
-            .then(imageBitmap => {
-                gltf.images[index] = imageBitmap;
-            });
+        const imageBitmap = await createImageBitmap(blob);
+        gltf.images[index] = imageBitmap;
     }
 }
 
-export function decodeGLTF(arrayBuffer: ArrayBuffer, byteOffset: number = 0, baseUrl?: string): any {
-    const gltf = {json: null, images: [], buffers: []};
+export async function decodeGLTF(arrayBuffer: ArrayBuffer, byteOffset: number = 0, baseUrl?: string, signal?: AbortSignal): Promise<GLTF> {
+    const startTime = PerformanceUtils.now();
+
+    const gltf: GLTF = {json: null, images: [], buffers: []};
 
     if (new Uint32Array(arrayBuffer, byteOffset, 1)[0] === MAGIC_GLTF) {
         const view = new Uint32Array(arrayBuffer, byteOffset);
@@ -298,7 +323,7 @@ export function decodeGLTF(arrayBuffer: ArrayBuffer, byteOffset: number = 0, bas
         const jsonType = view[pos++];
         assert(jsonType === GLB_CHUNK_TYPE_JSON);
 
-        gltf.json = JSON.parse(textDecoder.decode(view.subarray(pos, pos + jsonLen)));
+        gltf.json = JSON.parse(textDecoder.decode(view.subarray(pos, pos + jsonLen))) as GLTF['json'];
         pos += jsonLen;
 
         if (pos < glbLen) {
@@ -308,76 +333,74 @@ export function decodeGLTF(arrayBuffer: ArrayBuffer, byteOffset: number = 0, bas
             const start = byteOffset + (pos << 2);
             gltf.buffers[0] = arrayBuffer.slice(start, start + byteLength);
         }
-
     } else {
-        gltf.json = JSON.parse(textDecoder.decode(new Uint8Array(arrayBuffer, byteOffset)));
+        gltf.json = JSON.parse(textDecoder.decode(new Uint8Array(arrayBuffer, byteOffset))) as GLTF['json'];
     }
 
-    const {buffers, images, meshes, extensionsUsed, bufferViews} = (gltf.json);
-    let bufferLoadsPromise: Promise<any> = Promise.resolve();
+    const {buffers, images, meshes, extensionsUsed, bufferViews} = gltf.json;
+
     if (buffers) {
-        const bufferLoads = [];
+        const bufferLoads: Promise<void>[] = [];
         for (let i = 0; i < buffers.length; i++) {
             const buffer = buffers[i];
             if (buffer.uri) {
-                bufferLoads.push(loadBuffer(buffer, gltf, i, baseUrl));
-
+                bufferLoads.push(loadBuffer(buffer, gltf, i, baseUrl, signal));
             } else if (!gltf.buffers[i]) {
                 gltf.buffers[i] = null;
             }
         }
-        bufferLoadsPromise = Promise.all(bufferLoads);
+        await Promise.all(bufferLoads);
     }
 
-    return bufferLoadsPromise.then(() => {
-        const assetLoads = [];
+    if (signal) signal.throwIfAborted();
 
-        const dracoUsed = extensionsUsed && extensionsUsed.includes(DRACO_EXT);
-        const meshoptUsed = extensionsUsed && extensionsUsed.includes(MESHOPT_EXT);
-        if (dracoUsed) {
-            assetLoads.push(waitForDraco());
-        }
+    const assetLoads: Promise<unknown>[] = [];
+    const dracoUsed = extensionsUsed && extensionsUsed.includes(DRACO_EXT);
+    const meshoptUsed = extensionsUsed && extensionsUsed.includes(MESHOPT_EXT);
 
-        if (meshoptUsed) {
-            assetLoads.push(waitForMeshopt());
+    if (dracoUsed) {
+        assetLoads.push(waitForDraco());
+    }
+    if (meshoptUsed) {
+        assetLoads.push(waitForMeshopt());
+    }
+    if (images) {
+        for (let i = 0; i < images.length; i++) {
+            assetLoads.push(loadImage(images[i], gltf, i, baseUrl, signal));
         }
-        if (images) {
-            for (let i = 0; i < images.length; i++) {
-                assetLoads.push(loadImage(images[i], gltf, i, baseUrl));
+    }
+
+    if (assetLoads.length) {
+        await Promise.all(assetLoads);
+    }
+
+    if (signal) signal.throwIfAborted();
+
+    if (dracoUsed && meshes) {
+        for (const {primitives} of meshes) {
+            for (const primitive of primitives) {
+                loadDracoMesh(primitive, gltf);
             }
         }
+    }
 
-        const assetLoadsPromise = assetLoads.length ?
-            Promise.all(assetLoads) :
-            Promise.resolve();
+    if (meshoptUsed && meshes && bufferViews) {
+        for (const bufferView of bufferViews) {
+            loadMeshoptBuffer(bufferView, gltf);
+        }
+    }
 
-        return assetLoadsPromise.then(() => {
-            if (dracoUsed && meshes) {
-                for (const {primitives} of meshes) {
-                    for (const primitive of primitives) {
-                        loadDracoMesh(primitive, gltf);
-                    }
-                }
-            }
+    PerformanceUtils.measureWithDetails(PerformanceUtils.GROUP_COMMON, "decodeGLTF", "Models", startTime);
 
-            if (meshoptUsed && meshes && bufferViews) {
-                for (const bufferView of bufferViews) {
-                    loadMeshoptBuffer(bufferView, gltf);
-                }
-            }
-
-            return gltf;
-        });
-    });
+    return gltf;
 }
 
-export function loadGLTF(url: string): Promise<any> {
-    return fetch(url)
-        .then(response => response.arrayBuffer())
-        .then(buffer => decodeGLTF(buffer, 0, url));
+export async function loadGLTF(url: string, signal?: AbortSignal): Promise<GLTF> {
+    const {data: buffer} = await getArrayBuffer({url}, signal);
+    return decodeGLTF(buffer, 0, url, signal);
 }
 
-export function load3DTile(data: ArrayBuffer): Promise<any> {
+export function load3DTile(data: ArrayBuffer): Promise<GLTF> {
     const magic = new Uint32Array(data, 0, 1)[0];
     let gltfOffset = 0;
     if (magic !== MAGIC_GLTF) {
@@ -388,5 +411,6 @@ export function load3DTile(data: ArrayBuffer): Promise<any> {
             warnOnce('Invalid b3dm header information.');
         }
     }
+
     return decodeGLTF(data, gltfOffset);
 }

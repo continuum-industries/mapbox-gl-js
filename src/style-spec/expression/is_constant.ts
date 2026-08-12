@@ -2,6 +2,7 @@ import CompoundExpression from './compound_expression';
 import Within from './definitions/within';
 import Distance from './definitions/distance';
 import Config from './definitions/config';
+
 import type {Expression} from './expression';
 
 function isFeatureConstant(e: Expression): boolean {
@@ -18,7 +19,7 @@ function isFeatureConstant(e: Expression): boolean {
             e.name === 'id'
         ) {
             return false;
-        } else if (/^filter-/.test(e.name)) {
+        } else if (e.name.startsWith('filter-')) {
             return false;
         }
     }
@@ -29,6 +30,10 @@ function isFeatureConstant(e: Expression): boolean {
 
     if (e instanceof Distance) {
         return false;
+    }
+
+    if (e instanceof Config) {
+        return e.featureConstant;
     }
 
     let result = true;
@@ -51,25 +56,17 @@ function isStateConstant(e: Expression): boolean {
     return result;
 }
 
-function isConfigConstant(e: Expression): boolean {
-    if (e instanceof Config) {
-        return false;
-    }
-
+function isGlobalPropertyConstantSet(e: Expression, properties: ReadonlySet<string>): boolean {
+    if (e instanceof CompoundExpression && properties.has(e.name)) { return false; }
     let result = true;
-    e.eachChild(arg => {
-        if (result && !isConfigConstant(arg)) { result = false; }
+    e.eachChild((arg) => {
+        if (result && !isGlobalPropertyConstantSet(arg, properties)) { result = false; }
     });
     return result;
 }
 
 function isGlobalPropertyConstant(e: Expression, properties: Array<string>): boolean {
-    if (e instanceof CompoundExpression && properties.indexOf(e.name) >= 0) { return false; }
-    let result = true;
-    e.eachChild((arg) => {
-        if (result && !isGlobalPropertyConstant(arg, properties)) { result = false; }
-    });
-    return result;
+    return isGlobalPropertyConstantSet(e, new Set(properties));
 }
 
-export {isFeatureConstant, isGlobalPropertyConstant, isStateConstant, isConfigConstant};
+export {isFeatureConstant, isGlobalPropertyConstant, isGlobalPropertyConstantSet, isStateConstant};

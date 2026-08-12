@@ -1,5 +1,4 @@
-import assert from 'assert';
-
+import assert from '../../util/assert';
 import {
     ObjectType,
     ValueType,
@@ -18,7 +17,7 @@ import type ParsingContext from '../parsing_context';
 import type EvaluationContext from '../evaluation_context';
 import type {Type} from '../types';
 
-const types = {
+const types: Record<string, Type> = {
     string: StringType,
     number: NumberType,
     boolean: BooleanType,
@@ -34,23 +33,21 @@ class Assertion implements Expression {
         this.args = args;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | void {
         if (args.length < 2)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return context.error(`Expected at least one argument.`);
 
         let i = 1;
-        let type;
+        let type: Type;
 
-        const name: string = (args[0] as any);
+        const name = args[0] as string;
         if (name === 'array') {
-            let itemType;
+            let itemType: Type;
             if (args.length > 2) {
                 const type = args[1];
                 if (typeof type !== 'string' || !(type in types) || type === 'object')
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
                     return context.error('The item type argument of "array" must be one of string, number, boolean', 1);
-                itemType = types[type];
+                itemType = types[type]!;
                 i++;
             } else {
                 itemType = ValueType;
@@ -63,20 +60,19 @@ class Assertion implements Expression {
                         args[2] < 0 ||
                         args[2] !== Math.floor(args[2]))
                 ) {
-                    // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
                     return context.error('The length argument to "array" must be a positive integer literal', 2);
                 }
-                N = (args[2] as number);
+                N = args[2];
                 i++;
             }
 
             type = array(itemType, N);
         } else {
             assert(types[name], name);
-            type = types[name];
+            type = types[name]!;
         }
 
-        const parsed = [];
+        const parsed: Expression[] = [];
         for (; i < args.length; i++) {
             const input = context.parse(args[i], i, ValueType);
             if (!input) return null;
@@ -86,14 +82,18 @@ class Assertion implements Expression {
         return new Assertion(type, parsed);
     }
 
-    evaluate(ctx: EvaluationContext): any | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    evaluate(ctx: EvaluationContext): any {
         for (let i = 0; i < this.args.length; i++) {
-            const value = this.args[i].evaluate(ctx);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            const value = this.args[i]!.evaluate(ctx);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             const error = checkSubtype(this.type, typeOf(value));
             if (!error) {
                 return value;
             } else if (i === this.args.length - 1) {
-                throw new RuntimeError(`Expected value to be of type ${toString(this.type)}, but found ${toString(typeOf(value))} instead.`);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                throw new RuntimeError(`The expression ${JSON.stringify(this.args[i]!.serialize())} evaluated to ${toString(typeOf(value))} but was expected to be of type ${toString(this.type)}.`);
             }
         }
 
@@ -111,7 +111,7 @@ class Assertion implements Expression {
 
     serialize(): SerializedExpression {
         const type = this.type;
-        const serialized = [type.kind];
+        const serialized: Array<SerializedExpression> = [type.kind];
         if (type.kind === 'array') {
             const itemType = type.itemType;
             if (itemType.kind === 'string' ||
@@ -120,12 +120,10 @@ class Assertion implements Expression {
                 serialized.push(itemType.kind);
                 const N = type.N;
                 if (typeof N === 'number' || this.args.length > 1) {
-                    // @ts-expect-error - TS2345 - Argument of type 'number' is not assignable to parameter of type '"string" | "number" | "boolean" | "object" | "error" | "color" | "value" | "null" | "collator" | "formatted" | "resolvedImage" | "array"'.
-                    serialized.push(N);
+                    serialized.push(N!);
                 }
             }
         }
-        // @ts-expect-error - TS2769 - No overload matches this call.
         return serialized.concat(this.args.map(arg => arg.serialize()));
     }
 }

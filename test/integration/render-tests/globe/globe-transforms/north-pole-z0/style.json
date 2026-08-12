@@ -2,9 +2,15 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.001,
+      
       "width": 256,
-      "height": 256
+      "height": 256,
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "skip - https://github.com/mapbox/mapbox-gl-native-internal/issues/3425"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.001}
+      ]
     }
   },
   "projection": {"name": "globe"},

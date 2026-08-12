@@ -10,7 +10,6 @@ export default function throttle(fn: () => void, time: number): () => number | n
         timerId = null;
         if (pending) {
             fn();
-            // @ts-expect-error - TS2322 - Type 'Timeout' is not assignable to type 'number'.
             timerId = setTimeout(later, time);
             pending = false;
         }

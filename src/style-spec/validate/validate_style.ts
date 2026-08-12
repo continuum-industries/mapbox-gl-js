@@ -1,31 +1,29 @@
-import validate from './validate';
+import validateObject from './validate_object';
 import latestStyleSpec from '../reference/latest';
 import validateGlyphsURL from './validate_glyphs_url';
 
-import ValidationError from '../error/validation_error';
-
-import type {ValidationOptions} from './validate';
+import type ValidationError from '../error/validation_error';
+import type {StyleReference} from '../reference/latest';
 import type {StyleSpecification} from '../types';
 
-type StyleValidationOptions = {
-    key?: ValidationOptions['key'];
+type StyleValidatorOptions = {
+    key?: string;
 };
 
-export default function validateStyle(
-    style: StyleSpecification,
-    styleSpec: any = latestStyleSpec,
-    options: StyleValidationOptions = {},
-): ValidationError[] {
-    const errors = validate({
+export default function validateStyle(style: unknown, styleSpec: StyleReference = latestStyleSpec, options: StyleValidatorOptions = {}): ValidationError[] {
+    const errors = validateObject({
         key: options.key || '',
         value: style,
-        valueSpec: styleSpec.$root,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        valueSpec: {
+            ...styleSpec.$root,
+            // Skip validation of the root properties that are not defined in the style spec (e.g. 'owner').
+            '*': {type: '*'},
+        },
         styleSpec,
-        style,
-        // @ts-expect-error - TS2353 - Object literal may only specify known properties, and 'objectElementValidators' does not exist in type 'ValidationOptions'.
+        style: style as Partial<StyleSpecification>,
         objectElementValidators: {
-            glyphs: validateGlyphsURL,
-            '*': () => []
+            glyphs: validateGlyphsURL
         }
     });
 

@@ -1,5 +1,4 @@
-import assert from 'assert';
-
+import assert from '../util/assert';
 import Color from '../util/color';
 import Collator from './types/collator';
 import Formatted from './types/formatted';
@@ -14,14 +13,14 @@ export function validateRGBA(r: unknown, g: unknown, b: unknown, a?: unknown): s
         typeof g === 'number' && g >= 0 && g <= 255 &&
         typeof b === 'number' && b >= 0 && b <= 255
     )) {
-        const value = typeof a === 'number' ? [r, g, b, a] : [r, g, b];
+        const value = (typeof a === 'number' ? [r, g, b, a] : [r, g, b]) as number[];
         return `Invalid rgba value [${value.join(', ')}]: 'r', 'g', and 'b' must be between 0 and 255.`;
     }
 
     if (!(
         typeof a === 'undefined' || (typeof a === 'number' && a >= 0 && a <= 1)
     )) {
-        return `Invalid rgba value [${[r, g, b, a].join(', ')}]: 'a' must be between 0 and 1.`;
+        return `Invalid rgba value [${([r, g, b, a] as number[]).join(', ')}]: 'a' must be between 0 and 1.`;
     }
 
     return null;
@@ -31,7 +30,7 @@ export function validateHSLA(h: unknown, s: unknown, l: unknown, a?: unknown): s
     if (!(
         typeof h === 'number' && h >= 0 && h <= 360
     )) {
-        const value = typeof a === 'number' ? [h, s, l, a] : [h, s, l];
+        const value = (typeof a === 'number' ? [h, s, l, a] : [h, s, l]) as number[];
         return `Invalid hsla value [${value.join(', ')}]: 'h' must be between 0 and 360.`;
     }
 
@@ -39,22 +38,20 @@ export function validateHSLA(h: unknown, s: unknown, l: unknown, a?: unknown): s
         typeof s === 'number' && s >= 0 && s <= 100 &&
         typeof l === 'number' && l >= 0 && l <= 100
     )) {
-        const value = typeof a === 'number' ? [h, s, l, a] : [h, s, l];
+        const value = (typeof a === 'number' ? [h, s, l, a] : [h, s, l]) as number[];
         return `Invalid hsla value [${value.join(', ')}]: 's', and 'l' must be between 0 and 100.`;
     }
 
     if (!(
         typeof a === 'undefined' || (typeof a === 'number' && a >= 0 && a <= 1)
     )) {
-        return `Invalid hsla value [${[h, s, l, a].join(', ')}]: 'a' must be between 0 and 1.`;
+        return `Invalid hsla value [${([h, s, l, a] as number[]).join(', ')}]: 'a' must be between 0 and 1.`;
     }
 
     return null;
 }
 
-export type Value = null | string | boolean | number | Color | Collator | Formatted | ResolvedImage | ReadonlyArray<Value> | {
-    readonly [key: string]: Value;
-};
+export type Value = null | string | boolean | number | Color | Collator | Formatted | ResolvedImage | ReadonlyArray<Value> | {readonly [key: string]: Value};
 
 export function isValue(mixed: unknown): boolean {
     if (mixed === null) {
@@ -82,7 +79,7 @@ export function isValue(mixed: unknown): boolean {
         return true;
     } else if (typeof mixed === 'object') {
         for (const key in mixed) {
-            if (!isValue(mixed[key])) {
+            if (!isValue((mixed as Record<string, unknown>)[key])) {
                 return false;
             }
         }
@@ -111,9 +108,10 @@ export function typeOf(value: Value): Type {
         return ResolvedImageType;
     } else if (Array.isArray(value)) {
         const length = value.length;
-        let itemType: Type | typeof undefined;
+        let itemType: Type | undefined;
 
         for (const item of value) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             const t = typeOf(item);
             if (!itemType) {
                 itemType = t;
@@ -133,12 +131,11 @@ export function typeOf(value: Value): Type {
 }
 
 export function toString(value: Value): string {
-    const type = typeof value;
     if (value === null) {
         return '';
-    } else if (type === 'string' || type === 'number' || type === 'boolean') {
+    } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         return String(value);
-    } else if (value instanceof Color || value instanceof Formatted || value instanceof ResolvedImage) {
+    } else if (value instanceof Formatted || value instanceof ResolvedImage || value instanceof Color) {
         return value.toString();
     } else {
         return JSON.stringify(value);

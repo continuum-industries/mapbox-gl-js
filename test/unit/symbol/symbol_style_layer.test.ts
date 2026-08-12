@@ -1,17 +1,21 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import SymbolStyleLayer from '../../../src/style/style_layer/symbol_style_layer';
 import FormatSectionOverride from '../../../src/style/format_section_override';
-import properties from '../../../src/style/style_layer/symbol_style_layer_properties';
+import {getPaintProperties} from '../../../src/style/style_layer/symbol_style_layer_properties';
 
 function createSymbolLayer(layerProperties) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     const layer = new SymbolStyleLayer(layerProperties);
     layer.recalculate({zoom: 0});
     return layer;
 }
 
 function isOverriden(paintProperty) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (paintProperty.value.kind === 'source' || paintProperty.value.kind === 'composite') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         return paintProperty.value._styleExpression.expression instanceof FormatSectionOverride;
     }
     return false;
@@ -21,7 +25,7 @@ describe('setPaintOverrides', () => {
     test('setPaintOverrides, no overrides', () => {
         const layer = createSymbolLayer({});
         layer._setPaintOverrides();
-        for (const overridable of properties.paint.overridableProperties) {
+        for (const overridable of getPaintProperties().overridableProperties) {
             expect(isOverriden(layer.paint.get(overridable))).toEqual(false);
         }
     });
@@ -60,7 +64,7 @@ describe('hasPaintOverrides', () => {
     });
 
     test('format expression, overriden text-color', () => {
-        const props = {layout: {'text-field': ["format", ["get", "name"], {"text-color":"red"}]}};
+        const props = {layout: {'text-field': ["format", ["get", "name"], {"text-color": "red"}]}};
         const layer = createSymbolLayer(props);
         expect(SymbolStyleLayer.hasPaintOverride(layer.layout, 'text-color')).toEqual(true);
     });

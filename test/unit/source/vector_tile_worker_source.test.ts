@@ -1,201 +1,228 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi} from '../../util/vitest';
 import {VectorTile} from '@mapbox/vector-tile';
-import Protobuf from 'pbf';
+import {PbfReader} from 'pbf';
 import VectorTileWorkerSource from '../../../src/source/vector_tile_worker_source';
 import StyleLayerIndex from '../../../src/style/style_layer_index';
 import perf from '../../../src/util/performance';
 import {getProjection} from '../../../src/geo/projection/index';
-// eslint-disable-next-line import/no-unresolved
-import rawTileData from '../../fixtures/mbsv5-6-18-23.vector.pbf?arraybuffer';
+import {getPNGResponse} from '../../util/network';
+import rawTileDataImport from '../../fixtures/mbsv5-6-18-23.vector.pbf?arraybuffer';
 
-const actor = {send: () => {}};
+import type {LoadVectorDataCallback} from '../../../src/source/load_vector_tile';
 
-test('VectorTileWorkerSource#abortTile aborts pending request', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+const rawTileData = rawTileDataImport as ArrayBuffer;
+const actor = {async send() {}};
 
-    expect.assertions(3);
+// eslint-disable-next-line @typescript-eslint/require-await
+test('VectorTileWorkerSource#abortTile aborts pending request', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
 
-    source.loadTile({
+    const loadPromise = source.loadTile({
         source: 'source',
         uid: 0,
         tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
         projection: getProjection({name: 'mercator'}),
         request: {url: 'http://localhost:2900/abort'}
-    }, (err, res) => {
-        expect(err).toBeFalsy();
-        expect(res).toBeFalsy();
     });
+    loadPromise.catch(() => {}); // suppress abort rejection
 
-    source.abortTile({
-        source: 'source',
-        uid: 0
-    }, (err, res) => {
-        expect(err).toBeFalsy();
-        expect(res).toBeFalsy();
-    });
-
+    source.abortTile({source: 'source', uid: 0});
     expect(source.loading).toEqual({});
 });
 
-test('VectorTileWorkerSource#abortTile aborts pending async request', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true, (params, cb) => {
-        setTimeout(() => {
-            cb(null, {});
-        }, 0);
-    });
+test('VectorTileWorkerSource#abortTile aborts pending async request', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
+    source.loadVectorData = (params, cb) => {
+        setTimeout(() => { cb(null, {}); }, 0);
+    };
 
-    source.loadTile({
+    const loadPromise = source.loadTile({
         uid: 0,
         tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
         projection: getProjection({name: 'mercator'})
-    }, (err, res) => {
-        expect(err).toBeFalsy();
-        expect(res).toBeFalsy();
     });
-    source.abortTile({uid: 0}, () => {});
+    source.abortTile({uid: 0});
+
+    const result = await loadPromise;
+    expect(result).toBeNull();
 });
 
-test('VectorTileWorkerSource#removeTile removes loaded tile', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+// eslint-disable-next-line @typescript-eslint/require-await
+test('VectorTileWorkerSource#removeTile removes loaded tile', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
 
-    expect.assertions(3);
+    source.loaded = {'0': {}};
 
-    source.loaded = {
-        '0': {}
-    };
-
-    source.removeTile({
-        source: 'source',
-        uid: 0
-    }, (err, res) => {
-        expect(err).toBeFalsy();
-        expect(res).toBeFalsy();
-    });
-
+    source.removeTile({source: 'source', uid: 0});
     expect(source.loaded).toEqual({});
 });
 
-test('VectorTileWorkerSource#reloadTile reloads a previously-loaded tile', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+test('VectorTileWorkerSource#reloadTile reloads a previously-loaded tile', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
     const parse = vi.fn();
 
     source.loaded = {
         '0': {
             status: 'done',
             vectorTile: {},
-            parse
+            parse,
+            updateParameters: () => {}
         }
     };
 
-    const callback = vi.fn();
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback);
+    const reloadPromise = source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(1);
 
-    parse.mock.calls[0][4]();
-    expect(callback).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[0][5](); // calls done → resolves reloadPromise
+    await reloadPromise;
 });
 
-test('VectorTileWorkerSource#reloadTile queues a reload when parsing is in progress', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+test('VectorTileWorkerSource#reloadTile queues a reload when parsing is in progress', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
     const parse = vi.fn();
 
     source.loaded = {
         '0': {
             status: 'done',
             vectorTile: {},
-            parse
+            parse,
+            updateParameters: () => {}
         }
     };
 
-    const callback1 = vi.fn();
-    const callback2 = vi.fn();
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback1);
+    const promise1 = source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(1);
 
     source.loaded[0].status = 'parsing';
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback2);
+    const promise2 = source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(1);
 
-    parse.mock.calls[0][4]();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[0][5](); // done1: triggers 2nd parse, resolves promise1
     expect(parse).toHaveBeenCalledTimes(2);
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).not.toHaveBeenCalled();
+    await promise1;
 
-    parse.mock.calls[1][4]();
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[1][5](); // done2: resolves promise2
+    await promise2;
 });
 
-test('VectorTileWorkerSource#reloadTile handles multiple pending reloads', () => {
+test('VectorTileWorkerSource#reloadTile handles multiple pending reloads', async () => {
     // https://github.com/mapbox/mapbox-gl-js/issues/6308
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
     const parse = vi.fn();
 
     source.loaded = {
         '0': {
             status: 'done',
             vectorTile: {},
-            parse
+            parse,
+            updateParameters: () => {}
         }
     };
 
-    const callback1 = vi.fn();
-    const callback2 = vi.fn();
-    const callback3 = vi.fn();
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback1);
+    // First reload: status=done → parse triggered immediately
+    const promise1 = source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(1);
 
     source.loaded[0].status = 'parsing';
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback2);
+    // Second reload: queues via reloadCallback
+    const promise2 = source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(1);
 
-    parse.mock.calls[0][4]();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[0][5](); // done1: triggers 2nd parse, resolves promise1
     expect(parse).toHaveBeenCalledTimes(2);
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).not.toHaveBeenCalled();
-    expect(callback3).not.toHaveBeenCalled();
+    await promise1;
 
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback3);
+    // Third reload overwrites reloadCallback while 2nd parse is in progress
+    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).toHaveBeenCalledTimes(2);
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).not.toHaveBeenCalled();
-    expect(callback3).not.toHaveBeenCalled();
 
-    parse.mock.calls[1][4]();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[1][5](); // done2: triggers 3rd parse (with done3), resolves promise2
     expect(parse).toHaveBeenCalledTimes(3);
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).toHaveBeenCalledTimes(1);
-    expect(callback3).not.toHaveBeenCalled();
+    await promise2;
 
-    parse.mock.calls[2][4]();
-    expect(callback1).toHaveBeenCalledTimes(1);
-    expect(callback2).toHaveBeenCalledTimes(1);
-    expect(callback3).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    parse.mock.calls[2][5](); // done3: resolves promise3 (not captured)
+    expect(parse).toHaveBeenCalledTimes(3);
 });
 
-test('VectorTileWorkerSource#reloadTile does not reparse tiles with no vectorTile data but does call callback', () => {
-    const source = new VectorTileWorkerSource(actor, new StyleLayerIndex(), [], true);
+test('VectorTileWorkerSource#reloadTile does not reparse tiles with no vectorTile data but does call callback', async () => {
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true});
     const parse = vi.fn();
 
     source.loaded = {
         '0': {
             status: 'done',
-            parse
+            parse,
+            updateParameters: () => {}
         }
     };
 
-    const callback = vi.fn();
-
-    source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}}, callback);
+    await source.reloadTile({uid: 0, tileID: {canonical: {x: 0, y: 0, z: 0}}, projection: {name: 'mercator'}});
     expect(parse).not.toHaveBeenCalled();
-    expect(callback).toHaveBeenCalledTimes(1);
 });
 
-test('VectorTileWorkerSource provides resource timing information', () => {
-    function loadVectorData(params, callback) {
+test('VectorTileWorkerSource#loadTile forwards response headers', async () => {
+    const headers = new Headers();
+    headers.set('Cache-Control', 'max-age=30');
+    headers.set('Expires', 'Thu, 01 Jan 2099 00:00:00 GMT');
+
+    function loadVectorData(params, callback: LoadVectorDataCallback) {
         return callback(null, {
-            vectorTile: new VectorTile(new Protobuf(rawTileData)),
+            vectorTile: new VectorTile(new PbfReader(rawTileData)),
+            rawData: rawTileData,
+            headers
+        });
+    }
+
+    const layerIndex = new StyleLayerIndex([{
+        id: 'test',
+        source: 'source',
+        'source-layer': 'test',
+        type: 'fill'
+    }]);
+
+    const source = new VectorTileWorkerSource({actor, layerIndex, availableImages: [], availableModels: [], isSpriteLoaded: true});
+    source.loadVectorData = loadVectorData;
+
+    const res = await source.loadTile({
+        source: 'source',
+        uid: 0,
+        tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
+        projection: getProjection({name: 'mercator'}),
+        request: {url: 'http://localhost:2900/faketile.pbf'}
+    });
+    expect(res.headers.get('cache-control')).toBe('max-age=30');
+    expect(res.headers.get('expires')).toBe('Thu, 01 Jan 2099 00:00:00 GMT');
+});
+
+test('VectorTileWorkerSource rejects ImageBitmap from provider with an error', async () => {
+    const pngBlob = await getPNGResponse();
+    const realBitmap = await createImageBitmap(pngBlob);
+
+    const tileProvider = {loadTile: vi.fn().mockResolvedValue({data: realBitmap})};
+    const source = new VectorTileWorkerSource({actor, layerIndex: new StyleLayerIndex(), availableImages: [], availableModels: [], isSpriteLoaded: true, tileProvider});
+
+    const loadPromise = source.loadTile({
+        source: 'source',
+        uid: 0,
+        tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
+        projection: getProjection({name: 'mercator'}),
+        request: {url: 'http://example.com/0/0/0.pbf'}
+    });
+    await expect(loadPromise).rejects.toThrow('Vector tiles require ArrayBuffer data');
+});
+
+test('VectorTileWorkerSource provides resource timing information', async () => {
+    function loadVectorData(params, callback: LoadVectorDataCallback) {
+        return callback(null, {
+            vectorTile: new VectorTile(new PbfReader(rawTileData)),
             rawData: rawTileData,
             cacheControl: null,
             expires: null
@@ -230,18 +257,17 @@ test('VectorTileWorkerSource provides resource timing information', () => {
         type: 'fill'
     }]);
 
-    const source = new VectorTileWorkerSource(actor, layerIndex, [], true, loadVectorData);
+    const source = new VectorTileWorkerSource({actor, layerIndex, availableImages: [], availableModels: [], isSpriteLoaded: true});
+    source.loadVectorData = loadVectorData;
 
-    vi.spyOn(perf, 'getEntriesByName').mockImplementation(() => { return [ exampleResourceTiming ]; });
+    vi.spyOn(perf, 'getEntriesByName').mockImplementation(() => { return [exampleResourceTiming]; });
 
-    source.loadTile({
+    const res = await source.loadTile({
         source: 'source',
         uid: 0,
         tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
         projection: getProjection({name: 'mercator'}),
         request: {url: 'http://localhost:2900/faketile.pbf', collectResourceTiming: true}
-    }, (err, res) => {
-        expect(err).toBeFalsy();
-        expect(res.resourceTiming[0]).toStrictEqual(exampleResourceTiming);
     });
+    expect(res.resourceTiming[0]).toStrictEqual(exampleResourceTiming);
 });

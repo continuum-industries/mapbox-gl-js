@@ -9,14 +9,14 @@ import {
     heatmapTextureUniformValues
 } from './program/heatmap_program';
 import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
+import Framebuffer from '../gl/framebuffer';
 
 import type Painter from './painter';
-import type Context from '../gl/context';
-import type Framebuffer from '../gl/framebuffer';
 import type SourceCache from '../source/source_cache';
 import type HeatmapStyleLayer from '../style/style_layer/heatmap_style_layer';
 import type HeatmapBucket from '../data/bucket/heatmap_bucket';
 import type {OverscaledTileID} from '../source/tile_id';
+import type {DynamicDefinesType} from './program/program_uniforms';
 
 export default drawHeatmap;
 
@@ -35,8 +35,9 @@ function drawHeatmap(painter: Painter, sourceCache: SourceCache, layer: HeatmapS
         // Turn on additive blending for kernels, which is a key aspect of kernel density estimation formula
         const colorMode = new ColorMode([gl.ONE, gl.ONE, gl.ONE, gl.ONE], Color.transparent, [true, true, true, true]);
         const resolutionScaling = painter.transform.projection.name === 'globe' ? 0.5 : 0.25;
-
-        bindFramebuffer(context, painter, layer, resolutionScaling);
+        const width = painter.width * resolutionScaling;
+        const height = painter.height * resolutionScaling;
+        layer.heatmapFbo = Framebuffer.createWithTexture(context, layer.heatmapFbo, width, height);
 
         context.clear({color: Color.transparent});
 
@@ -44,10 +45,10 @@ function drawHeatmap(painter: Painter, sourceCache: SourceCache, layer: HeatmapS
 
         const isGlobeProjection = tr.projection.name === 'globe';
 
-        const definesValues = isGlobeProjection ? ['PROJECTION_GLOBE_VIEW'] : [];
+        const definesValues: DynamicDefinesType[] = isGlobeProjection ? ['PROJECTION_GLOBE_VIEW'] : [];
         const cullMode = isGlobeProjection ? CullFaceMode.frontCCW : CullFaceMode.disabled;
 
-        const mercatorCenter = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
+        const mercatorCenter: [number, number] = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
 
         for (let i = 0; i < coords.length; i++) {
             const coord = coords[i];
@@ -58,12 +59,11 @@ function drawHeatmap(painter: Painter, sourceCache: SourceCache, layer: HeatmapS
             if (sourceCache.hasRenderableParent(coord)) continue;
 
             const tile = sourceCache.getTile(coord);
-            const bucket: HeatmapBucket | null | undefined = (tile.getBucket(layer) as any);
+            const bucket = tile.getBucket(layer) as HeatmapBucket;
             if (!bucket || bucket.projection.name !== tr.projection.name) continue;
 
             const affectedByFog = painter.isTileAffectedByFog(coord);
             const programConfiguration = bucket.programConfigurations.get(layer.id);
-            // @ts-expect-error - TS2322 - Type 'string[]' is not assignable to type 'DynamicDefinesType[]'.
             const program = painter.getOrCreateProgram('heatmap', {config: programConfiguration, defines: definesValues, overrideFog: affectedByFog});
             const {zoom} = painter.transform;
             if (painter.terrain) painter.terrain.setupElevationDraw(tile, program);
@@ -74,8 +74,7 @@ function drawHeatmap(painter: Painter, sourceCache: SourceCache, layer: HeatmapS
 
             program.draw(painter, gl.TRIANGLES, DepthMode.disabled, stencilMode, colorMode, cullMode,
                 heatmapUniformValues(painter, coord,
-                    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type '[number, number]'.
-                    tile, invMatrix, mercatorCenter, zoom, layer.paint.get('heatmap-intensity')),
+                    tile, invMatrix as Float32Array, mercatorCenter, zoom, layer.paint.get('heatmap-intensity')),
                 layer.id, bucket.layoutVertexBuffer, bucket.indexBuffer,
                 bucket.segments, layer.paint, painter.transform.zoom,
                 programConfiguration, isGlobeProjection ? [bucket.globeExtVertexBuffer] : null);
@@ -89,45 +88,6 @@ function drawHeatmap(painter: Painter, sourceCache: SourceCache, layer: HeatmapS
     }
 }
 
-function bindFramebuffer(context: Context, painter: Painter, layer: HeatmapStyleLayer, scaling: number) {
-    const gl = context.gl;
-    const width = painter.width * scaling;
-    const height = painter.height * scaling;
-
-    context.activeTexture.set(gl.TEXTURE1);
-    context.viewport.set([0, 0, width, height]);
-
-    let fbo = layer.heatmapFbo;
-
-    if (!fbo || (fbo && (fbo.width !== width || fbo.height !== height))) {
-        if (fbo) { fbo.destroy(); }
-
-        const texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-
-        fbo = layer.heatmapFbo = context.createFramebuffer(width, height, true, null);
-
-        bindTextureToFramebuffer(context, painter, texture, fbo, width, height);
-
-    } else {
-        gl.bindTexture(gl.TEXTURE_2D, fbo.colorAttachment.get());
-        context.bindFramebuffer.set(fbo.framebuffer);
-    }
-}
-
-function bindTextureToFramebuffer(context: Context, painter: Painter, texture: WebGLTexture | null | undefined, fbo: Framebuffer, width: number, height: number) {
-    const gl = context.gl;
-    // Use the higher precision half-float texture where available (producing much smoother looking heatmaps);
-    // Otherwise, fall back to a low precision texture
-    const type = context.extRenderToTextureHalfFloat ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
-    gl.texImage2D(gl.TEXTURE_2D, 0, context.extRenderToTextureHalfFloat ? gl.RGBA16F : gl.RGBA, width, height, 0, gl.RGBA, type, null);
-    fbo.colorAttachment.set(texture);
-}
-
 function renderTextureToMap(painter: Painter, layer: HeatmapStyleLayer) {
     const context = painter.context;
     const gl = context.gl;
@@ -138,12 +98,12 @@ function renderTextureToMap(painter: Painter, layer: HeatmapStyleLayer) {
     const fbo = layer.heatmapFbo;
     if (!fbo) return;
     context.activeTexture.set(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, fbo.colorAttachment.get());
+    gl.bindTexture(gl.TEXTURE_2D, fbo.colorAttachment0.get());
 
     context.activeTexture.set(gl.TEXTURE1);
     let colorRampTexture = layer.colorRampTexture;
     if (!colorRampTexture) {
-        colorRampTexture = layer.colorRampTexture = new Texture(context, layer.colorRamp, gl.RGBA);
+        colorRampTexture = layer.colorRampTexture = new Texture(context, layer.colorRamp, gl.RGBA8);
     }
     colorRampTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
 

@@ -2,7 +2,7 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.0004,
+      
       "operations": [
         [
           "wait"
@@ -34,6 +34,12 @@
         [
           "wait"
         ]
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "flaky"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0004}
       ]
     }
   },

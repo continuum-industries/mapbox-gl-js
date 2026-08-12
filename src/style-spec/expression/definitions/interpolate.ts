@@ -1,37 +1,36 @@
-import UnitBezier from '@mapbox/unitbezier';
-
+import unitBezier from '@mapbox/unitbezier';
 import * as interpolate from '../../util/interpolate';
 import {toString, NumberType, ColorType} from '../types';
 import {findStopLessThanOrEqualTo} from '../stops';
 import {hcl, lab} from '../../util/color_spaces';
-import Color from '../../util/color';
 
+import type Color from '../../util/color';
 import type {Stops} from '../stops';
 import type {Expression, SerializedExpression} from '../expression';
 import type ParsingContext from '../parsing_context';
 import type EvaluationContext from '../evaluation_context';
 import type {Type} from '../types';
 
-export type InterpolationType = {
-    name: 'linear';
-} | {
-    name: 'exponential';
-    base: number;
-} | {
-    name: 'cubic-bezier';
-    controlPoints: [number, number, number, number];
-};
+export type InterpolationType =
+    | {name: 'linear'}
+    | {name: 'exponential'; base: number}
+    | {name: 'cubic-bezier'; controlPoints: [number, number, number, number]};
+
+export type InterpolationOperator =
+    | 'interpolate'
+    | 'interpolate-hcl'
+    | 'interpolate-lab';
 
 class Interpolate implements Expression {
     type: Type;
 
-    operator: 'interpolate' | 'interpolate-hcl' | 'interpolate-lab';
+    operator: InterpolationOperator;
     interpolation: InterpolationType;
     input: Expression;
     labels: Array<number>;
     outputs: Array<Expression>;
 
-    constructor(type: Type, operator: 'interpolate' | 'interpolate-hcl' | 'interpolate-lab', interpolation: InterpolationType, input: Expression, stops: Stops) {
+    constructor(type: Type, operator: InterpolationOperator, interpolation: InterpolationType, input: Expression, stops: Stops) {
         this.type = type;
         this.operator = operator;
         this.interpolation = interpolation;
@@ -58,26 +57,25 @@ class Interpolate implements Expression {
             t = exponentialInterpolation(input, 1, lower, upper);
         } else if (interpolation.name === 'cubic-bezier') {
             const c = interpolation.controlPoints;
-            const ub = new UnitBezier(c[0], c[1], c[2], c[3]);
-            t = ub.solve(exponentialInterpolation(input, 1, lower, upper));
+            const ub = unitBezier(c[0], c[1], c[2], c[3]);
+            t = ub(exponentialInterpolation(input, 1, lower, upper));
         }
         return t;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Interpolate | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Interpolate | null | void {
         let [operator, interpolation, input, ...rest] = args;
 
         if (!Array.isArray(interpolation) || interpolation.length === 0) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
             return context.error(`Expected an interpolation type expression.`, 1);
         }
 
         if (interpolation[0] === 'linear') {
             interpolation = {name: 'linear'};
         } else if (interpolation[0] === 'exponential') {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const base = interpolation[1];
             if (typeof base !== 'number')
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
                 return context.error(`Exponential interpolation requires a numeric base.`, 1, 1);
             interpolation = {
                 name: 'exponential',
@@ -89,26 +87,22 @@ class Interpolate implements Expression {
                 controlPoints.length !== 4 ||
                 controlPoints.some(t => typeof t !== 'number' || t < 0 || t > 1)
             ) {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
                 return context.error('Cubic bezier interpolation requires four numeric arguments with values between 0 and 1.', 1);
             }
 
             interpolation = {
                 name: 'cubic-bezier',
-                controlPoints: (controlPoints as any)
+                controlPoints
             };
         } else {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
             return context.error(`Unknown interpolation type ${String(interpolation[0])}`, 1, 0);
         }
 
         if (args.length - 1 < 4) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
             return context.error(`Expected at least 4 arguments, but found only ${args.length - 1}.`);
         }
 
-        if ((args.length - 1) % 2 !== 0) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
+        if (args.length - 1 > 3 && (args.length - 1) % 2 !== 0) {
             return context.error(`Expected an even number of arguments.`);
         }
 
@@ -117,7 +111,7 @@ class Interpolate implements Expression {
 
         const stops: Stops = [];
 
-        let outputType: Type = (null as any);
+        let outputType: Type | null = null;
         if (operator === 'interpolate-hcl' || operator === 'interpolate-lab') {
             outputType = ColorType;
         } else if (context.expectedType && context.expectedType.kind !== 'value') {
@@ -132,12 +126,10 @@ class Interpolate implements Expression {
             const valueKey = i + 4;
 
             if (typeof label !== 'number') {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
                 return context.error('Input/output pairs for "interpolate" expressions must be defined using literal numeric values (not computed expressions) for the input values.', labelKey);
             }
 
-            if (stops.length && stops[stops.length - 1][0] >= label) {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
+            if (stops.length && stops.at(-1)![0] >= label) {
                 return context.error('Input/output pairs for "interpolate" expressions must be arranged with input values in strictly ascending order.', labelKey);
             }
 
@@ -147,20 +139,18 @@ class Interpolate implements Expression {
             stops.push([label, parsed]);
         }
 
-        if (outputType.kind !== 'number' &&
-            outputType.kind !== 'color' &&
+        if (outputType!.kind !== 'number' &&
+            outputType!.kind !== 'color' &&
             !(
-                outputType.kind === 'array' &&
+                outputType!.kind === 'array' &&
                 outputType.itemType.kind === 'number' &&
                 typeof outputType.N === 'number'
             )
         ) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Interpolate'.
-            return context.error(`Type ${toString(outputType)} is not interpolatable.`);
+            return context.error(`Type ${toString(outputType!)} is not interpolatable.`);
         }
 
-        // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'InterpolationType'.
-        return new Interpolate(outputType, (operator as any), interpolation, input, stops);
+        return new Interpolate(outputType, operator as InterpolationOperator, interpolation as InterpolationType, input as Expression, stops);
     }
 
     evaluate(ctx: EvaluationContext): Color {
@@ -168,29 +158,32 @@ class Interpolate implements Expression {
         const outputs = this.outputs;
 
         if (labels.length === 1) {
-            return outputs[0].evaluate(ctx);
+            return outputs[0]!.evaluate(ctx) as Color;
         }
 
-        const value = (this.input.evaluate(ctx) as number);
-        if (value <= labels[0]) {
-            return outputs[0].evaluate(ctx);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const value: number = this.input.evaluate(ctx);
+        if (value <= labels[0]!) {
+            return outputs[0]!.evaluate(ctx) as Color;
         }
 
         const stopCount = labels.length;
-        if (value >= labels[stopCount - 1]) {
-            return outputs[stopCount - 1].evaluate(ctx);
+        if (value >= labels[stopCount - 1]!) {
+            return outputs[stopCount - 1]!.evaluate(ctx) as Color;
         }
 
         const index = findStopLessThanOrEqualTo(labels, value);
-        const lower = labels[index];
-        const upper = labels[index + 1];
+        const lower = labels[index]!;
+        const upper = labels[index + 1]!;
         const t = Interpolate.interpolationFactor(this.interpolation, value, lower, upper);
 
-        const outputLower = outputs[index].evaluate(ctx);
-        const outputUpper = outputs[index + 1].evaluate(ctx);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const outputLower: Color = outputs[index]!.evaluate(ctx);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const outputUpper: Color = outputs[index + 1]!.evaluate(ctx);
 
         if (this.operator === 'interpolate') {
-            return (interpolate[this.type.kind.toLowerCase()] as any)(outputLower, outputUpper, t); // eslint-disable-line import/namespace
+            return (interpolate[this.type.kind.toLowerCase() as keyof typeof interpolate] as (from: Color, to: Color, t: number) => Color)(outputLower, outputUpper, t);
         } else if (this.operator === 'interpolate-hcl') {
             return hcl.reverse(hcl.interpolate(hcl.forward(outputLower), hcl.forward(outputUpper), t));
         } else {
@@ -210,26 +203,25 @@ class Interpolate implements Expression {
     }
 
     serialize(): SerializedExpression {
-        let interpolation;
+        let interpolation: [InterpolationType['name'], ...number[]];
         if (this.interpolation.name === 'linear') {
-            interpolation = ["linear"];
+            interpolation = ['linear'];
         } else if (this.interpolation.name === 'exponential') {
             if  (this.interpolation.base === 1) {
-                interpolation = ["linear"];
+                interpolation = ['linear'];
             } else {
-                interpolation = ["exponential", this.interpolation.base];
+                interpolation = ['exponential', this.interpolation.base];
             }
         } else {
-            // @ts-expect-error - TS2769 - No overload matches this call.
-            interpolation = ["cubic-bezier" ].concat(this.interpolation.controlPoints);
+            interpolation = ['cubic-bezier', ...this.interpolation.controlPoints];
         }
 
         const serialized = [this.operator, interpolation, this.input.serialize()];
 
         for (let i = 0; i < this.labels.length; i++) {
             serialized.push(
-                this.labels[i],
-                this.outputs[i].serialize()
+                this.labels[i]!,
+                this.outputs[i]!.serialize()
             );
         }
         return serialized;

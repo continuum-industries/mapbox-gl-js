@@ -1,8 +1,7 @@
 import {isCounterClockwise} from './util';
-
 import Point from '@mapbox/point-geometry';
 
-export {polygonIntersectsBufferedPoint, polygonIntersectsMultiPolygon, polygonIntersectsBufferedMultiLine, polygonIntersectsPolygon, distToSegmentSquared, polygonIntersectsBox, polygonContainsPoint, triangleIntersectsTriangle};
+export {polygonIntersectsBufferedPoint, polygonIntersectsMultiPolygon, polygonIntersectsBufferedMultiLine, polygonIntersectsPolygon, distToSegmentSquared, polygonIntersectsBox, polygonContainsPoint, triangleIntersectsTriangle, segmentSegmentIntersection};
 
 type Line = ReadonlyArray<Point>;
 type MultiLine = ReadonlyArray<Line>;
@@ -106,6 +105,29 @@ function lineSegmentIntersectsLineSegment(a0: Point, a1: Point, b0: Point, b1: P
         isCounterClockwise(a0, a1, b0) !== isCounterClockwise(a0, a1, b1);
 }
 
+function signedAreaTriangle(a: Point, b: Point, c: Point): number {
+    return (a.x - c.x) * (b.y - c.y) - (a.y - c.y) * (b.x - c.x);
+}
+
+// Performs intersection between two line segments and returns the intersection point (t, s) along both segments if any
+function segmentSegmentIntersection(a0: Point, a1: Point, b0: Point, b1: Point): [number, number] | undefined {
+    const area0 = signedAreaTriangle(a0, a1, b1);
+    const area1 = signedAreaTriangle(a0, a1, b0);
+
+    if (Math.sign(area0) === Math.sign(area1)) {
+        return undefined;
+    }
+
+    const area2 = signedAreaTriangle(b0, b1, a0);
+    const area3 = area2 + area1 - area0;
+
+    if (Math.sign(area2) === Math.sign(area3)) {
+        return undefined;
+    }
+
+    return [area2 / (area2 - area3), area1 / (area1 - area0)];
+}
+
 function pointIntersectsBufferedLine(p: Point, line: Line, radius: number) {
     const radiusSquared = radius * radius;
 
@@ -132,8 +154,10 @@ function distToSegmentSquared(p: Point, v: Point, w: Point): number {
 
 // point in polygon ray casting algorithm
 function multiPolygonContainsPoint(rings: MultiPolygon, p: Point) {
-    let c = false,
-        ring, p1, p2;
+    let c = false;
+    let ring: Polygon;
+    let p1: Point;
+    let p2: Point;
 
     for (let k = 0; k < rings.length; k++) {
         ring = rings[k];
@@ -189,7 +213,7 @@ function polygonIntersectsBox(ring: Ring, boxX1: number, boxY1: number, boxX2: n
     return false;
 }
 
-function edgeIntersectsBox(e1: Point, e2: Point, corners: Array<Point>) {
+export function edgeIntersectsBox(e1: Point, e2: Point, corners: Array<Point>) {
     const tl = corners[0];
     const br = corners[2];
     // the edge and box do not intersect in either the x or y dimensions

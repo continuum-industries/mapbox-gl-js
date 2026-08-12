@@ -1,5 +1,4 @@
 import {NumberType, toString} from '../types';
-
 import {typeOf} from '../values';
 import RuntimeError from '../runtime_error';
 
@@ -18,27 +17,31 @@ class Length implements Expression {
     }
 
     static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Length | null | undefined {
-        if (args.length !== 2)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Length'.
-            return context.error(`Expected 1 argument, but found ${args.length - 1} instead.`);
+        if (args.length !== 2) {
+            context.error(`Expected 1 argument, but found ${args.length - 1} instead.`);
+            return null;
+        }
 
         const input = context.parse(args[1], 1);
         if (!input) return null;
 
-        if (input.type.kind !== 'array' && input.type.kind !== 'string' && input.type.kind !== 'value')
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Length'.
-            return context.error(`Expected argument of type string or array, but found ${toString(input.type)} instead.`);
+        if (input.type.kind !== 'array' && input.type.kind !== 'string' && input.type.kind !== 'value') {
+            context.error(`Expected argument of type string or array, but found ${toString(input.type)} instead.`);
+            return null;
+        }
 
         return new Length(input);
     }
 
-    evaluate(ctx: EvaluationContext): any | number {
+    evaluate(ctx: EvaluationContext): number {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const input = this.input.evaluate(ctx);
         if (typeof input === 'string') {
             return input.length;
         } else if (Array.isArray(input)) {
             return input.length;
         } else {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             throw new RuntimeError(`Expected value to be of type string or array, but found ${toString(typeOf(input))} instead.`);
         }
     }
@@ -52,8 +55,7 @@ class Length implements Expression {
     }
 
     serialize(): SerializedExpression {
-        const serialized = ["length"];
-        // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
+        const serialized: Array<SerializedExpression> = ["length"];
         this.eachChild(child => { serialized.push(child.serialize()); });
         return serialized;
     }

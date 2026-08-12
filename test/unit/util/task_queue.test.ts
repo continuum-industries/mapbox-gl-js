@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect, vi} from '../../util/vitest';
 import TaskQueue from '../../../src/util/task_queue';
@@ -46,6 +47,7 @@ describe('TaskQueue', () => {
             const no = vi.fn();
             q.add(yes);
             let id: any; // eslint-disable-line prefer-const
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             q.add(() => q.remove(id));
             id = q.add(no);
             q.run();

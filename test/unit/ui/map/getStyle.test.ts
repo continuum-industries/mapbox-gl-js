@@ -1,8 +1,7 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect, waitFor, vi, createMap} from '../../../util/vitest';
 import {createStyle, createStyleSource} from './util';
-import {extend} from '../../../../src/util/util';
-import {getPNGResponse} from '../../../util/network';
 import styleSpec from '../../../../src/style-spec/reference/latest';
 
 describe('Map#getStyle', () => {
@@ -20,31 +19,27 @@ describe('Map#getStyle', () => {
 
         await waitFor(map, "load");
         map.addSource('geojson', createStyleSource());
-        expect(map.getStyle()).toEqual(extend(createStyle(), {
+        expect(map.getStyle()).toEqual(Object.assign(createStyle(), {
             sources: {geojson: createStyleSource()}
         }));
     });
 
     test('returns the style with added terrain', async () => {
         const style = createStyle();
-        vi.spyOn(window, 'fetch').mockImplementation(async () => {
-            const res = await getPNGResponse();
-            return new window.Response(res);
-        });
         const map = createMap({style});
 
         await waitFor(map, "load");
         const terrain = {source: "terrain-source-id", exaggeration: 2};
-        map.addSource('terrain-source-id', {
+        const terrainSource = {
             "type": "raster-dem",
             "tiles": [
                 "https://tiles/{z}-{x}-{y}.terrain.png"
             ]
-        });
+        };
+        map.addSource('terrain-source-id', terrainSource);
         map.setTerrain(terrain);
-        await waitFor(map, "idle");
-        expect(map.getStyle()).toEqual(extend(createStyle(), {
-            terrain, 'sources': map.getStyle().sources
+        expect(map.getStyle()).toEqual(Object.assign(createStyle(), {
+            terrain, sources: {'terrain-source-id': terrainSource}
         }));
     });
 
@@ -60,14 +55,16 @@ describe('Map#getStyle', () => {
         map.setFog(fog);
 
         const fogDefaults = Object
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             .entries(styleSpec.fog)
             .reduce<Record<string, any>>((acc, [key, value]: [any, any]) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 acc[key] = value.default;
                 return acc;
             }, {});
 
-        const fogWithDefaults = extend({}, fogDefaults, fog);
-        expect(map.getStyle()).toEqual(extend(createStyle(), {fog: fogWithDefaults}));
+        const fogWithDefaults = {...fogDefaults, ...fog};
+        expect(map.getStyle()).toEqual(Object.assign(createStyle(), {fog: fogWithDefaults}));
         expect(map.getFog()).toBeTruthy();
     });
 
@@ -109,7 +106,7 @@ describe('Map#getStyle', () => {
 
         await waitFor(map, "load");
         map.addLayer(layer);
-        expect(map.getStyle()).toEqual(extend(createStyle(), {
+        expect(map.getStyle()).toEqual(Object.assign(createStyle(), {
             layers: [layer]
         }));
     });
@@ -142,7 +139,7 @@ describe('Map#getStyle', () => {
         await waitFor(map, "load");
         map.addSource('fill', source);
         map.addLayer(layer);
-        expect(map.getStyle()).toEqual(extend(createStyle(), {
+        expect(map.getStyle()).toEqual(Object.assign(createStyle(), {
             sources: {fill: source},
             layers: [layer]
         }));
@@ -171,5 +168,23 @@ describe('Map#getStyle', () => {
         const previousStyle = map.style;
         map.setStyle(style, {diff: false});
         expect(map.style && map.style !== previousStyle).toBeTruthy();
+    });
+
+    test('returns the style with featuresets', async () => {
+        const style = createStyle();
+        style['featuresets'] = {
+            'my-featureset': {
+                'selectors': [{'layer': 'background'}]
+            }
+        };
+        style['layers'] = [{'id': 'background', 'type': 'background'}];
+        const map = createMap({style});
+
+        await waitFor(map, 'load');
+        expect(map.getStyle().featuresets).toEqual({
+            'my-featureset': {
+                'selectors': [{'layer': 'background'}]
+            }
+        });
     });
 });

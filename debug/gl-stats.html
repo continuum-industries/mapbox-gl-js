@@ -8,16 +8,14 @@
 let now = performance.now();
 window.performance.now = () => now;
 </script>
-<script src='../dist/mapbox-gl.js'></script>
-<script src='../debug/access_token_generated.js'></script>
-<link rel='stylesheet' href='../dist/mapbox-gl.css' />
-<style>.mapboxgl-canary { background-color: salmon; }</style>
-</head>
-<body style="margin: 0; padding: 0"><div id="map" style="width: 500px; height: 500px"></div></body>
-<script>
-mapboxgl.workerCount = 1;
+<script type="module">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
+
+mapboxgl.setWorkerCount(1);
 
 var map = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: document.getElementById('map'),
     style: 'mapbox://styles/mapbox/streets-v11',
     center: [-77.07842066675323, 38.890315130853566],
@@ -92,4 +90,8 @@ map.on('data', function onData(e) {
     });
 });
 </script>
+<link rel="stylesheet" href="../dist/mapbox-gl.css" />
+<style>.mapboxgl-canary { background-color: salmon; }</style>
+</head>
+<body style="margin: 0; padding: 0"><div id="map" style="width: 500px; height: 500px"></div></body>
 </html>

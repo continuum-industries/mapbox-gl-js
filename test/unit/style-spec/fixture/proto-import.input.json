@@ -1,0 +1,11 @@
+{
+  "version": 8,
+  "imports": [
+    {
+      "id": "__proto__",
+      "url": "mapbox://styles/mapbox/standard"
+    }
+  ],
+  "sources": {},
+  "layers": []
+}

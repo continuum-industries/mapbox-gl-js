@@ -1,27 +1,28 @@
 import StyleLayer from '../style_layer';
+import {getLayoutProperties, getPaintProperties} from './raster_style_layer_properties';
+import {type ColorRampScale, renderColorRamp} from '../../util/color_ramp';
 
-import properties from './raster_style_layer_properties';
-import {Transitionable, Transitioning, PossiblyEvaluated} from '../properties';
-import {renderColorRamp} from '../../util/color_ramp';
-import {RGBAImage} from '../../util/image';
-import ImageSource from '../../source/image_source';
-
+import type {Transitionable, Transitioning, PossiblyEvaluated, ConfigOptions} from '../properties';
+import type {RGBAImage} from '../../util/image';
 import type {PaintProps} from './raster_style_layer_properties';
 import type {LayerSpecification} from '../../style-spec/types';
 import type Texture from '../../render/texture';
-import type {ConfigOptions} from '../properties';
 import type SourceCache from '../../source/source_cache';
+import type ImageSource from '../../source/image_source';
 import type {LUT} from "../../util/lut";
+import type {ProgramName} from '../../render/program';
 
-export const COLOR_RAMP_RES = 256;
+export const COLOR_RAMP_RES = 1024;
 export const COLOR_MIX_FACTOR = (Math.pow(COLOR_RAMP_RES, 2) - 1) / (255 * COLOR_RAMP_RES * (COLOR_RAMP_RES + 3));
 
 class RasterStyleLayer extends StyleLayer {
-    _transitionablePaint: Transitionable<PaintProps>;
-    _transitioningPaint: Transitioning<PaintProps>;
-    paint: PossiblyEvaluated<PaintProps>;
+    override type!: 'raster';
 
-    colorRamp: RGBAImage;
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
+
+    colorRamp!: RGBAImage;
     colorRampTexture: Texture | null | undefined;
 
     // Cache the currently-computed range so that we can call updateColorRamp
@@ -32,12 +33,16 @@ class RasterStyleLayer extends StyleLayer {
     _curRampRange: [number, number];
 
     constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        const properties = {
+            layout: getLayoutProperties(),
+            paint: getPaintProperties()
+        };
         super(layer, properties, scope, lut, options);
         this.updateColorRamp();
         this._curRampRange = [NaN, NaN];
     }
 
-    getProgramIds(): Array<string> {
+    override getProgramIds(): ProgramName[] {
         return ['raster'];
     }
 
@@ -46,28 +51,37 @@ class RasterStyleLayer extends StyleLayer {
         return !!expr.value;
     }
 
-    tileCoverLift(): number {
-
+    override tileCoverLift(): number {
         return this.paint.get('raster-elevation');
     }
 
-    isDraped(sourceCache?: SourceCache | null): boolean {
+    override isDraped(sourceCache?: SourceCache | null): boolean {
         // Special handling for raster, where the drapeability depends on the source
-        if (sourceCache && sourceCache._source instanceof ImageSource) {
+        const source = sourceCache ? sourceCache._source : null;
+        // image/video/canvas sources (the only ones with pole flags) are not draped at the poles
+        if (source && (source.type === 'image' || source.type === 'video' || source.type === 'canvas')) {
             // If tile ID is missing, it's rendered outside of the tile pyramid (eg. poles)
-            if (sourceCache._source.onNorthPole || sourceCache._source.onSouthPole) {
+            const imageSource = source as ImageSource;
+            if (imageSource.onNorthPole || imageSource.onSouthPole) {
                 return false;
             }
         }
-        return this.paint.get('raster-elevation') === 0.0;
+        return this.paint.get('raster-elevation') === 0.0 && this.paint.get('raster-allow-draping');
     }
 
-    _handleSpecialPaintPropertyUpdate(name: string) {
-        if (name === 'raster-color' || name === 'raster-color-range') {
+    override _handleSpecialPaintPropertyUpdate(name: string) {
+        if (name === 'raster-color' || name === 'raster-color-range' || name === 'raster-color-scale') {
             // Force recomputation
             this._curRampRange = [NaN, NaN];
 
             this.updateColorRamp();
+        }
+    }
+
+    override _clear() {
+        if (this.colorRampTexture) {
+            this.colorRampTexture.destroy();
+            this.colorRampTexture = null;
         }
     }
 
@@ -81,15 +95,22 @@ class RasterStyleLayer extends StyleLayer {
         if (isNaN(start) && isNaN(end)) return;
         if (start === this._curRampRange[0] && end === this._curRampRange[1]) return;
 
+        const scale = this._transitionablePaint._values['raster-color-scale'].value.expression.evaluate<undefined | ColorRampScale>({zoom: 0});
+
         this.colorRamp = renderColorRamp({
             expression,
             evaluationKey: 'rasterValue',
             image: this.colorRamp,
             clips: [{start, end}],
             resolution: COLOR_RAMP_RES,
+            scale
         });
         this.colorRampTexture = null;
         this._curRampRange = [start, end];
+    }
+
+    override is3D(terrainEnabled?: boolean): boolean {
+        return this.paint.get('raster-elevation') > 0 || !this.paint.get('raster-allow-draping');
     }
 }
 

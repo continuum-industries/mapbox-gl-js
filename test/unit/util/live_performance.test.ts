@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import {getLivePerformanceMetrics} from '../../../src/util/live_performance';
@@ -176,8 +177,8 @@ describe('LivePerformance', () => {
             },
             {name: 'screenWidth', value: window.screen.width.toString()},
             {name: 'screenHeight', value: window.screen.height.toString()},
-            {name: 'windowWidth', value: '300'},
-            {name: 'windowHeight', value: '150'},
+            {name: 'windowWidth', value: '414'},
+            {name: 'windowHeight', value: '896'},
             {name: 'mapWidth', value: '100'},
             {name: 'mapHeight', value: '50'},
             {name: 'webglRenderer', value: 'webgl renderer'},

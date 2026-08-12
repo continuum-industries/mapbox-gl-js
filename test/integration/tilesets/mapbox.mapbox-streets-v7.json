@@ -1,0 +1,5 @@
+{
+    "tiles": [
+      "local://tiles/mapbox.mapbox-streets-v7/{z}-{x}-{y}.mvt"
+    ]
+}

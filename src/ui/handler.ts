@@ -9,12 +9,12 @@ import type MercatorCoordinate from '../geo/mercator_coordinate';
 // For example, if there is a mousedown and mousemove, the mousePan handler
 // would return a `panDelta` on the mousemove.
 export interface Handler {
-    enable(): void;
-    disable(): void;
-    isEnabled(): boolean;
-    isActive(): boolean;
+    enable: () => void;
+    disable: () => void;
+    isEnabled: () => boolean;
+    isActive: () => boolean;
     // `reset` can be called by the manager at any time and must reset everything to it's original state
-    reset(): void;
+    reset: () => void;
     // Handlers can optionally implement these methods.
     // They are called with dom events whenever those dom evens are received.
     readonly touchstart?: (e: TouchEvent, points: Array<Point>, mapTouches: Array<Touch>) => HandlerResult | null | undefined | void;
@@ -46,10 +46,10 @@ export type HandlerResult = {
     // the point to not move when changing the camera in mercator coordinates
     aroundCoord?: MercatorCoordinate | null;
     // A method that can fire a one-off easing by directly changing the map's camera.
-    cameraAnimation?: (map: Map) => any;
+    cameraAnimation?: (map: Map) => void;
     // The last three properties are needed by only one handler: scrollzoom.
     // The DOM event to be used as the `originalEvent` on any camera change events.
-    originalEvent?: any;
+    originalEvent?: MouseEvent | TouchEvent | WheelEvent | KeyboardEvent | null;
     // Makes the manager trigger a frame, allowing the handler to return multiple results over time (see scrollzoom).
     needsRenderFrame?: boolean;
     // The camera changes won't get recorded for inertial zooming.

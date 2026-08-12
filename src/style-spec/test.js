@@ -1,26 +1,26 @@
 #!/usr/bin/env node
-/* eslint-disable no-process-exit */
 
 import fs from 'fs';
 import {execSync} from 'child_process';
 import {createRequire} from 'module';
 
-// @ts-expect-error - TS2345 - Argument of type 'Buffer' is not assignable to parameter of type 'string'.
-const packageJson = JSON.parse(fs.readFileSync('./package.json'));
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const packageJson = JSON.parse(fs.readFileSync('./package.json').toString());
 
-process.on('unhandledRejection', (error) => {
+process.on('unhandledRejection', (/** @type {Error} */ error) => {
     // don't log `error` directly, because errors from child_process.execSync
     // contain an (undocumented) `envPairs` with environment variable values
-    // @ts-expect-error - TS2339 - Property 'message' does not exist on type 'unknown'.
     console.log(error.message || 'unhandledRejection');
     process.exit(1);
 });
 
 const require = createRequire(import.meta.url);
-const stylePath = require.resolve('mapbox-gl-styles/styles/basic-v9.json');
+const stylePath = require.resolve('@mapbox/mapbox-gl-styles/styles/basic-v9.json');
 
 try {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     for (const bin in packageJson.bin) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         const script = packageJson.bin[bin];
         const command = [script, stylePath].join(' ');
 
@@ -28,6 +28,6 @@ try {
         execSync(command).toString();
     }
 } catch (error) {
-    console.log(error.message);
+    console.log(/** @type {Error} */ (error).message);
     process.exit(1);
 }

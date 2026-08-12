@@ -45,9 +45,9 @@ export class QueryGeometry {
 
     isAboveHorizon: boolean;
 
-    constructor(screenBounds: Point[], cameraPoint: Point, aboveHorizon: boolean, transform: Transform) {
+    constructor(screenBounds: Point[], aboveHorizon: boolean, transform: Transform) {
         this.screenBounds = screenBounds;
-        this.cameraPoint = cameraPoint;
+        this.cameraPoint = transform.getCameraPoint();
         this._screenRaycastCache = {};
         this._cameraRaycastCache = {};
         this.isAboveHorizon = aboveHorizon;
@@ -65,23 +65,22 @@ export class QueryGeometry {
      * @returns {QueryGeometry} An instance of the QueryGeometry class.
      */
     static createFromScreenPoints(geometry: PointLike | [PointLike, PointLike], transform: Transform): QueryGeometry {
-        let screenGeometry;
-        let aboveHorizon;
+        let screenGeometry: Point[];
+        let aboveHorizon: boolean;
 
         if (geometry instanceof Point || typeof geometry[0] === 'number') {
-            const pt = Point.convert(geometry);
+            const pt = Point.convert(geometry as PointLike);
             screenGeometry = [pt];
-            // @ts-expect-error - TS2345 - Argument of type 'Point | [PointLike, PointLike]' is not assignable to parameter of type 'Point'.
             aboveHorizon = transform.isPointAboveHorizon(pt);
         } else {
             const tl = Point.convert(geometry[0]);
-            const br = Point.convert(geometry[1]);
+            const br = Point.convert(geometry[1] as PointLike);
+            const center = tl.add(br)._div(2);
             screenGeometry = [tl, br];
-            // @ts-expect-error - TS2345 - Argument of type 'number | Point' is not assignable to parameter of type 'Point'.
-            aboveHorizon = polygonizeBounds(tl, br).every((p) => transform.isPointAboveHorizon(p));
+            aboveHorizon = polygonizeBounds(tl, br).every((p) => transform.isPointAboveHorizon(p)) && transform.isPointAboveHorizon(center);
         }
 
-        return new QueryGeometry(screenGeometry, transform.getCameraPoint(), aboveHorizon, transform);
+        return new QueryGeometry(screenGeometry, aboveHorizon, transform);
     }
 
     /**
@@ -192,10 +191,8 @@ export class QueryGeometry {
         const cameraPolygon = polygonizeBounds(min, max, buffer);
 
         const camPos = this.cameraPoint.clone();
-        // @ts-expect-error - TS2365 - Operator '+' cannot be applied to types 'boolean' and 'boolean'.
-        const column = (camPos.x > min.x) + (camPos.x > max.x);
-        // @ts-expect-error - TS2365 - Operator '+' cannot be applied to types 'boolean' and 'boolean'.
-        const row = (camPos.y > min.y) + (camPos.y > max.y);
+        const column = Number(camPos.x > min.x) + Number(camPos.x > max.x);
+        const row = Number(camPos.y > min.y) + Number(camPos.y > max.y);
         const sector = row * 3 + column;
 
         switch (sector) {
@@ -236,15 +233,16 @@ export class QueryGeometry {
      * @param {Transform} transform The current map transform.
      * @param {boolean} use3D A boolean indicating whether to query 3D features.
      * @param {number} cameraWrap A wrap value for offsetting the camera position.
+     * @param {MercatorCoordinate} cameraMercator The camera position in mercator coordinates, constant across the query.
      * @returns {?TilespaceQueryGeometry} Returns `undefined` if the tile does not intersect.
      */
-    containsTile(tile: Tile, transform: Transform, use3D: boolean, cameraWrap: number = 0): TilespaceQueryGeometry | null | undefined {
+    containsTile(tile: Tile, transform: Transform, use3D: boolean, cameraWrap: number = 0, cameraMercator: MercatorCoordinate): TilespaceQueryGeometry | null | undefined {
         // The buffer around the query geometry is applied in screen-space.
         // transform._pixelsPerMercatorPixel is used to compensate any extra scaling applied from the currently active projection.
         // Floating point errors when projecting into tilespace could leave a feature
         // outside the query volume even if it looks like it overlaps visually, a 1px bias value overcomes that.
         const bias = 1;
-        const padding = tile.queryPadding / transform._pixelsPerMercatorPixel + bias;
+        const padding = Math.max(tile.queryPadding, tile.evaluateQueryRenderedFeaturePadding()) / transform._pixelsPerMercatorPixel + bias;
 
         const cachedQuery = use3D ?
             this._bufferedCameraMercator(padding, transform) :
@@ -261,7 +259,6 @@ export class QueryGeometry {
         const tilespaceVec3s = this.screenGeometryMercator.polygon.map((p) => getTileVec3(tile.tileTransform, p, wrap));
         const tilespaceGeometry = tilespaceVec3s.map((v) => new Point(v[0], v[1]));
 
-        const cameraMercator = transform.getFreeCameraOptions().position || new MercatorCoordinate(0, 0, 0);
         const tilespaceCameraPosition = getTileVec3(tile.tileTransform, cameraMercator, wrap);
         const tilespaceRays = tilespaceVec3s.map((tileVec) => {
             const dir = vec3.sub(tileVec, tileVec, tilespaceCameraPosition);
@@ -381,7 +378,7 @@ export function unwrapQueryPolygon(polygon: Point[], tr: Transform): {
 
                 if (edge === 0) {
                     // First and last points are duplicate for closed polygons
-                    polygon[polygon.length - 1].x += 1;
+                    polygon.at(-1).x += 1;
                 }
             } else {
                 b.x += 1;
@@ -410,8 +407,7 @@ export function unwrapQueryPolygon(polygon: Point[], tr: Transform): {
 // Finding projection of these kind of polygons is more involving as projecting just the corners will
 // produce a degenerate (self-intersecting, non-continuous, etc.) polygon in mercator coordinates
 export function projectPolygonCoveringPoles(polygon: Point[], tr: Transform): CachedPolygon | null | undefined {
-// @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-    const matrix = mat4.multiply([] as any, tr.pixelMatrix, tr.globeMatrix);
+    const matrix = mat4.multiply([], tr.pixelMatrix, tr.globeMatrix);
 
     // Transform north and south pole coordinates to the screen to see if they're
     // inside the query polygon
@@ -419,9 +415,9 @@ export function projectPolygonCoveringPoles(polygon: Point[], tr: Transform): Ca
     const southPole = [0, GLOBE_RADIUS, 0, 1];
     const center = [0, 0, 0, 1];
 
-    vec4.transformMat4(northPole as [number, number, number, number], northPole as [number, number, number, number], matrix);
-    vec4.transformMat4(southPole as [number, number, number, number], southPole as [number, number, number, number], matrix);
-    vec4.transformMat4(center as [number, number, number, number], center as [number, number, number, number], matrix);
+    vec4.transformMat4(northPole, northPole, matrix);
+    vec4.transformMat4(southPole, southPole, matrix);
+    vec4.transformMat4(center, center, matrix);
 
     const screenNp = new Point(northPole[0] / northPole[3], northPole[1] / northPole[3]);
     const screenSp = new Point(southPole[0] / southPole[3], southPole[1] / southPole[3]);
@@ -452,17 +448,17 @@ export function projectPolygonCoveringPoles(polygon: Point[], tr: Transform): Ca
     const resampled = [...partA];
 
     if (resampled.length === 0) {
-        resampled.push(partB[partB.length - 1]);
+        resampled.push(partB.at(-1));
     }
 
     // Find location of the crossing by interpolating mercator coordinates.
     // This will produce slightly off result as the crossing edge is not actually
     // linear on the globe.
-    const a = resampled[resampled.length - 1];
+    const a = resampled.at(-1);
     const b = partB.length === 0 ? partA[0] : partB[0];
     const intersectionY = interpolate(a.y, b.y, t);
 
-    let mid;
+    let mid: Point[];
 
     if (containsNp) {
         mid = [

@@ -4,12 +4,8 @@
     "test": {
       "height": 256,
       "width": 256,
-      "operations": [
-        [
-          "setRuntimeSettingBool",
-          "mapbox_enable_fog_dithering",
-          true
-        ]
+      "image-threshold": [
+        {"platform-tag-contains": "native-android", "threshold": 0.00019}
       ]
     }
   },

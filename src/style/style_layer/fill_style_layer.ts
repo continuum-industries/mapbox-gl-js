@@ -1,12 +1,12 @@
-import StyleLayer from '../style_layer';
-
+import StyleLayer, {rawLayoutMayUseHD} from '../style_layer';
+import {prepareHD} from '../../../modules/hd_worker';
 import FillBucket from '../../data/bucket/fill_bucket';
 import {polygonIntersectsMultiPolygon} from '../../util/intersection_tests';
 import {translateDistance, translate} from '../query_utils';
-import properties from './fill_style_layer_properties';
-import {Transitionable, Transitioning, Layout, PossiblyEvaluated} from '../properties';
+import {getLayoutProperties, getPaintProperties} from './fill_style_layer_properties';
 import ProgramConfiguration from '../../data/program_configuration';
 
+import type {Transitionable, Transitioning, Layout, PossiblyEvaluated, ConfigOptions} from '../properties';
 import type {FeatureState} from '../../style-spec/expression/index';
 import type {BucketParameters} from '../../data/bucket';
 import type Point from '@mapbox/point-geometry';
@@ -16,28 +16,36 @@ import type Transform from '../../geo/transform';
 import type {LayerSpecification} from '../../style-spec/types';
 import type {TilespaceQueryGeometry} from '../query_geometry';
 import type {VectorTileFeature} from '@mapbox/vector-tile';
+import type {RuntimeModuleType} from '../style_layer';
 import type {CreateProgramParams} from '../../render/painter';
-import type {ConfigOptions} from '../properties';
 import type {LUT} from "../../util/lut";
+import type {ImageId} from '../../style-spec/expression/types/image_id';
+import type {ProgramName} from '../../render/program';
 
 class FillStyleLayer extends StyleLayer {
-    _unevaluatedLayout: Layout<LayoutProps>;
-    layout: PossiblyEvaluated<LayoutProps>;
+    override type!: 'fill';
 
-    _transitionablePaint: Transitionable<PaintProps>;
-    _transitioningPaint: Transitioning<PaintProps>;
-    paint: PossiblyEvaluated<PaintProps>;
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
+
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        const properties = {
+            layout: getLayoutProperties(),
+            paint: getPaintProperties()
+        };
         super(layer, properties, scope, lut, options);
     }
 
-    getProgramIds(): string[] {
+    override getProgramIds(): ProgramName[] {
         const pattern = this.paint.get('fill-pattern');
 
-        const image = pattern && pattern.constantOr((1 as any));
+        const image = pattern && pattern.constantOr(1);
 
-        const ids = [image ? 'fillPattern' : 'fill'];
+        const ids: ProgramName[] = [image ? 'fillPattern' : 'fill'];
 
         if (this.paint.get('fill-antialias')) {
             ids.push(image && !this.getPaintProperty('fill-outline-color') ? 'fillOutlinePattern' : 'fillOutline');
@@ -46,14 +54,14 @@ class FillStyleLayer extends StyleLayer {
         return ids;
     }
 
-    getDefaultProgramParams(name: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
+    override getDefaultProgramParams(name: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
         return {
             config: new ProgramConfiguration(this, {zoom, lut}),
             overrideFog: false
         };
     }
 
-    recalculate(parameters: EvaluationParameters, availableImages: Array<string>) {
+    override recalculate(parameters: EvaluationParameters, availableImages: ImageId[]) {
         super.recalculate(parameters, availableImages);
 
         const outlineColor = this.paint._values['fill-outline-color'];
@@ -63,16 +71,15 @@ class FillStyleLayer extends StyleLayer {
         }
     }
 
-    createBucket(parameters: BucketParameters<FillStyleLayer>): FillBucket {
+    override createBucket(parameters: BucketParameters<this>): FillBucket {
         return new FillBucket(parameters);
     }
 
-    queryRadius(): number {
-
+    override queryRadius(): number {
         return translateDistance(this.paint.get('fill-translate'));
     }
 
-    queryIntersectsFeature(
+    override queryIntersectsFeature(
         queryGeometry: TilespaceQueryGeometry,
         feature: VectorTileFeature,
         featureState: FeatureState,
@@ -90,8 +97,31 @@ class FillStyleLayer extends StyleLayer {
         return polygonIntersectsMultiPolygon(translatedPolygon, geometry);
     }
 
-    isTileClipped(): boolean {
-        return true;
+    override isTileClipped(): boolean {
+        return this.paint.get('fill-z-offset').constantOr(1.0) === 0.0;
+    }
+
+    override is3D(terrainEnabled?: boolean): boolean {
+        if (this.paint.get('fill-z-offset').constantOr(1.0) !== 0.0) return true;
+
+        const potentially3D = this.layout && this.layout.get('fill-elevation-reference') !== 'none';
+        return terrainEnabled != null ? (potentially3D && !terrainEnabled) : potentially3D;
+    }
+
+    override hasElevation(): boolean {
+        return this.layout && this.layout.get('fill-elevation-reference') !== 'none';
+    }
+
+    override mayUse(type: RuntimeModuleType): boolean {
+        return type === 'HD' && rawLayoutMayUseHD(this, 'fill-elevation-reference', v => v !== 'none');
+    }
+
+    override prepare(): Promise<void> {
+        return this.mayUse('HD') ? prepareHD() : Promise.resolve();
+    }
+
+    override hasShadowPass(): boolean {
+        return this.layout && this.layout.get('fill-elevation-reference') !== 'none';
     }
 }
 

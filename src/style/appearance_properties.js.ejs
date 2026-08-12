@@ -1,0 +1,53 @@
+<%
+  const layoutProperties = locals.layoutProperties;
+  const paintProperties = locals.paintProperties;
+-%>
+// This file is generated. Edit build/generate-style-code.ts, then run `npm run codegen`.
+/* eslint-disable */
+
+import styleSpec from '../../src/style-spec/reference/latest';
+
+import {
+    Properties,
+    DataDrivenProperty
+} from '../../src/style/properties';
+
+import {
+    ColorType} from '../style-spec/expression/types';
+
+import type Color from '../style-spec/util/color';
+import type ResolvedImage from '../style-spec/expression/types/resolved_image';
+
+<% if (layoutProperties.length) { -%>
+export type AppearanceLayoutProps = {
+<% for (const property of layoutProperties) { -%>
+    "<%= property.name %>": <%- propertyType(property.src, property) %>;
+<% } -%>
+};
+
+let layoutPropertiesInstance: Properties<AppearanceLayoutProps>;
+export const getAppearanceLayoutProperties = (): Properties<AppearanceLayoutProps> => layoutPropertiesInstance || (layoutPropertiesInstance = new Properties({
+<% for (const property of layoutProperties) { -%>
+    "<%= property.name %>": <%- propertyValue(property.type, property, property.srcSection) %>,
+<% } -%>
+}));
+<% } -%>
+
+<% if (paintProperties.length) { -%>
+export type AppearancePaintProps = {
+<% for (const property of paintProperties) { const _pt = property['property-type']; property['property-type'] = 'data-driven'; -%>
+    "<%= property.name %>": <%- propertyType(property.src, property) %>;
+<% property['property-type'] = _pt; } -%>
+};
+
+let paintPropertiesInstance: Properties<AppearancePaintProps>;
+export const getAppearancePaintProperties = (): Properties<AppearancePaintProps> => paintPropertiesInstance || (paintPropertiesInstance = new Properties({
+<% for (const property of paintProperties) { const _pt = property['property-type']; property['property-type'] = 'data-driven'; -%>
+    "<%= property.name %>": <%- propertyValue(property.type, property, property.srcSection) %>,
+<% property['property-type'] = _pt; } -%>
+}));
+<% } -%>
+
+// Backwards-compatible aliases (layout-only, as before)
+export type AppearanceProps = AppearanceLayoutProps;
+export const getAppearanceProperties = getAppearanceLayoutProperties;

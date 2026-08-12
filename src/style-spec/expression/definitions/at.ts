@@ -1,5 +1,4 @@
 import {array, ValueType, NumberType} from '../types';
-
 import RuntimeError from '../runtime_error';
 
 import type {Expression, SerializedExpression} from '../expression';
@@ -19,9 +18,8 @@ class At implements Expression {
         this.input = input;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): At | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): At | null | void {
         if (args.length !== 3)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'At'.
             return context.error(`Expected 2 arguments, but found ${args.length - 1} instead.`);
 
         const index = context.parse(args[1], 1, NumberType);
@@ -29,7 +27,7 @@ class At implements Expression {
 
         if (!index || !input) return null;
 
-        const t: ArrayType = (input.type as any);
+        const t = input.type as ArrayType;
         return new At(t.itemType, index, input);
     }
 
@@ -38,18 +36,18 @@ class At implements Expression {
         const array = (this.input.evaluate(ctx) as Array<Value>);
 
         if (index < 0) {
-            throw new RuntimeError(`Array index out of bounds: ${index} < 0.`);
+            throw new RuntimeError(`Array index out of bounds: negative index`);
         }
 
         if (index >= array.length) {
-            throw new RuntimeError(`Array index out of bounds: ${index} > ${array.length - 1}.`);
+            throw new RuntimeError(`Array index out of bounds: index exceeds array size`);
         }
 
         if (index !== Math.floor(index)) {
-            throw new RuntimeError(`Array index must be an integer, but found ${index} instead.`);
+            throw new RuntimeError(`Array index must be an integer. Use at-interpolated for fractional indices`);
         }
 
-        return array[index];
+        return array[index]!;
     }
 
     eachChild(fn: (_: Expression) => void) {

@@ -2,12 +2,16 @@
   "version": 8,
   "metadata": {
     "test": {
+      "pixelRatio": 2,
       "height": 512,
       "width": 512,
-      "allowed": 0.0002,
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00017},
+        {"platform-tag-contains": "native", "threshold": 0.0025}
       ]
     }
   },

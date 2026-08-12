@@ -3,11 +3,14 @@
   "metadata": {
     "test": {
       "width": 256,
-      "height": 128
+      "height": 128,
+      "image-threshold": [
+        {"platform-tag-contains": "native-android", "threshold": 0.017}
+      ]
     }
   },
   "zoom": 1,
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "sources": {
     "a": {
       "type": "geojson",
@@ -128,7 +131,7 @@
       },
       "paint": {
         "line-width": 16,
-        "line-pattern": ["case", ["==", ["get", "class"], "street"], "generic_icon", "generic_metro" ]
+        "line-pattern": ["case", ["==", ["get", "class"], "street"], "information", "car" ]
       }
     }
   ]

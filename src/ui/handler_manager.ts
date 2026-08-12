@@ -15,28 +15,47 @@ import TapDragZoomHandler from './handler/tap_drag_zoom';
 import DragPanHandler from './handler/shim/drag_pan';
 import DragRotateHandler from './handler/shim/drag_rotate';
 import TouchZoomRotateHandler from './handler/shim/touch_zoom_rotate';
-import {bindAll, extend} from '../util/util';
+import {bindAll} from '../util/util';
 import Point from '@mapbox/point-geometry';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {vec3} from 'gl-matrix';
-import MercatorCoordinate, {latFromMercatorY, mercatorScale} from '../geo/mercator_coordinate';
+import {latFromMercatorY, mercatorScale} from '../geo/mercator_coordinate';
 
+import type MercatorCoordinate from '../geo/mercator_coordinate';
 import type {Map} from './map';
+import type {MapEvents} from './events';
 import type {Handler, HandlerResult} from './handler';
 
 export type InputEvent = MouseEvent | TouchEvent | KeyboardEvent | WheelEvent;
 
-const isMoving = (p: {
-    [key: string]: any;
-}) => p.zoom || p.drag || p.pitch || p.rotate;
+/**
+ * One of modifier [KeyboardEvent.key](https://developer.mozilla.org/docs/Web/API/KeyboardEvent/key) values.
+ */
+export type PitchRotateKey = 'Control' | 'Alt' | 'Shift' | 'Meta';
 
-class RenderFrameEvent extends Event {
-    type: 'renderFrame';
-    timeStamp: number;
+export type HandlerManagerOptions = {
+    interactive: boolean;
+    pitchWithRotate: boolean;
+    clickTolerance: number;
+    bearingSnap: number;
+    pitchRotateKey?: PitchRotateKey;
+};
+
+export type KeepGesture = 'always' | 'ifPointerDown' | 'never';
+
+type EventsInProgress = {
+    [T in keyof MapEvents]?: MapEvents[T];
+};
+
+const isMoving = (p: EventsInProgress) => p.zoom || p.drag || p.pitch || p.rotate;
+
+class RenderFrameEvent extends Event<{renderFrame: {timeStamp: number}}, 'renderFrame'> {
+    override type!: 'renderFrame';
+    timeStamp!: number;
 }
 
 class TrackingEllipsoid {
-    constants: Array<number>;
+    constants: vec3;
     radius: number;
 
     constructor() {
@@ -46,10 +65,9 @@ class TrackingEllipsoid {
     }
 
     setup(center: vec3, pointOnSurface: vec3) {
-        const centerToSurface = vec3.sub([] as any, pointOnSurface, center);
+        const centerToSurface = vec3.sub([], pointOnSurface, center);
         if (centerToSurface[2] < 0) {
-            // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyVec3'.
-            this.radius = vec3.length(vec3.div([] as any, centerToSurface, this.constants));
+            this.radius = vec3.length(vec3.div([], centerToSurface, this.constants));
         } else {
             // The point on surface is above the center. This can happen for example when the camera is
             // below the clicked point (like a mountain) Use slightly shorter radius for less aggressive movement
@@ -60,20 +78,18 @@ class TrackingEllipsoid {
     // Cast a ray from the center of the ellipsoid and the intersection point.
     projectRay(dir: vec3): vec3 {
         // Perform the intersection test against a unit sphere
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyVec3'.
         vec3.div(dir, dir, this.constants);
         vec3.normalize(dir, dir);
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'ReadonlyVec3'.
         vec3.mul(dir, dir, this.constants);
 
-        const intersection = vec3.scale([] as any, dir, this.radius);
+        const intersection = vec3.scale([], dir, this.radius);
 
         if (intersection[2] > 0) {
             // The intersection point is above horizon so special handling is required.
             // Otherwise direction of the movement would be inverted due to the ellipsoid shape
-            const h = vec3.scale([] as any, [0, 0, 1], vec3.dot(intersection, [0, 0, 1]));
-            const r = vec3.scale([] as any, vec3.normalize([] as any, [intersection[0], intersection[1], 0]), this.radius);
-            const p = vec3.add([] as any, intersection, vec3.scale([] as any, vec3.sub([] as any, vec3.add([] as any, r, h), intersection), 2));
+            const h = vec3.scale([], [0, 0, 1], vec3.dot(intersection, [0, 0, 1]));
+            const r = vec3.scale([], vec3.normalize([], [intersection[0], intersection[1], 0]), this.radius);
+            const p = vec3.add([], intersection, vec3.scale([], vec3.sub([], vec3.add([], r, h), intersection), 2));
 
             intersection[0] = p[0];
             intersection[1] = p[1];
@@ -93,31 +109,32 @@ class HandlerManager {
     _handlers: Array<{
         handlerName: string;
         handler: Handler;
-        allowed: any;
+        allowed: Array<string>;
     }>;
-    _eventsInProgress: any;
+    _eventsInProgress: EventsInProgress;
     _frameId: number | null | undefined;
     _inertia: HandlerInertia;
     _bearingSnap: number;
     _handlersById: {
         [key: string]: Handler;
     };
-    _updatingCamera: boolean;
-    _changes: Array<[HandlerResult, any, any]>;
+    _updatingCamera!: boolean;
+    _changes: Array<[HandlerResult, EventsInProgress, Record<string, InputEvent | RenderFrameEvent>]>;
     _previousActiveHandlers: {
         [key: string]: Handler;
     };
-    _listeners: Array<[HTMLElement | Document, string, undefined | AddEventListenerOptions]>;
+    _listeners: Array<[HTMLElement | Document | Window, string, undefined | AddEventListenerOptions]>;
     _trackingEllipsoid: TrackingEllipsoid;
     _dragOrigin: vec3 | null | undefined;
     _originalZoom: number | null | undefined;
 
-    constructor(map: Map, options: {
-        interactive: boolean;
-        pitchWithRotate: boolean;
-        clickTolerance: number;
-        bearingSnap: number;
-    }) {
+    // Whether a pointer is currently physically down.
+    // Used to avoid tearing down an in-progress gesture when a soft camera update (jumpTo/easeTo/flyTo)
+    // is called while the user is still dragging.
+    _mouseBeingPressed: boolean;
+    _activeTouchCount: number;
+
+    constructor(map: Map, options: HandlerManagerOptions) {
         this._map = map;
         this._el = this._map.getCanvasContainer();
         this._handlers = [];
@@ -129,6 +146,8 @@ class HandlerManager {
         this._previousActiveHandlers = {};
         this._trackingEllipsoid = new TrackingEllipsoid();
         this._dragOrigin = null;
+        this._mouseBeingPressed = false;
+        this._activeTouchCount = 0;
 
         // Track whether map is currently moving, to compute start/move/end events
         this._eventsInProgress = {};
@@ -175,28 +194,23 @@ class HandlerManager {
             [el, 'wheel', {passive: false}],
             [el, 'contextmenu', undefined],
 
-            // @ts-expect-error - TS2322 - Type 'Window & typeof globalThis' is not assignable to type 'Document | HTMLElement'.
             [window, 'blur', undefined]
         ];
 
         for (const [target, type, listenerOptions] of this._listeners) {
             const listener = target === document ? this.handleWindowEvent : this.handleEvent;
-            target.addEventListener((type as any), (listener as any), listenerOptions);
+            target.addEventListener(type, listener as EventListener, listenerOptions);
         }
     }
 
     destroy() {
         for (const [target, type, listenerOptions] of this._listeners) {
             const listener = target === document ? this.handleWindowEvent : this.handleEvent;
-            target.removeEventListener((type as any), (listener as any), listenerOptions);
+            target.removeEventListener(type, listener as EventListener, listenerOptions);
         }
     }
 
-    _addDefaultHandlers(options: {
-        interactive: boolean;
-        pitchWithRotate: boolean;
-        clickTolerance: number;
-    }) {
+    _addDefaultHandlers(options: HandlerManagerOptions) {
         const map = this._map;
         const el = map.getCanvasContainer();
         this._add('mapEvent', new MapEventHandler(map, options));
@@ -242,9 +256,10 @@ class HandlerManager {
         const keyboard = map.keyboard = new KeyboardHandler();
         this._add('keyboard', keyboard);
 
-        for (const name of ['boxZoom', 'doubleClickZoom', 'tapDragZoom', 'touchPitch', 'dragRotate', 'dragPan', 'touchZoomRotate', 'scrollZoom', 'keyboard']) {
-            if (options.interactive && (options as any)[name]) {
-                (map as any)[name].enable((options as any)[name]);
+        for (const name of ['boxZoom', 'doubleClickZoom', 'tapDragZoom', 'touchPitch', 'dragRotate', 'dragPan', 'touchZoomRotate', 'scrollZoom', 'keyboard'] as const) {
+            if (options.interactive && options[name]) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                map[name].enable(options[name]);
             }
         }
     }
@@ -254,15 +269,17 @@ class HandlerManager {
         this._handlersById[handlerName] = handler;
     }
 
-    stop(allowEndAnimation: boolean) {
+    stop(keepGesture: KeepGesture = 'never') {
         // do nothing if this method was triggered by a gesture update
         if (this._updatingCamera) return;
+
+        if (keepGesture === 'always' || (keepGesture === 'ifPointerDown' && this._isPointerDown())) return;
 
         for (const {handler} of this._handlers) {
             handler.reset();
         }
         this._inertia.clear();
-        this._fireEvents({}, {}, allowEndAnimation);
+        this._fireEvents({}, {}, false);
         this._changes = [];
         this._originalZoom = undefined;
     }
@@ -299,7 +316,7 @@ class HandlerManager {
     ): boolean {
         for (const name in activeHandlers) {
             if (name === myName) continue;
-            if (!allowed || allowed.indexOf(name) < 0) {
+            if (!allowed || !allowed.includes(name)) {
                 return true;
             }
         }
@@ -311,24 +328,58 @@ class HandlerManager {
     }
 
     _getMapTouches(touches: TouchList): TouchList {
-        const mapTouches = [];
+        const mapTouches: Touch[] = [];
         for (const t of touches) {
             const target = (t.target as Node);
             if (this._el.contains(target)) {
                 mapTouches.push(t);
             }
         }
-        // @ts-expect-error - TS2352 - Conversion of type 'any[]' to type 'TouchList' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-        return mapTouches as TouchList;
+        return mapTouches as unknown as TouchList;
+    }
+
+    // Track raw physical pointer state from the DOM events
+    _updatePointerLiveness(e: InputEvent | RenderFrameEvent) {
+        switch (e.type) {
+        case 'mousedown':
+            this._mouseBeingPressed = true;
+            break;
+        case 'mousemove':
+            // A mousemove with no buttons held means the press was released
+            // outside the window/iframe and no mouseup was delivered.
+            if ((e as MouseEvent).buttons === 0) {
+                this._mouseBeingPressed = false;
+            }
+            break;
+        case 'mouseup':
+            this._mouseBeingPressed = false;
+            break;
+        case 'touchstart':
+        case 'touchmove':
+        case 'touchend':
+        case 'touchcancel':
+            this._activeTouchCount = (e as TouchEvent).touches ? (e as TouchEvent).touches.length : 0;
+            break;
+        case 'blur':
+            this._mouseBeingPressed = false;
+            this._activeTouchCount = 0;
+            break;
+        }
+    }
+
+    // Whether the user is still physically holding a pointer down (mouse or touch).
+    // Helps avoid an in-progress gesture being torn down unexpectedly.
+    _isPointerDown(): boolean {
+        return this._mouseBeingPressed || this._activeTouchCount > 0;
     }
 
     handleEvent(e: InputEvent | RenderFrameEvent, eventName?: string) {
-
+        this._updatePointerLiveness(e);
         this._updatingCamera = true;
         assert(e.timeStamp !== undefined);
 
         const isRenderFrame = e.type === 'renderFrame';
-        const inputEvent = isRenderFrame ? undefined : (e as InputEvent);
+        const inputEvent = isRenderFrame ? undefined : e;
 
         /*
          * We don't call e.preventDefault() for any events by default.
@@ -336,11 +387,10 @@ class HandlerManager {
          */
 
         const mergedHandlerResult: HandlerResult = {needsRenderFrame: false};
-        const eventsInProgress: Record<string, any> = {};
-        const activeHandlers: Record<string, any> = {};
+        const eventsInProgress: EventsInProgress = {};
+        const activeHandlers: Record<string, Handler> = {};
 
-        // @ts-expect-error - TS2339 - Property 'touches' does not exist on type 'InputEvent | RenderFrameEvent'.
-        const mapTouches = e.touches ? this._getMapTouches((e as TouchEvent).touches) : undefined;
+        const mapTouches = (e as TouchEvent).touches ? this._getMapTouches((e as TouchEvent).touches) : undefined;
         const points = mapTouches ? DOM.touchPos(this._el, mapTouches) :
             isRenderFrame ? undefined : // renderFrame event doesn't have any points
             DOM.mousePos(this._el, (e as MouseEvent));
@@ -353,8 +403,9 @@ class HandlerManager {
                 handler.reset();
 
             } else {
-                if ((handler as any)[eventName || e.type]) {
-                    data = (handler as any)[eventName || e.type](e, points, mapTouches);
+                if (handler[eventName || e.type]) {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+                    data = handler[eventName || e.type](e, points, mapTouches);
                     this.mergeHandlerResult(mergedHandlerResult, eventsInProgress, data, handlerName, inputEvent);
                     if (data && data.needsRenderFrame) {
                         this._triggerRenderFrame();
@@ -367,7 +418,7 @@ class HandlerManager {
             }
         }
 
-        const deactivatedHandlers: Record<string, any> = {};
+        const deactivatedHandlers: Record<string, InputEvent | RenderFrameEvent> = {};
         for (const name in this._previousActiveHandlers) {
             if (!activeHandlers[name]) {
                 deactivatedHandlers[name] = inputEvent;
@@ -381,7 +432,7 @@ class HandlerManager {
         }
 
         if (Object.keys(activeHandlers).length || hasChange(mergedHandlerResult)) {
-            this._map._stop(true);
+            this._map._stop({keepGesture: 'always'});
         }
 
         this._updatingCamera = false;
@@ -395,35 +446,34 @@ class HandlerManager {
         }
     }
 
-    mergeHandlerResult(mergedHandlerResult: HandlerResult, eventsInProgress: any, handlerResult: HandlerResult, name: string, e?: InputEvent) {
+    mergeHandlerResult(mergedHandlerResult: HandlerResult, eventsInProgress: EventsInProgress, handlerResult: HandlerResult, name: string, e?: InputEvent | RenderFrameEvent) {
         if (!handlerResult) return;
 
-        extend(mergedHandlerResult, handlerResult);
+        Object.assign(mergedHandlerResult, handlerResult);
 
         const eventData = {handlerName: name, originalEvent: handlerResult.originalEvent || e};
 
         // track which handler changed which camera property
         if (handlerResult.zoomDelta !== undefined) {
-            eventsInProgress.zoom = eventData;
+            eventsInProgress.zoom = eventData as MapEvents['zoom'];
         }
         if (handlerResult.panDelta !== undefined) {
-            eventsInProgress.drag = eventData;
+            eventsInProgress.drag = eventData as MapEvents['drag'];
         }
         if (handlerResult.pitchDelta !== undefined) {
-            eventsInProgress.pitch = eventData;
+            eventsInProgress.pitch = eventData as MapEvents['pitch'];
         }
         if (handlerResult.bearingDelta !== undefined) {
-            eventsInProgress.rotate = eventData;
+            eventsInProgress.rotate = eventData as MapEvents['rotate'];
         }
     }
 
     _applyChanges() {
-        const combined: Record<string, any> = {};
-        const combinedEventsInProgress: Record<string, any> = {};
-        const combinedDeactivatedHandlers: Record<string, any> = {};
+        const combined: HandlerResult = {};
+        const combinedEventsInProgress: EventsInProgress = {};
+        const combinedDeactivatedHandlers: Record<string, Handler> = {};
 
         for (const [change, eventsInProgress, deactivatedHandlers] of this._changes) {
-
             if (change.panDelta) combined.panDelta = (combined.panDelta || new Point(0, 0))._add(change.panDelta);
             if (change.zoomDelta) combined.zoomDelta = (combined.zoomDelta || 0) + change.zoomDelta;
             if (change.bearingDelta) combined.bearingDelta = (combined.bearingDelta || 0) + change.bearingDelta;
@@ -433,26 +483,28 @@ class HandlerManager {
             if (change.pinchAround !== undefined) combined.pinchAround = change.pinchAround;
             if (change.noInertia) combined.noInertia = change.noInertia;
 
-            extend(combinedEventsInProgress, eventsInProgress);
-            extend(combinedDeactivatedHandlers, deactivatedHandlers);
+            Object.assign(combinedEventsInProgress, eventsInProgress);
+            Object.assign(combinedDeactivatedHandlers, deactivatedHandlers);
         }
 
         this._updateMapTransform(combined, combinedEventsInProgress, combinedDeactivatedHandlers);
         this._changes = [];
     }
 
-    _updateMapTransform(combinedResult: any, combinedEventsInProgress: any, deactivatedHandlers: any) {
-
+    _updateMapTransform(combinedResult: HandlerResult, combinedEventsInProgress: EventsInProgress, deactivatedHandlers: Record<string, Handler>) {
         const map = this._map;
         const tr = map.transform;
 
         const eventStarted = (type: string) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const newEvent = combinedEventsInProgress[type];
             return newEvent && !this._eventsInProgress[type];
         };
 
         const eventEnded = (type: string) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const event = this._eventsInProgress[type];
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             return event && !this._handlersById[event.handlerName].isActive();
         };
 
@@ -474,7 +526,7 @@ class HandlerManager {
         }
 
         // Catches double click and double tap zooms when camera is constrained over terrain
-        if (tr._isCameraConstrained) map._stop(true);
+        if (tr._isCameraConstrained) map._stop({keepGesture: 'always'});
 
         if (!hasChange(combinedResult)) {
             this._fireEvents(combinedEventsInProgress, deactivatedHandlers, true);
@@ -505,7 +557,7 @@ class HandlerManager {
         tr.cameraElevationReference = "sea";
 
         // stop any ongoing camera animations (easeTo, flyTo)
-        map._stop(true);
+        map._stop({keepGesture: 'always'});
 
         around = around || map.transform.centerPoint;
         if (bearingDelta) tr.bearing += bearingDelta;
@@ -552,18 +604,18 @@ class HandlerManager {
             // This way the zoom interpolation can be kept linear and independent of the (possible) terrain elevation
             const pickedPosition: vec3 = aroundCoord ? toVec3(aroundCoord) : toVec3(tr.pointCoordinate3D(around));
 
-            const aroundRay = {dir: vec3.normalize([] as any, vec3.sub([] as any, pickedPosition, tr._camera.position))};
+            const aroundRay = {dir: vec3.normalize([], vec3.sub([], pickedPosition, tr._camera.position))};
             if (aroundRay.dir[2] < 0) {
                 // Special handling is required if the ray created from the cursor is heading up.
                 // This scenario is possible if user is trying to zoom towards a feature like a hill or a mountain.
                 // Convert zoomDelta to a movement vector as if the camera would be orbiting around the picked point
                 const movement = tr.zoomDeltaToMovement(pickedPosition, zoomDelta);
-                vec3.scale(zoomVec as [number, number, number], aroundRay.dir, movement);
+                vec3.scale(zoomVec, aroundRay.dir, movement);
             }
         }
 
         // Mutate camera state via CameraAPI
-        const translation = vec3.add(panVec as [number, number, number], panVec as [number, number, number], zoomVec as [number, number, number]);
+        const translation = vec3.add(panVec, panVec, zoomVec);
         tr._translateCameraConstrained(translation);
 
         if (zoomDelta && Math.abs(tr.zoom - originalZoom) > 0.0001) {
@@ -577,20 +629,20 @@ class HandlerManager {
         this._fireEvents(combinedEventsInProgress, deactivatedHandlers, true);
     }
 
-    _fireEvents(newEventsInProgress: {
-        [key: string]: any;
-    }, deactivatedHandlers: any, allowEndAnimation: boolean) {
-
+    _fireEvents(newEventsInProgress: EventsInProgress, deactivatedHandlers: Record<string, Handler>, allowEndAnimation: boolean) {
         const wasMoving = isMoving(this._eventsInProgress);
         const nowMoving = isMoving(newEventsInProgress);
 
-        const startEvents: Record<string, any> = {};
+        const startEvents: EventsInProgress = {};
 
         for (const eventName in newEventsInProgress) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const {originalEvent} = newEventsInProgress[eventName];
             if (!this._eventsInProgress[eventName]) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 startEvents[`${eventName}start`] = originalEvent;
             }
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this._eventsInProgress[eventName] = newEventsInProgress[eventName];
         }
 
@@ -600,7 +652,8 @@ class HandlerManager {
         }
 
         for (const name in startEvents) {
-            this._fireEvent(name, startEvents[name]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            this._fireEvent(name as keyof MapEvents, startEvents[name]);
         }
 
         if (nowMoving) {
@@ -608,24 +661,31 @@ class HandlerManager {
         }
 
         for (const eventName in newEventsInProgress) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const {originalEvent} = newEventsInProgress[eventName];
-            this._fireEvent(eventName, originalEvent);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            this._fireEvent(eventName as keyof MapEvents, originalEvent);
         }
 
-        const endEvents: Record<string, any> = {};
+        const endEvents: EventsInProgress = {};
 
         let originalEndEvent;
         for (const eventName in this._eventsInProgress) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const {handlerName, originalEvent} = this._eventsInProgress[eventName];
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (!this._handlersById[handlerName].isActive()) {
                 delete this._eventsInProgress[eventName];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 originalEndEvent = deactivatedHandlers[handlerName] || originalEvent;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 endEvents[`${eventName}end`] = originalEndEvent;
             }
         }
 
         for (const name in endEvents) {
-            this._fireEvent(name, endEvents[name]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            this._fireEvent(name as keyof MapEvents, endEvents[name]);
         }
 
         const stillMoving = isMoving(this._eventsInProgress);
@@ -639,8 +699,10 @@ class HandlerManager {
                 if (shouldSnapToNorth(inertialEase.bearing || this._map.getBearing())) {
                     inertialEase.bearing = 0;
                 }
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 this._map.easeTo(inertialEase, {originalEvent: originalEndEvent});
             } else {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 this._map.fire(new Event('moveend', {originalEvent: originalEndEvent}));
                 if (shouldSnapToNorth(this._map.getBearing())) {
                     this._map.resetNorth();
@@ -651,8 +713,9 @@ class HandlerManager {
 
     }
 
-    _fireEvent(type: string, e: any) {
-        this._map.fire(new Event(type, e ? {originalEvent: e} : {}));
+    _fireEvent(type: keyof MapEvents, event?: MouseEvent | TouchEvent) {
+        const eventData = (event ? {originalEvent: event} : {});
+        this._map.fire(new Event(type, eventData as MapEvents[keyof MapEvents]));
     }
 
     _requestFrame(): number {

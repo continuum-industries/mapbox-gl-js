@@ -52,11 +52,6 @@ vec2 unpack_float(const float packedValue) {
     return vec2(v0, packedIntValue - v0 * 256);
 }
 
-vec2 unpack_opacity(const float packedOpacity) {
-    int intOpacity = int(packedOpacity) / 2;
-    return vec2(float(intOpacity) / 127.0, mod(packedOpacity, 2.0));
-}
-
 // To minimize the number of attributes needed, we encode a 4-component
 // color into a pair of floats (i.e. a vec2) as follows:
 // [ floor(color.r * 255) * 256 + color.g * 255,
@@ -92,10 +87,15 @@ vec4 unpack_mix_color(const vec4 packedColors, const float t) {
 //
 // The offset is calculated in a series of steps that should preserve this precision:
 vec2 get_pattern_pos(const vec2 pixel_coord_upper, const vec2 pixel_coord_lower,
-    const vec2 pattern_size, const float tile_units_to_pixels, const vec2 pos) {
+    const vec2 pattern_size, const vec2 units_to_pixels, const vec2 pos) {
 
     vec2 offset = mod(mod(mod(pixel_coord_upper, pattern_size) * 256.0, pattern_size) * 256.0 + pixel_coord_lower, pattern_size);
-    return (tile_units_to_pixels * pos + offset) / pattern_size;
+    return (units_to_pixels * pos + offset) / pattern_size;
+}
+
+vec2 get_pattern_pos(const vec2 pixel_coord_upper, const vec2 pixel_coord_lower,
+    const vec2 pattern_size, const float tile_units_to_pixels, const vec2 pos) {
+    return get_pattern_pos(pixel_coord_upper, pixel_coord_lower, pattern_size, vec2(tile_units_to_pixels), pos);
 }
 
 float mercatorXfromLng(float lng) {
@@ -131,9 +131,20 @@ const vec4 AWAY = vec4(-1000.0, -1000.0, -1000.0, 1); // Normalized device coord
 
 // Handle skirt flag for terrain & globe shaders
 const float skirtOffset = 24575.0;
-vec3 decomposeToPosAndSkirt(vec2 posWithComposedSkirt)
+vec3 decomposeToPosAndSkirt(ivec2 posWithComposedSkirt)
 {
-    float skirt = float(posWithComposedSkirt.x >= skirtOffset);
-    vec2 pos = posWithComposedSkirt - vec2(skirt * skirtOffset, 0.0);
+    float skirt = float(float(posWithComposedSkirt.x) >= skirtOffset);
+    vec2 pos = vec2(posWithComposedSkirt) - vec2(skirt * skirtOffset, 0.0);
     return vec3(pos, skirt);
 }
+
+
+
+#ifndef HAS_SHADER_STORAGE_BLOCK_material_buffer
+
+#define GET_ATTRIBUTE_float(attrib, matInfo, attrib_id) attrib
+#define GET_ATTRIBUTE_vec4(attrib, matInfo, attrib_id) attrib
+#define GET_ATTRIBUTE_vec2(attrib, matInfo, attrib_id) attrib
+#define DECLARE_MATERIAL_TABLE_INFO
+
+#endif

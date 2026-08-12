@@ -1,11 +1,12 @@
 import {TapRecognizer} from './tap_recognizer';
+
 import type Point from '@mapbox/point-geometry';
 import type {Map} from '../map';
 import type {Handler, HandlerResult} from '../handler';
 
 export default class TapZoomHandler implements Handler {
-    _enabled: boolean;
-    _active: boolean;
+    _enabled!: boolean;
+    _active!: boolean;
     _zoomIn: TapRecognizer;
     _zoomOut: TapRecognizer;
 

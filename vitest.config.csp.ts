@@ -1,19 +1,15 @@
-import {defineConfig, mergeConfig} from 'vite';
-import baseConfig from './vitest.config.base';
+import {defineConfig, mergeConfig} from 'vitest/config';
+import baseConfig, {chromiumBrowser} from './vitest.config.base';
+import {serveDistPlugin} from './vitest.config.common';
 
-// @ts-expect-error - TS2345 - Argument of type 'UserConfig & Promise<UserConfig> & UserConfigFnObject & UserConfigExport' is not assignable to parameter of type 'never'.
 export default mergeConfig(baseConfig, defineConfig({
     test: {
-        browser: {
-            name: 'chromium',
-            provider: 'playwright',
-            enabled: true,
-            headless: true,
-        },
+        browser: chromiumBrowser(),
         include: ['test/integration/csp-tests/**/*.test.ts'],
         testTimeout: 10_000,
     },
     publicDir: 'test/integration/csp-tests/',
+    plugins: [serveDistPlugin()],
     server: {
         headers: {
             'Allow-CSP-From': '*',

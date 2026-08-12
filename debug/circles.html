@@ -2,9 +2,9 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
+    <meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body { margin: 0; padding: 0; }
         html, body, #map { height: 100%; }
@@ -18,18 +18,20 @@
 </head>
 
 <body>
-<div id='map'></div>
-<div id='checkboxes'>
-    <label><input id='terrain-checkbox' type='checkbox' checked> terrain</label><br />
-    <label><input id='globe-checkbox' type='checkbox'> globe</label><br />
+<div id="map"></div>
+<div id="checkboxes">
+    <label><input id="terrain-checkbox" type="checkbox" checked> terrain</label><br />
+    <label><input id="globe-checkbox" type="checkbox"> globe</label><br />
+    <label><input type="range" min="-100" max="100" value="0" class="slider" id="blur-slider"> blur: </label><label id="glow">0.0</label><br />
 </div>
 
-<script src='../dist/mapbox-gl-dev.js'></script>
-<script src='../debug/access_token_generated.js'></script>
-<script>
+<script type="module">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
 
 const r = 255 * 0.65;
 var map = window.map = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'map',
     devtools: true,
     zoom: 3,
@@ -43,7 +45,6 @@ map.addControl(new mapboxgl.NavigationControl());
 map.addControl(new mapboxgl.GeolocateControl());
 
 map.on('load', function() {
-
     map.addSource('circles', {
         "type": "geojson",
         "data": "/test/integration/data/places.geojson"
@@ -99,6 +100,12 @@ document.getElementById('terrain-checkbox').onclick = function() {
 
 document.getElementById('globe-checkbox').onclick = function() {
     map.setProjection(this.checked ? "globe" : null);
+};
+
+document.getElementById('blur-slider').oninput = function() {
+    const glow = parseInt(this.value) / 100.0;
+    map.setPaintProperty("circles", 'circle-blur', glow);
+    document.getElementById('glow').innerHTML = glow;
 };
 
 let hovered = [];

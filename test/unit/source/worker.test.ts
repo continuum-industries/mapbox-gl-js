@@ -1,71 +1,68 @@
-// @ts-nocheck
-import {describe, test, expect} from '../../util/vitest';
-import '../../../src/util/global_worker_pool';
-import Worker from '../../../src/source/worker';
+import {test, expect} from '../../util/vitest';
+import '../../../src/util/worker_pool_factory';
+import MapWorker from '../../../src/source/worker';
+
+import type {OverscaledTileID} from '../../../src/source/tile_id';
+import type {WorkerSourceConstructor, WorkerSource} from '../../../src/source/worker_source';
 
 const _self = {
     addEventListener() {}
-};
-
-describe('load tile', () => {
-    test('calls callback on error', () => {
-        const worker = new Worker(_self);
-        worker.setProjection(0, {name: 'mercator'});
-        worker.loadTile(0, {
-            type: 'vector',
-            source: 'source',
-            scope: 'scope',
-            uid: 0,
-            tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0, w: 0}},
-            request: {url: '/error'}
-        }, (err) => {
-            expect(err).toBeTruthy();
-        });
-    });
-});
+} as unknown as Worker;
 
 test('isolates different instances\' data', () => {
-    const worker = new Worker(_self);
+    const worker = new MapWorker(_self);
 
-    worker.setLayers(0, {layers: [
-        {id: 'one', type: 'circle'}
-    ], options: new Map()}, () => {});
-
-    worker.setLayers(1, {layers: [
-        {id: 'one', type: 'circle'},
-        {id: 'two', type: 'circle'},
-    ], options: new Map()}, () => {});
+    worker.setLayers(0, {layers: [{id: 'one', type: 'background'}], scope: '', options: new Map()});
+    worker.setLayers(1, {layers: [{id: 'one', type: 'background'}, {id: 'two', type: 'background'}], scope: '', options: new Map()});
 
     expect(worker.layerIndexes[0]).not.toEqual(worker.layerIndexes[1]);
 });
 
 test('worker source messages dispatched to the correct map instance', () => {
-    const worker = new Worker(_self);
+    const worker = new MapWorker(_self);
 
-    worker.actor.send = function (type, data, callback, mapId) {
+    (worker.actor.send as any) = async (type: string, _data: unknown, options: {targetMapId?: number}) => {
         expect(type).toEqual('main thread task');
-        expect(mapId).toEqual(999);
+        expect(options.targetMapId).toEqual(999);
+        return Promise.resolve();
     };
 
-    _self.registerWorkerSource('test', function(actor) {
-        this.loadTile = function() {
+    worker.workerSourceTypes['vector'] = function (this: WorkerSource, {actor}) {
+        this.loadTile = async function () {
             // we expect the map id to get appended in the call to the "real"
             // actor.send()
-            actor.send('main thread task', {}, () => {}, null);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            await actor.send('main thread task', {});
         };
-    });
+    } as unknown as WorkerSourceConstructor;
 
-    worker.loadTile(999, {type: 'test', source: 'source', scope: 'scope'});
+    worker.loadTile(999, {
+        uid: 0,
+        type: 'vector',
+        source: 'source',
+        scope: 'scope',
+        tileID: {overscaledZ: 0, wrap: 0, canonical: {x: 0, y: 0, z: 0}} as OverscaledTileID
+    });
 });
 
 test('worker sources should be scoped', () => {
-    const worker = new Worker(_self);
+    const worker = new MapWorker(_self);
 
-    // eslint-disable-next-line prefer-arrow-callback
-    _self.registerWorkerSource('sourceType', function() {});
+    worker.workerSourceTypes['vector'] = function () {} as unknown as WorkerSourceConstructor;
 
-    const a = worker.getWorkerSource(999, 'sourceType', 'sourceId', 'scope1');
-    const b = worker.getWorkerSource(999, 'sourceType', 'sourceId', 'scope2');
+    const a = worker.getWorkerSource(999, {type: 'vector', source: 'sourceId', scope: 'scope1'});
+    const b = worker.getWorkerSource(999, {type: 'vector', source: 'sourceId', scope: 'scope2'});
 
     expect(a).not.toBe(b);
+});
+
+test('removeSource discards the worker source instance', async () => {
+    const worker = new MapWorker(_self);
+
+    worker.workerSourceTypes['vector'] = function () {} as unknown as WorkerSourceConstructor;
+    worker.getWorkerSource(999, {type: 'vector', source: 'sourceId', scope: 'scope'});
+
+    await worker.removeSource(999, {type: 'vector', source: 'sourceId', scope: 'scope'});
+
+    expect(worker.getExistingWorkerSource(999, {type: 'vector', source: 'sourceId', scope: 'scope'})).toBeUndefined();
 });

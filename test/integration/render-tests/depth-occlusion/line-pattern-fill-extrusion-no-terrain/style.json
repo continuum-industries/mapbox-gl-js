@@ -4,7 +4,10 @@
     "test": {
       "height": 256,
       "width": 256,
-      "operations": []
+      "operations": [],
+      "skip-test": [
+        {"platform-tag-contains": "swiftshader", "reason": "antialiasing"}
+      ]
     }
   },
   "sources": {
@@ -135,7 +138,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "pitch": 60,
   "zoom": 18,
   "layers": [
@@ -144,7 +147,7 @@
       "type": "line",
       "source": "line",
       "paint": {
-        "line-pattern": "generic_icon",
+        "line-pattern": "information",
         "line-color": "rgba(0,128,255,1)",
         "line-width": 20.0,
         "line-occlusion-opacity": 0.15

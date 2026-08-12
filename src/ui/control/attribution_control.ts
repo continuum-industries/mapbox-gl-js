@@ -2,12 +2,15 @@ import * as DOM from '../../util/dom';
 import {bindAll} from '../../util/util';
 import config from '../../util/config';
 import {getHashString} from '../hash';
+import {sanitizeLinks} from '../../util/sanitize';
 
-import type {Map, ControlPosition} from '../map';
+import type {Map, ControlPosition, IControl} from '../map';
+import type {StyleSpecification} from '../../style-spec/types';
+import type {MapDataEvent} from '../events';
 
-type Options = {
+export type AttributionControlOptions = {
     compact?: boolean;
-    customAttribution?: string | null | undefined | Array<string>    ;
+    customAttribution?: string | null | undefined | Array<string>;
 };
 
 /**
@@ -24,18 +27,18 @@ type Options = {
  *         customAttribution: 'Map design by me'
  *     }));
  */
-class AttributionControl {
-    options: Options;
-    _map: Map;
-    _container: HTMLElement;
-    _innerContainer: HTMLElement;
-    _compactButton: HTMLButtonElement;
-    _editLink: HTMLAnchorElement | null | undefined;
-    _attribHTML: string;
-    styleId: string;
-    styleOwner: string;
+class AttributionControl implements IControl {
+    options: AttributionControlOptions;
+    _map!: Map;
+    _container!: HTMLElement;
+    _innerContainer!: HTMLElement;
+    _compactButton!: HTMLButtonElement;
+    _editLink?: HTMLAnchorElement;
+    _attribHTML!: string;
+    styleId!: string;
+    styleOwner!: string;
 
-    constructor(options: Options = {}) {
+    constructor(options: AttributionControlOptions = {}) {
         this.options = options;
 
         bindAll([
@@ -52,15 +55,19 @@ class AttributionControl {
 
     onAdd(map: Map): HTMLElement {
         const compact = this.options && this.options.compact;
+        const title = map._getUIString('AttributionControl.ToggleAttribution');
 
         this._map = map;
         this._container = DOM.create('div', 'mapboxgl-ctrl mapboxgl-ctrl-attrib');
-        // @ts-expect-error - TS2740 - Type 'HTMLElement' is missing the following properties from type 'HTMLButtonElement': disabled, form, formAction, formEnctype, and 15 more.
         this._compactButton = DOM.create('button', 'mapboxgl-ctrl-attrib-button', this._container);
-        DOM.create('span', `mapboxgl-ctrl-icon`, this._compactButton).setAttribute('aria-hidden', 'true');
         this._compactButton.type = 'button';
         this._compactButton.addEventListener('click', this._toggleAttribution);
-        this._setElementTitle(this._compactButton, 'ToggleAttribution');
+        this._compactButton.setAttribute('aria-label', title);
+
+        const buttonIcon = DOM.create('span', `mapboxgl-ctrl-icon`, this._compactButton);
+        buttonIcon.setAttribute('aria-hidden', 'true');
+        buttonIcon.setAttribute('title', title);
+
         this._innerContainer = DOM.create('div', 'mapboxgl-ctrl-attrib-inner', this._container);
 
         if (compact) {
@@ -90,14 +97,8 @@ class AttributionControl {
         this._map.off('moveend', this._updateEditLink);
         this._map.off('resize', this._updateCompact);
 
-        this._map = (undefined as any);
-        this._attribHTML = (undefined as any);
-    }
-
-    _setElementTitle(element: HTMLElement, title: string) {
-        const str = this._map._getUIString(`AttributionControl.${title}`);
-        element.removeAttribute('title');
-        if (element.firstElementChild) element.firstElementChild.setAttribute('title', str);
+        this._map = undefined;
+        this._attribHTML = undefined;
     }
 
     _toggleAttribution() {
@@ -131,12 +132,11 @@ class AttributionControl {
             }, `?`);
             editLink.href = `${config.FEEDBACK_URL}/${paramString}#${getHashString(this._map, true)}`;
             editLink.rel = 'noopener nofollow';
-            this._setElementTitle(editLink, 'MapFeedback');
         }
     }
 
-    _updateData(e: any) {
-        if (e && (e.sourceDataType === 'metadata' || e.sourceDataType === 'visibility' || e.dataType === 'style')) {
+    _updateData(e: MapDataEvent) {
+        if (e && ((e.dataType === 'source' && (e.sourceDataType === 'metadata' || e.sourceDataType === 'visibility')) || e.dataType === 'style')) {
             this._updateAttributions();
             this._updateEditLink();
         }
@@ -147,7 +147,7 @@ class AttributionControl {
         let attributions: Array<string> = [];
 
         if (this._map.style.stylesheet) {
-            const stylesheet: any = this._map.style.stylesheet;
+            const stylesheet: StyleSpecification & {id?: string; owner?: string} = this._map.style.stylesheet;
             this.styleOwner = stylesheet.owner;
             this.styleId = stylesheet.id;
         }
@@ -157,7 +157,7 @@ class AttributionControl {
             const sourceCache = sourceCaches[id];
             if (sourceCache.used) {
                 const source = sourceCache.getSource();
-                if (source.attribution && attributions.indexOf(source.attribution) < 0) {
+                if (source.attribution && !attributions.includes(source.attribution)) {
                     attributions.push(source.attribution);
                 }
             }
@@ -168,7 +168,7 @@ class AttributionControl {
         attributions.sort((a, b) => a.length - b.length);
         attributions = attributions.filter((attrib, i) => {
             for (let j = i + 1; j < attributions.length; j++) {
-                if (attributions[j].indexOf(attrib) >= 0) { return false; }
+                if (attributions[j].includes(attrib)) { return false; }
             }
             return true;
         });
@@ -182,7 +182,7 @@ class AttributionControl {
         }
 
         // check if attribution string is different to minimize DOM changes
-        const attribHTML = attributions.join(' | ');
+        const attribHTML = attributions.map(attr => sanitizeLinks(attr)).join(' | ');
         if (attribHTML === this._attribHTML) return;
 
         this._attribHTML = attribHTML;

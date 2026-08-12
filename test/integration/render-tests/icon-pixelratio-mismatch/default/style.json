@@ -3,7 +3,12 @@
   "metadata": {
     "test": {
       "pixelRatio": 0.5,
-      "height": 256
+      "height": 256,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.006},
+        {"platform-tag-contains": "swiftshader", "threshold": 0.0055},
+        {"platform-tag-contains": "metal", "threshold": 0.0059}
+      ]
     }
   },
   "center": [
@@ -11,6 +16,7 @@
     52.499167
   ],
   "zoom": 14,
+  "camera": {"camera-projection": "orthographic"},
   "sources": {
     "mapbox": {
       "type": "vector",
@@ -20,7 +26,7 @@
       ]
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
@@ -43,7 +49,7 @@
         "symbol-placement": "point",
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
-        "icon-image": "generic_icon"
+        "icon-image": "information"
       },
       "paint": {
         "icon-opacity": 1

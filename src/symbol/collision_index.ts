@@ -1,35 +1,44 @@
 import Point from '@mapbox/point-geometry';
-import clipLine from './clip_line';
 import PathInterpolator from './path_interpolator';
 import * as intersectionTests from '../util/intersection_tests';
 import Grid from './grid_index';
-import {mat4, vec4} from 'gl-matrix';
+import {mat4, vec2, vec4} from 'gl-matrix';
 import ONE_EM from '../symbol/one_em';
 import {FOG_SYMBOL_CLIPPING_THRESHOLD, getFogOpacityAtTileCoord} from '../style/fog_helpers';
-import assert from 'assert';
-import {OverscaledTileID} from '../source/tile_id';
+import assert from '../style-spec/util/assert';
 import * as symbolProjection from '../symbol/projection';
+import {degToRad, wrap} from '../util/util';
+import {clipLines} from '../util/line_clipping';
+import EXTENT from '../style-spec/data/extent';
+import {number as mix} from '../style-spec/util/interpolate';
+import {globeToMercatorTransition} from '../geo/projection/globe_util';
+import {Elevation} from '../terrain/elevation';
 
+import type {OverscaledTileID} from '../source/tile_id';
+import type {vec3} from 'gl-matrix';
 import type Transform from '../geo/transform';
 import type Projection from '../geo/projection/projection';
 import type SymbolBucket from '../data/bucket/symbol_bucket';
 import type {SingleCollisionBox} from '../data/bucket/symbol_bucket';
 import type {GlyphOffsetArray, SymbolLineVertexArray, PlacedSymbol} from '../data/array_types';
 import type {FogState} from '../style/fog_helpers';
-import type {vec3} from 'gl-matrix';
+import type {CollisionGroup} from '../symbol/placement';
+import type {CollisionDetector} from './placement_algorithm';
 
 export type PlacedCollisionBox = {
     box: Array<number>;
     offscreen: boolean;
     occluded: boolean;
 };
-type PlacedCollisionCircles = {
+
+export type PlacedCollisionCircles = {
     circles: Array<number>;
     offscreen: boolean;
     collisionDetected: boolean;
     occluded: boolean;
 };
-type ScreenAnchorPoint = {
+
+export type ScreenAnchorPoint = {
     occluded: boolean;
     perspectiveRatio: number;
     point: Point;
@@ -44,6 +53,8 @@ type ScreenAnchorPoint = {
 // stability, but it's expensive.
 const viewportPadding = 100;
 
+type CollisionKey = {bucketInstanceId: number; featureIndex: number; collisionGroupID: number};
+
 /**
  * A collision index used to prevent symbols from overlapping. It keep tracks of
  * where previous symbols have been placed and is used to check if a new
@@ -56,51 +67,82 @@ const viewportPadding = 100;
  *
  * @private
  */
-class CollisionIndex {
-    grid: Grid;
-    ignoredGrid: Grid;
-    transform: Transform;
-    pitchfactor: number;
-    screenRightBoundary: number;
-    screenBottomBoundary: number;
+class CollisionIndex implements CollisionDetector {
+    grid!: Grid<CollisionKey>;
+    ignoredGrid!: Grid<CollisionKey>;
+    transform!: Transform;
+    pitchfactor!: number;
+    screenRightBoundary!: number;
+    screenBottomBoundary!: number;
     gridRightBoundary: number;
     gridBottomBoundary: number;
     fogState: FogState | null | undefined;
+    // Tracks (bucketInstanceId -> set of featureIndexes) for symbols hidden by clip regions.
+    // Used to exclude them from queryRenderedFeatures results.
+    clippedSymbols: Map<number, Set<number>>;
 
-    constructor(
-        transform: Transform,
-        fogState?: FogState | null,
-        grid: Grid = new Grid(transform.width + 2 * viewportPadding, transform.height + 2 * viewportPadding, 25),
-        ignoredGrid: Grid = new Grid(transform.width + 2 * viewportPadding, transform.height + 2 * viewportPadding, 25)
-    ) {
+    constructor(transform: Transform, fogState?: FogState | null) {
+        this.gridRightBoundary = 0;
+        this.gridBottomBoundary = 0;
+        this.clippedSymbols = new Map();
+        this.reset(transform, fogState);
+    }
+
+    reset(transform: Transform, fogState?: FogState | null) {
+        const newWidth = transform.width + 2 * viewportPadding;
+        const newHeight = transform.height + 2 * viewportPadding;
+
+        if (newWidth !== this.gridRightBoundary || newHeight !== this.gridBottomBoundary) {
+            this.grid = new Grid<CollisionKey>(newWidth, newHeight, 25);
+            this.ignoredGrid = new Grid<CollisionKey>(newWidth, newHeight, 25);
+        } else {
+            this.grid.clear();
+            this.ignoredGrid.clear();
+        }
+
         this.transform = transform;
-
-        this.grid = grid;
-        this.ignoredGrid = ignoredGrid;
+        this.fogState = fogState;
         this.pitchfactor = Math.cos(transform._pitch) * transform.cameraToCenterDistance;
-
         this.screenRightBoundary = transform.width + viewportPadding;
         this.screenBottomBoundary = transform.height + viewportPadding;
-        this.gridRightBoundary = transform.width + 2 * viewportPadding;
-        this.gridBottomBoundary = transform.height + 2 * viewportPadding;
-        this.fogState = fogState;
+        this.gridRightBoundary = newWidth;
+        this.gridBottomBoundary = newHeight;
+        this.clippedSymbols.clear();
+    }
+
+    clearClippedSymbolsForBucket(bucketInstanceId: number) {
+        this.clippedSymbols.delete(bucketInstanceId);
+    }
+
+    markSymbolAsClipped(bucketInstanceId: number, featureIndex: number) {
+        let clipped = this.clippedSymbols.get(bucketInstanceId);
+        if (!clipped) {
+            clipped = new Set();
+            this.clippedSymbols.set(bucketInstanceId, clipped);
+        }
+        clipped.add(featureIndex);
     }
 
     placeCollisionBox(
         bucket: SymbolBucket,
         scale: number,
         collisionBox: SingleCollisionBox,
+        mercatorCenter: [number, number],
+        invMatrix: mat4,
+        projectedPosOnLabelSpace: boolean,
         shift: Point,
         allowOverlap: boolean,
         textPixelRatio: number,
         posMatrix: mat4,
-        collisionGroupPredicate?: any,
+        collisionGroupPredicate?: (key: CollisionKey) => boolean,
     ): PlacedCollisionBox {
         assert(!this.transform.elevation || collisionBox.elevation !== undefined);
 
-        let anchorX = collisionBox.projectedAnchorX;
-        let anchorY = collisionBox.projectedAnchorY;
-        let anchorZ = collisionBox.projectedAnchorZ;
+        let projectedAnchorX = collisionBox.projectedAnchorX;
+        let projectedAnchorY = collisionBox.projectedAnchorY;
+        let projectedAnchorZ = collisionBox.projectedAnchorZ;
+        const anchorX = collisionBox.tileAnchorX;
+        const anchorY = collisionBox.tileAnchorY;
 
         // Apply elevation vector to the anchor point
         const elevation = collisionBox.elevation;
@@ -110,13 +152,36 @@ class CollisionIndex {
             const [ux, uy, uz] = projection.upVector(tileID.canonical, collisionBox.tileAnchorX, collisionBox.tileAnchorY);
             const upScale = projection.upVectorScale(tileID.canonical, this.transform.center.lat, this.transform.worldSize).metersToTile;
 
-            anchorX += ux * elevation * upScale;
-            anchorY += uy * elevation * upScale;
-            anchorZ += uz * elevation * upScale;
+            projectedAnchorX += ux * elevation * upScale;
+            projectedAnchorY += uy * elevation * upScale;
+            projectedAnchorZ += uz * elevation * upScale;
+        }
+
+        const bucketIsGlobeProjection = bucket.projection.name === 'globe';
+        const globeToMercator = bucket.projection.name === 'globe' ? globeToMercatorTransition(this.transform.zoom) : 0.0;
+        const isGlobeToMercatorTransition = globeToMercator < 1;
+
+        if (tileID && bucketIsGlobeProjection && isGlobeToMercatorTransition && !projectedPosOnLabelSpace) {
+            const tilesCount = 1 << tileID.canonical.z;
+            const mercator = vec2.fromValues(anchorX, anchorY);
+            vec2.scale(mercator, mercator, 1 / EXTENT);
+            vec2.add(mercator, mercator, vec2.fromValues(tileID.canonical.x, tileID.canonical.y));
+            vec2.scale(mercator, mercator, 1 / tilesCount);
+            vec2.sub(mercator, mercator, vec2.fromValues(mercatorCenter[0], mercatorCenter[1]));
+            mercator[0] = wrap(mercator[0], -0.5, 0.5);
+
+            vec2.scale(mercator, mercator, EXTENT);
+
+            const mercatorPosition = vec4.fromValues(mercator[0], mercator[1], EXTENT / (2.0 * Math.PI), 1.0);
+            vec4.transformMat4(mercatorPosition, mercatorPosition, invMatrix);
+
+            projectedAnchorX = mix(projectedAnchorX, mercatorPosition[0], globeToMercator);
+            projectedAnchorY = mix(projectedAnchorY, mercatorPosition[1], globeToMercator);
+            projectedAnchorZ = mix(projectedAnchorZ, mercatorPosition[2], globeToMercator);
         }
 
         const checkOcclusion = projection.name === 'globe' || !!elevation || this.transform.pitch > 0;
-        const projectedPoint = this.projectAndGetPerspectiveRatio(posMatrix, anchorX, anchorY, anchorZ, collisionBox.tileID, checkOcclusion, projection);
+        const projectedPoint = this.projectAndGetPerspectiveRatio(posMatrix, projectedAnchorX, projectedAnchorY, projectedAnchorZ, collisionBox.tileID, checkOcclusion, projection);
 
         const tileToViewport = textPixelRatio * projectedPoint.perspectiveRatio;
         const tlX = (collisionBox.x1 * scale + shift.x - collisionBox.padding) * tileToViewport + projectedPoint.point.x;
@@ -151,6 +216,7 @@ class CollisionIndex {
         bucket: SymbolBucket,
         allowOverlap: boolean,
         symbol: PlacedSymbol,
+        symbolIndex: number,
         lineVertexArray: SymbolLineVertexArray,
         glyphOffsetArray: GlyphOffsetArray,
         fontSize: number,
@@ -159,7 +225,7 @@ class CollisionIndex {
         labelToScreenMatrix: mat4 | null | undefined,
         showCollisionCircles: boolean,
         pitchWithMap: boolean,
-        collisionGroupPredicate: any | null | undefined,
+        collisionGroupPredicate: CollisionGroup['predicate'],
         circlePixelDiameter: number,
         textPixelPadding: number,
         tileID: OverscaledTileID,
@@ -167,12 +233,30 @@ class CollisionIndex {
         const placedCollisionCircles = [];
         const elevation = this.transform.elevation;
         const projection = bucket.getProjection();
-        const getElevation = elevation ? elevation.getAtTileOffsetFunc(tileID, this.transform.center.lat, this.transform.worldSize, projection) : null;
+        const renderElevatedRoads = bucket.elevationType === 'road';
+        const hasElevation = !!elevation || renderElevatedRoads;
+
+        const getElevation = Elevation.getAtTileOffsetFunc(tileID, this.transform.center.lat, this.transform.worldSize, projection);
+
+        const tileAnchorPoint = new Point(symbol.tileAnchorX, symbol.tileAnchorY);
 
         const tileUnitAnchorPoint = new Point(symbol.tileAnchorX, symbol.tileAnchorY);
         let {x: anchorX, y: anchorY, z: anchorZ} = projection.projectTilePoint(tileUnitAnchorPoint.x, tileUnitAnchorPoint.y, tileID.canonical);
-        if (getElevation) {
-            const [dx, dy, dz] = getElevation(tileUnitAnchorPoint);
+        let elevationParams: symbolProjection.ElevationParams | null = null;
+        if (hasElevation) {
+            if (renderElevatedRoads && bucket.hdExt) {
+                elevationParams = bucket.hdExt.makeRoadSymbolElevationParams(
+                    bucket, bucket.text, symbolIndex, tileID, getElevation, elevation, projection,
+                    this.transform.center.lat, this.transform.worldSize);
+            } else {
+                elevationParams = {
+                    getElevation,
+                    elevation,
+                    elevationFeature: null,
+                };
+            }
+
+            const [dx, dy, dz] = elevationParams.getElevation(tileAnchorPoint, elevation, elevationParams.elevationFeature);
             anchorX += dx;
             anchorY += dy;
             anchorZ += dz;
@@ -184,28 +268,33 @@ class CollisionIndex {
         const labelPlaneFontScale = (pitchWithMap ? fontSize / perspectiveRatio : fontSize * perspectiveRatio) / ONE_EM;
         const labelPlaneAnchorPoint = symbolProjection.project(anchorX, anchorY, anchorZ, labelPlaneMatrix);
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const projectionCache: Record<string, any> = {};
         const lineOffsetX = symbol.lineOffsetX * labelPlaneFontScale;
         const lineOffsetY = symbol.lineOffsetY * labelPlaneFontScale;
+
+        const layout = bucket.layers[0].layout;
+        const textMaxAngle = degToRad(layout.get('text-max-angle'));
+        const maxAngleCos = Math.cos(textMaxAngle);
 
         const firstAndLastGlyph = screenAnchorPoint.signedDistanceFromCamera > 0 ? symbolProjection.placeFirstAndLastGlyph(
             labelPlaneFontScale,
             glyphOffsetArray,
             lineOffsetX,
             lineOffsetY,
-            /*flip*/ false,
-            // @ts-expect-error - TS2345 - Argument of type 'vec4' is not assignable to parameter of type 'vec3'.
-            labelPlaneAnchorPoint,
+            (renderElevatedRoads && symbol.flipState === 1), // FlipState.flipRequired
+            labelPlaneAnchorPoint as [number, number, number],
             tileUnitAnchorPoint,
             symbol,
             lineVertexArray,
             labelPlaneMatrix,
             projectionCache,
-            elevation && !pitchWithMap ? getElevation : null, // pitchWithMap: no need to sample elevation as it has no effect when projecting using scale/rotate to tile space labelPlaneMatrix.
-            pitchWithMap && !!elevation,
+            (hasElevation && !pitchWithMap) ? elevationParams : null, // pitchWithMap: no need to sample elevation as it has no effect when projecting using scale/rotate to tile space labelPlaneMatrix.
+            (pitchWithMap && hasElevation),
             projection,
             tileID,
-            pitchWithMap
+            pitchWithMap,
+            maxAngleCos
         ) : null;
 
         let collisionDetected = false;
@@ -237,10 +326,12 @@ class CollisionIndex {
             // The path might need to be converted into screen space if a pitched map is used as the label space
             if (labelToScreenMatrix) {
                 assert(pitchWithMap);
-                // @ts-expect-error - TS2322 - Type 'vec4[]' is not assignable to type 'vec3[]'.
-                projectedPath = projectedPath.map(([x, y, z]: [any, any, any], index) => {
-                    if (getElevation && !isGlobe) {
-                        z = getElevation(index < firstLen - 1 ? first.tilePath[firstLen - 1 - index] : last.tilePath[index - firstLen + 2])[2];
+                projectedPath = projectedPath.map(([x, y, z]: [number, number, number], index) => {
+                    if (hasElevation && !isGlobe) {
+                        const point = index < firstLen - 1 ? first.tilePath[firstLen - 1 - index] : last.tilePath[index - firstLen + 2];
+                        assert(point);
+                        assert(elevationParams);
+                        z = elevationParams.getElevation(point, elevation, elevationParams.elevationFeature)[2];
                     }
                     return symbolProjection.project(x, y, z, labelToScreenMatrix);
                 });
@@ -252,7 +343,7 @@ class CollisionIndex {
                 }
             }
 
-            let segments = [];
+            let segments: Point[][] = [];
 
             if (projectedPath.length > 0) {
                 // Quickly check if the path is fully inside or outside of the padded collision region.
@@ -278,14 +369,17 @@ class CollisionIndex {
                     if (minx < screenPlaneMin.x || maxx > screenPlaneMax.x ||
                         miny < screenPlaneMin.y || maxy > screenPlaneMax.y) {
                         // Path partially visible, clip
-                        segments = clipLine(segments, screenPlaneMin.x, screenPlaneMin.y, screenPlaneMax.x, screenPlaneMax.y);
+
+                        segments = clipLines(segments, screenPlaneMin.x, screenPlaneMin.y, screenPlaneMax.x, screenPlaneMax.y);
                     }
                 }
             }
 
             for (const seg of segments) {
                 // interpolate positions for collision circles. Add a small padding to both ends of the segment
+
                 assert(seg.length > 0);
+
                 interpolator.reset(seg, radius * 0.25);
 
                 let numCircles = 0;
@@ -334,6 +428,7 @@ class CollisionIndex {
         }
 
         return {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             circles: ((!showCollisionCircles && collisionDetected) || !inGrid) ? [] : placedCollisionCircles,
             offscreen: entirelyOffscreen,
             collisionDetected,
@@ -372,8 +467,8 @@ class CollisionIndex {
         const features = this.grid.query(minX, minY, maxX, maxY)
             .concat(this.ignoredGrid.query(minX, minY, maxX, maxY));
 
-        const seenFeatures: Record<string, any> = {};
-        const result: Record<string, any> = {};
+        const seenFeatures: {[bucketInstanceId: number]: {[featureIndex: number]: boolean}} = {};
+        const result: {[bucketInstanceId: number]: Array<number>} = {};
 
         for (const feature of features) {
             const featureKey = feature.key;
@@ -382,6 +477,12 @@ class CollisionIndex {
                 seenFeatures[featureKey.bucketInstanceId] = {};
             }
             if (seenFeatures[featureKey.bucketInstanceId][featureKey.featureIndex]) {
+                continue;
+            }
+
+            // Skip symbols hidden by a clip region — they are invisible and should not be queried.
+            const clippedForBucket = this.clippedSymbols.get(featureKey.bucketInstanceId);
+            if (clippedForBucket && clippedForBucket.has(featureKey.featureIndex)) {
                 continue;
             }
 
@@ -438,7 +539,7 @@ class CollisionIndex {
         const p = [x, y, z, 1];
         let behindFog = false;
         if (z || this.transform.pitch > 0) {
-            vec4.transformMat4(p as [number, number, number, number], p as [number, number, number, number], posMatrix);
+            vec4.transformMat4(p, p, posMatrix);
             // Do not perform symbol occlusion on globe due to fog fixed range
             const isGlobe = bucketProjection.name === 'globe';
             if (this.fogState && tileID && !isGlobe) {
@@ -446,7 +547,6 @@ class CollisionIndex {
                 behindFog = fogOpacity > FOG_SYMBOL_CLIPPING_THRESHOLD;
             }
         } else {
-            // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec4'.
             symbolProjection.xyTransformMat4(p, p, posMatrix);
         }
         const w = p[3];
@@ -479,7 +579,7 @@ class CollisionIndex {
     *   example transformation: clipPos = glCoordMatrix * viewportMatrix * circle_pos
     */
     getViewportMatrix(): mat4 {
-        const m = mat4.identity([] as any);
+        const m = mat4.identity([]);
         mat4.translate(m, m, [-viewportPadding, -viewportPadding, 0.0]);
         return m;
     }

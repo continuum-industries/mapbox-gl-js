@@ -3,7 +3,11 @@
   "metadata": {
     "test": {
       "height": 64,
-      "width": 128
+      "width": 128,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00037},
+        {"platform-tag-contains": "metal", "threshold": 0.0005}
+      ]
     }
   },
   "center": [ 0, 0 ],

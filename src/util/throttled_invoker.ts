@@ -5,11 +5,11 @@
  * @private
  */
 class ThrottledInvoker {
-    _channel: MessageChannel | null | undefined;
+    _channel: MessageChannel | undefined;
     _triggered: boolean;
-    _callback: any;
+    _callback: () => void;
 
-    constructor(callback: any) {
+    constructor(callback: () => void) {
         this._callback = callback;
         this._triggered = false;
         if (typeof MessageChannel !== 'undefined') {
@@ -36,7 +36,10 @@ class ThrottledInvoker {
     }
 
     remove() {
-        this._channel = undefined;
+        if (this._channel) {
+            this._channel.port1.close();
+            this._channel.port2.close();
+        }
         this._callback = () => {};
     }
 }

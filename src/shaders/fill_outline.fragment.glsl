@@ -1,9 +1,24 @@
 #include "_prelude_fog.fragment.glsl"
 #include "_prelude_lighting.glsl"
+#include "_prelude_shadow.fragment.glsl"
+#include "_prelude_feature_cutout.fragment.glsl"
 
 in highp vec2 v_pos;
 
 uniform float u_emissive_strength;
+uniform lowp float u_opacity_multiplier;
+
+#ifdef ELEVATED_ROADS
+in highp float v_road_z_offset;
+#endif
+
+#ifdef RENDER_SHADOWS
+uniform vec3 u_ground_shadow_factor;
+
+in highp vec4 v_pos_light_view_0;
+in highp vec4 v_pos_light_view_1;
+in highp float v_depth;
+#endif
 
 #pragma mapbox: define highp vec4 outline_color
 #pragma mapbox: define lowp float opacity
@@ -16,14 +31,36 @@ void main() {
     float alpha = 1.0 - smoothstep(0.0, 1.0, dist);
     vec4 out_color = outline_color;
 
+    vec2 cutout_factors = vec2(0.0);
+#ifdef FEATURE_CUTOUT
+    cutout_factors = get_cutout_factors(gl_FragCoord);
+#endif
+
 #ifdef LIGHTING_3D_MODE
     out_color = apply_lighting_with_emission_ground(out_color, u_emissive_strength);
-#endif
+#ifdef RENDER_SHADOWS
+    float light = shadowed_light_factor(v_pos_light_view_0, v_pos_light_view_1, v_depth);
+    light = mix(light, 1.0, cutout_factors.y);
+    out_color.rgb *= mix(u_ground_shadow_factor, vec3(1.0), light);
+#endif // RENDER_SHADOWS
+#endif // LIGHTING_3D_MODE
+
 #ifdef FOG
     out_color = fog_dither(fog_apply_premultiplied(out_color, v_fog_pos));
 #endif
 
-    glFragColor = out_color * (alpha * opacity);
+#ifdef FEATURE_CUTOUT
+    float z = 0.0;
+#ifdef ELEVATED_ROADS
+    z = v_road_z_offset;
+#endif
+    out_color = apply_feature_cutout(out_color, gl_FragCoord, cutout_factors.x, z);
+#endif
+
+    glFragColor = out_color * (alpha * opacity * u_opacity_multiplier);
+#ifdef USE_MRT1
+    out_Target1 = vec4(u_emissive_strength * glFragColor.a, 0.0, 0.0, glFragColor.a);
+#endif
 
 #ifdef OVERDRAW_INSPECTOR
     glFragColor = vec4(1.0);

@@ -1,50 +1,46 @@
-import {test} from 'tape';
+import assert from 'node:assert/strict';
+import test from 'node:test';
 import fs from 'fs';
 import path from 'path';
-import browserify from 'browserify';
-
+import {createRequire} from 'module';
 import {fileURLToPath} from 'url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
-const reference = JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/style-spec/reference/v8.json')));
-const {scripts} = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json')));
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const reference = JSON.parse(fs.readFileSync(path.join(__dirname, '../../src/style-spec/reference/v8.json')).toString());
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const {scripts} = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json')).toString());
 
 const minBundle = fs.readFileSync('dist/mapbox-gl.js', 'utf8');
 
-test('production build removes asserts', (t) => {
-    t.assert(minBundle.indexOf('canary assert') === -1);
-    t.assert(minBundle.indexOf('canary debug run') === -1);
-    t.end();
+test('production build removes asserts', () => {
+    assert(!minBundle.includes('canary assert'));
+    assert(!minBundle.includes('canary debug run'));
 });
 
-test('trims package.json assets', (t) => {
+test('trims package.json assets', () => {
     // confirm that the entire package.json isn't present by asserting
     // the absence of each of our script strings
     for (const name in scripts) {
-        if (minBundle.indexOf(scripts[name]) >= 0) {
-            t.fail();
-            break;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+        if (minBundle.includes(scripts[name])) {
+            throw new Error(`script "${name}" found in minified bundle`);
         }
     }
-    t.end();
 });
 
-test('trims reference.json fields', (t) => {
-    t.assert(reference.$root.version.doc);
-    t.assert(minBundle.indexOf(reference.$root.version.doc) === -1);
-    t.end();
+test('trims reference.json fields', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    assert(reference.$root.version.doc);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
+    assert(!minBundle.includes(reference.$root.version.doc));
 });
 
-test('can be browserified', (t) => {
-    browserify(path.join(__dirname, 'browserify-test-fixture.js')).bundle((err) => {
-        t.ifError(err);
-        t.end();
-    });
+test('can be required as CommonJS', () => {
+    const require = createRequire(import.meta.url);
+    assert.doesNotThrow(() => require(path.join(__dirname, '../../dist/mapbox-gl.js')));
 });
 
-test('evaluates without errors', (t) => {
-    t.doesNotThrow(async () => {
-        await import(path.join(__dirname, '../../dist/mapbox-gl.js'));
-    });
-    t.end();
+test('evaluates without errors', async () => {
+    await import(path.join(__dirname, '../../dist/mapbox-gl.js'));
 });

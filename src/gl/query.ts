@@ -1,4 +1,4 @@
-import Context from './context';
+import type Context from './context';
 
 export class OcclusionQuery {
     _query: WebGLQuery;
@@ -21,16 +21,16 @@ export class OcclusionQuery {
     }
 
     isResultAvailable(): boolean {
-        const resultReady: any =  this._gl.getQueryParameter(this._query, this._gl.QUERY_RESULT_AVAILABLE);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const resultReady: boolean = this._gl.getQueryParameter(this._query, this._gl.QUERY_RESULT_AVAILABLE);
 
         return resultReady;
     }
 
     consumeResult(): number {
-        const samplesPassed = this._gl.getQueryParameter(this._query, this._gl.QUERY_RESULT);
-
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const samplesPassed: number = this._gl.getQueryParameter(this._query, this._gl.QUERY_RESULT);
         this._isFree = true;
-
         return samplesPassed;
     }
 

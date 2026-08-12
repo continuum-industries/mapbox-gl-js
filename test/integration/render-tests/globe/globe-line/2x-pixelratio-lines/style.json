@@ -8,6 +8,10 @@
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "native", "threshold": 0.0027},
+        {"platform-tag-contains": "native-android", "threshold": 0.0033}
       ]
     }
   },

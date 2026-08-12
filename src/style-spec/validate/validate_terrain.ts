@@ -1,43 +1,65 @@
 import {default as ValidationError, ValidationWarning} from '../error/validation_error';
 import validate from './validate';
-import getType from '../util/get_type';
+import {getType, isObject, isString} from '../util/get_type';
 import {unbundle} from '../util/unbundle_jsonlint';
+import {TRANSITION_KEY_RE, USE_THEME_KEY_RE} from '../util/properties';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
 
-export default function validateTerrain(options: ValidationOptions): Array<ValidationError> {
+type TerrainValidatorOptions = {
+    key: string;
+    value: unknown;
+    styleSpec: StyleReference;
+    style: Partial<StyleSpecification>;
+};
+
+export default function validateTerrain(options: TerrainValidatorOptions): ValidationError[] {
     const terrain = options.value;
     const key = options.key;
     const style = options.style;
     const styleSpec = options.styleSpec;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const terrainSpec = styleSpec.terrain;
-    let errors = [];
 
-    const rootType = getType(terrain);
-    if (terrain === undefined) {
-        return errors;
-    } else if (rootType === 'null') {
-        return errors;
-    } else if (rootType !== 'object') {
-        errors = errors.concat([new ValidationError('terrain', terrain, `object expected, ${rootType} found`)]);
-        return errors;
+    if (terrain == null) {
+        return [];
     }
 
-    for (const key in terrain) {
-        const transitionMatch = key.match(/^(.*)-transition$/);
+    if (!isObject(terrain)) {
+        return [new ValidationError('terrain', terrain, `object expected, ${getType(terrain)} found`)];
+    }
 
-        if (transitionMatch && terrainSpec[transitionMatch[1]] && terrainSpec[transitionMatch[1]].transition) {
+    let errors: ValidationError[] = [];
+    for (const key in terrain) {
+        const transitionMatch = key.match(TRANSITION_KEY_RE);
+        const useThemeMatch = key.match(USE_THEME_KEY_RE);
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        if (useThemeMatch && terrainSpec[useThemeMatch[1]!]) {
             errors = errors.concat(validate({
                 key,
                 value: terrain[key],
+                valueSpec: {type: 'string'},
+                style,
+                styleSpec
+            }));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        } else if (transitionMatch && terrainSpec[transitionMatch[1]!] && terrainSpec[transitionMatch[1]!].transition) {
+            errors = errors.concat(validate({
+                key,
+                value: terrain[key],
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 valueSpec: styleSpec.transition,
                 style,
                 styleSpec
             }));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         } else if (terrainSpec[key]) {
             errors = errors.concat(validate({
                 key,
                 value: terrain[key],
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 valueSpec: terrainSpec[key],
                 style,
                 styleSpec
@@ -49,13 +71,15 @@ export default function validateTerrain(options: ValidationOptions): Array<Valid
 
     if (!terrain.source) {
         errors.push(new ValidationError(key, terrain, `terrain is missing required property "source"`));
+    } else if (!isString(terrain.source)) {
+        errors.push(new ValidationError(`${key}.source`, terrain.source, `source must be a string`));
     } else {
-        const source = style.sources && style.sources[terrain.source];
-        const sourceType = source && unbundle(source.type);
+        const source = style.sources && Object.hasOwn(style.sources, terrain.source) ? style.sources[terrain.source] : undefined;
+        const sourceType = source && unbundle(source.type) as string;
         if (!source) {
-            errors.push(new ValidationError(key, terrain.source, `source "${terrain.source}" not found`));
+            errors.push(new ValidationError(`${key}.source`, terrain.source, `source "${terrain.source}" not found`));
         } else if (sourceType !== 'raster-dem') {
-            errors.push(new ValidationError(key, terrain.source, `terrain cannot be used with a source of type ${String(sourceType)}, it only be used with a "raster-dem" source type`));
+            errors.push(new ValidationError(`${key}.source`, terrain.source, `terrain cannot be used with a source of type ${sourceType}, it only be used with a "raster-dem" source type`));
         }
     }
 

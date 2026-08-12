@@ -1,27 +1,26 @@
 import styleSpec from '../style-spec/reference/latest';
-
-import {extend} from '../util/util';
 import {Evented} from '../util/evented';
 import {
     validateStyle,
     validateLight,
     emitValidationErrors
 } from './validate_style';
-import Color from '../style-spec/util/color';
 import {
     Properties,
     Transitionable,
-    Transitioning,
-    PossiblyEvaluated,
     DataConstantProperty,
     PositionProperty
 } from './properties';
 
+import type {Validator} from './validate_style';
+import type Color from '../style-spec/util/color';
 import type EvaluationParameters from './evaluation_parameters';
 import type {StyleSetterOptions} from '../style/style';
-import type {TransitionParameters} from './properties';
-
+import type {TransitionParameters,
+    Transitioning,
+    PossiblyEvaluated} from './properties';
 import type {LightSpecification} from '../style-spec/types';
+import type {StylePropertySpecification} from '../style-spec/style-spec';
 
 type Props = {
     ["anchor"]: DataConstantProperty<'map' | 'viewport'>;
@@ -30,12 +29,15 @@ type Props = {
     ["intensity"]: DataConstantProperty<number>;
 };
 
-const properties: Properties<Props> = new Properties({
-    "anchor": new DataConstantProperty(styleSpec.light.anchor),
-    "position": new PositionProperty(styleSpec.light.position),
-    "color": new DataConstantProperty(styleSpec.light.color),
-    "intensity": new DataConstantProperty(styleSpec.light.intensity),
-});
+const lightReference = styleSpec.light as Record<string, StylePropertySpecification>;
+
+let properties: Properties<Props>;
+const getProperties = (): Properties<Props> => properties || (properties = new Properties({
+    "anchor": new DataConstantProperty(lightReference.anchor),
+    "position": new PositionProperty(lightReference.position),
+    "color": new DataConstantProperty(lightReference.color),
+    "intensity": new DataConstantProperty(lightReference.intensity),
+}));
 
 /*
  * Represents the light used to light extruded features.
@@ -44,25 +46,24 @@ const properties: Properties<Props> = new Properties({
 class Light extends Evented {
     _transitionable: Transitionable<Props>;
     _transitioning: Transitioning<Props>;
-    properties: PossiblyEvaluated<Props>;
-    id: string;
+    properties!: PossiblyEvaluated<Props>;
+    id!: string;
 
     constructor(lightOptions?: LightSpecification, id: string = "flat") {
         super();
-        this._transitionable = new Transitionable(properties);
+        this._transitionable = new Transitionable(getProperties());
         this.setLight(lightOptions, id);
         this._transitioning = this._transitionable.untransitioned();
     }
 
     getLight(): LightSpecification {
-        return this._transitionable.serialize() as any;
+        return this._transitionable.serialize();
     }
 
     setLight(light: LightSpecification | null | undefined, id: string, options: StyleSetterOptions = {}) {
         if (this._validate(validateLight, light, options)) {
             return;
         }
-        // @ts-expect-error - TS2345 - Argument of type 'LightSpecification' is not assignable to parameter of type 'PropertyValueSpecifications<Props>'.
         this._transitionable.setTransitionOrValue(light);
         this.id = id;
     }
@@ -80,7 +81,7 @@ class Light extends Evented {
     }
 
     _validate(
-        validate: any,
+        validate: Validator,
         value: unknown,
         options?: {
             validate?: boolean;
@@ -90,12 +91,10 @@ class Light extends Evented {
             return false;
         }
 
-        return emitValidationErrors(this, validate.call(validateStyle, extend({
-            value,
+        return emitValidationErrors(this, validate.call(validateStyle, {value,
             // Workaround for https://github.com/mapbox/mapbox-gl-js/issues/2407
             style: {glyphs: true, sprite: true},
-            styleSpec
-        })));
+            styleSpec}));
     }
 }
 

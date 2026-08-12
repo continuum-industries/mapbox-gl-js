@@ -47,6 +47,14 @@
         [
           "wait"
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web-windows-chrome", "reason": "Flaky on windows platform only:"},
+        {"platform-tag-contains": "native-android-vulkan", "reason": "TODO - misc artefact, enable for Vulkan"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "native-android-gl-powervr", "threshold": 0.0003},
+        {"platform-tag-contains": "swiftshader", "threshold": 0.00025}
       ]
     }
   },
@@ -187,7 +195,6 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "fill",

@@ -1,7 +1,11 @@
+!build/
 /rollup/build/
+/docs
+/dist/esm*
 /dist/mapbox-gl*
 /dist/versions*
 /dist/style-spec
+/plugins/*/dist
 *.es.js
 *.js.map
 *.cjs.map
@@ -10,17 +14,29 @@ yarn.lock
 .vscode/
 *.sublime-*
 coverage
+.bundle-size-diff/
 .DS_Store
 .nyc_output
 *_generated.js
 *_generated.js.map
-test/integration/**/index*.html
-test/integration/**/actual.png
-test/integration/**/actual.json
-test/integration/**/diff.png
-test/integration/**/test-results.xml
-test/integration/dist/**/*.js
-test/integration/dist/**/*.json
+tests-to-run.txt
+**/test/**/__screenshots__/
+**/test/unit/**/vitest
+**/test/release/dist
+**/test/release/debug
+**/test/release/*.html
+!**/test/release/index.html
+**/test/integration/**/vitest
+**/test/integration/**/index*.html
+**/test/integration/**/query-tests.html
+**/test/integration/**/render-tests.html
+**/test/integration/**/actual.png
+**/test/integration/**/actual.json
+**/test/integration/**/diff.png
+**/test/integration/**/test-results.xml
+**/test/integration/dist/**/*.js
+**/test/integration/dist/**/*.json
+test/*.tgz
 .eslintcache
 src/style-spec/dist/index.cjs
 src/style-spec/dist/index.d.ts
@@ -34,5 +50,11 @@ npm-debug.log
 # https://github.com/vitejs/vite/issues/9470
 vitest.config.js.*
 
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 bundle-analysis.html
+
+# tmp usvg ignores
+test/usvg/vitest/
+test/usvg/test-suite/
+test/usvg/test-results.xml
+src/data/usvg/usvg_pb_renderer.js

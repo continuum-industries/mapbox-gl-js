@@ -1,5 +1,4 @@
-import WebWorker from './web_worker';
-import type {WorkerInterface} from './web_worker';
+import {createWorker} from './web_worker';
 
 export const PRELOAD_POOL_ID = 'mapboxgl_preloaded_worker_pool';
 
@@ -11,20 +10,22 @@ export default class WorkerPool {
     static workerCount: number;
 
     active: Partial<Record<number | string, boolean>>;
-    workers: Array<WorkerInterface>;
-
-    constructor() {
+    workers: Array<Worker> | null;
+    name?: string;
+    constructor(name?: string) {
         this.active = {};
+        this.workers = null;
+        this.name = name;
     }
 
-    acquire(mapId: number | string): Array<WorkerInterface> {
+    acquire(mapId: number | string, count = WorkerPool.workerCount): Array<Worker> {
         if (!this.workers) {
             // Lazily look up the value of mapboxgl.workerCount so that
             // client code has had a chance to set it.
             this.workers = [];
-            while (this.workers.length < WorkerPool.workerCount) {
-                // @ts-expect-error - TS2350 - Only a void function can be called with the 'new' keyword.
-                this.workers.push(new WebWorker());
+            while (this.workers.length < count) {
+                const w = createWorker(`${this.name || ''}WorkerPool: ${mapId}-${this.workers.length}`);
+                this.workers.push(w);
             }
         }
 
@@ -38,7 +39,7 @@ export default class WorkerPool {
             this.workers.forEach((w) => {
                 w.terminate();
             });
-            this.workers = (null as any);
+            this.workers = null;
         }
     }
 
@@ -54,3 +55,11 @@ export default class WorkerPool {
 // extensive benchmarking showed 2 to be the best default for both desktop and mobile devices;
 // we can't rely on hardwareConcurrency because of wild inconsistency of reported numbers between browsers
 WorkerPool.workerCount = 2;
+
+export function getWorkerCount(): number {
+    return WorkerPool.workerCount;
+}
+
+export function setWorkerCount(count: number) {
+    WorkerPool.workerCount = count;
+}

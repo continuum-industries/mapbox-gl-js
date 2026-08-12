@@ -1,10 +1,8 @@
-import extend from '../util/extend';
-import ValidationError from '../error/validation_error';
 import {unbundle, deepUnbundle} from '../util/unbundle_jsonlint';
 import {isExpression} from '../expression/index';
 import {isFunction} from '../function/index';
-
 import validateImport from './validate_import';
+import validateOption from './validate_option';
 import validateFunction from './validate_function';
 import validateExpression from './validate_expression';
 import validateObject from './validate_object';
@@ -25,15 +23,27 @@ import validateString from './validate_string';
 import validateFormatted from './validate_formatted';
 import validateImage from './validate_image';
 import validateProjection from './validate_projection';
+import validateIconset from './validate_iconset';
 
+import type ValidationError from '../error/validation_error';
 import type {StyleReference} from '../reference/latest';
 import type {StyleSpecification} from '../types';
-import getType from '../util/get_type';
+import type {StylePropertySpecification} from '../style-spec';
+import type {ExpressionValidatorOptions} from './validate_expression';
 
-const VALIDATORS = {
-    '*'() {
-        return [];
-    },
+type Validator = {
+    // eslint-disable-next-line @typescript-eslint/method-signature-style
+    validate(options: {
+        key: string;
+        value: unknown;
+        valueSpec?: unknown;
+        style?: Partial<StyleSpecification>;
+        styleSpec?: StyleReference;
+    }): ValidationError[];
+}['validate'];
+
+const VALIDATORS: Record<string, Validator> = {
+    '*': () => [],
     'array': validateArray,
     'boolean': validateBoolean,
     'number': validateNumber,
@@ -53,47 +63,75 @@ const VALIDATORS = {
     'formatted': validateFormatted,
     'resolvedImage': validateImage,
     'projection': validateProjection,
-    'import': validateImport
+    'import': validateImport,
+    'iconset': validateIconset,
+    'option': validateOption,
 };
 
-// Main recursive validation function. Tracks:
-//
-// - key: string representing location of validation in style tree. Used only
-//   for more informative error reporting.
-// - value: current value from style being evaluated. May be anything from a
-//   high level object that needs to be descended into deeper or a simple
-//   scalar value.
-// - valueSpec: current spec being evaluated. Tracks value.
-// - styleSpec: current full spec being evaluated.
-export type ValidationOptions = {
+export type ValidatorOptions = {
+    /**
+     * String representing location of validation in style tree. Used only
+     * for more informative error reporting.
+     */
     key: string;
-    value: any;
-    valueSpec?: any;
-    style: Partial<StyleSpecification>;
+
+    /**
+     * Current value from style being evaluated. May be anything from a
+     * high level object that needs to be descended into deeper or a simple
+     * scalar value.
+     */
+    value: unknown;
+
+    /**
+     * Current spec being evaluated. Tracks value.
+     */
+    valueSpec?: Partial<StylePropertySpecification>;
+
+    /**
+     * Current full spec being evaluated.
+     */
     styleSpec: StyleReference;
+
+    /**
+     * Current style being validated.
+     */
+    style: Partial<StyleSpecification>;
+
+    object?: object;
+    objectKey?: string;
+    propertyKey?: string;
+    propertyType?: string;
+    expressionContext?: string;
 };
 
-export default function validate(options: ValidationOptions, arrayAsExpression: boolean = false): Array<ValidationError> {
+/**
+ * Main recursive validation function.
+ */
+export default function validate(options: ValidatorOptions, arrayAsExpression: boolean = false): ValidationError[] {
     const value = options.value;
-    const valueSpec = options.valueSpec;
+    const valueSpec = options.valueSpec!;
     const styleSpec = options.styleSpec;
 
-    if (valueSpec.expression && isFunction(unbundle(value))) {
-        return validateFunction(options);
-    } else if (valueSpec.expression && isExpression(deepUnbundle(value))) {
-        return validateExpression(options);
-    } else if (valueSpec.type && VALIDATORS[valueSpec.type]) {
-        const valid = VALIDATORS[valueSpec.type](options);
-        if (arrayAsExpression === true && valid.length > 0 && getType(options.value) === "array") {
-            // Try to validate as an expression
-            return validateExpression(options);
-        } else {
-            return valid;
-        }
-    } else {
-        const valid = validateObject(extend({}, options, {
-            valueSpec: valueSpec.type ? styleSpec[valueSpec.type] : valueSpec
-        }));
-        return valid;
+    if (valueSpec.expression) {
+        if (isFunction(unbundle(value))) return validateFunction(options);
+        if (isExpression(deepUnbundle(value))) return validateExpression(options as unknown as ExpressionValidatorOptions);
     }
+
+    if (valueSpec.type && VALIDATORS[valueSpec.type]) {
+        const errors = VALIDATORS[valueSpec.type]!(options);
+        if (arrayAsExpression === true && errors.length > 0 && Array.isArray(options.value)) {
+            // Try to validate as an expression
+            return validateExpression(options as unknown as ExpressionValidatorOptions);
+        }
+
+        return errors;
+    }
+
+    const errors = validateObject({
+        ...options,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        valueSpec: valueSpec.type ? styleSpec[valueSpec.type] : valueSpec
+    });
+
+    return errors;
 }

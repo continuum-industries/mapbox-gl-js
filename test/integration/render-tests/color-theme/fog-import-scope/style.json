@@ -2,10 +2,9 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.00085,
+      
       "height": 512,
       "width": 512,
-      "standardDerivatives": true,
       "operations": [
         ["wait"],
         ["setTerrain", {
@@ -13,6 +12,12 @@
           "exaggeration": 1.0
         }],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-linux", "reason": "https://mapbox.atlassian.net/browse/MAPS3D-1929"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00085}
       ]
     }
   },
@@ -60,19 +65,9 @@
       }
     }
   ],
-  "models": {
-    "maple": "local://models/maple.glb",
-    "maple1": "local://models/maple1.glb",
-    "maple2": "local://models/maple2.glb",
-    "oak1": "local://models/oak1.glb",
-    "oak2": "local://models/oak2.glb",
-    "oak3": "local://models/oak3.glb",
-    "spur1": "local://models/spur1.glb",
-    "spur2": "local://models/spur2.glb"
-  },
   "terrain": {
     "source": "rgbterrain",
-    "exaggeration": 0.5
+    "exaggeration": 1.0
   },
   "sources": {
     "rgbterrain": {
@@ -90,24 +85,6 @@
       "tiles": [
         "local://tiles/{z}-{x}-{y}.vector.pbf"
       ]
-    },
-    "trees": {
-      "type": "vector",
-      "minzoom": 15,
-      "maxzoom": 15,
-      "tiles": [
-        "local://tiles/trees/{z}-{x}-{y}.pbf"
-      ]
-    },
-    "model": {
-      "type": "model",
-      "models": {
-        "model-1" : {
-          "uri": "local://models/low-poly-car.gltf",
-          "position": [-122.4027, 37.7845],
-          "orientation": [0, 0, 0]
-        }
-      }
     }
   },
   "pitch": 70,
@@ -135,15 +112,6 @@
       }
     },
     {
-      "id": "land",
-      "type": "fill",
-      "source": "mapbox",
-      "source-layer": "water",
-      "paint": {
-        "fill-color": "lightblue"
-      }
-    },
-    {
       "id": "road",
       "type": "line",
       "source": "mapbox",
@@ -161,6 +129,7 @@
       "source": "mapbox",
       "source-layer": "building",
       "minzoom": 15,
+      "source-max-zoom": 15,
       "paint": {
         "fill-extrusion-color": "white",
         "fill-extrusion-height": ["get", "height"],

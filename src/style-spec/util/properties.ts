@@ -1,12 +1,15 @@
-import type {ExpressionSpecification, StylePropertySpecification} from '../style-spec';
+import type {PropertyExpressionSpecification, StylePropertySpecification} from '../style-spec';
 
-type ExpressionParameter = ExpressionSpecification['parameters'][number];
+export const TRANSITION_KEY_RE = /^(.*)-transition$/;
+export const USE_THEME_KEY_RE = /^(.*)-use-theme$/;
+
+type ExpressionParameter = NonNullable<PropertyExpressionSpecification['parameters']>[number];
 
 function expressionHasParameter(
-    expression: ExpressionSpecification | null | undefined,
+    expression: PropertyExpressionSpecification | null | undefined,
     parameter: ExpressionParameter,
 ): boolean {
-    return !!expression && !!expression.parameters && expression.parameters.indexOf(parameter) > -1;
+    return !!expression && !!expression.parameters && expression.parameters.includes(parameter);
 }
 
 export function supportsPropertyExpression(spec: StylePropertySpecification): boolean {
@@ -19,6 +22,10 @@ export function supportsLightExpression(spec: StylePropertySpecification): boole
 
 export function supportsZoomExpression(spec: StylePropertySpecification): boolean {
     return expressionHasParameter(spec.expression, 'zoom');
+}
+
+export function supportsLineProgressExpression(spec: StylePropertySpecification): boolean {
+    return expressionHasParameter(spec.expression, 'line-progress');
 }
 
 export function supportsInterpolation(spec: StylePropertySpecification): boolean {

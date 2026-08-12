@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi, createMap} from '../../../util/vitest';
 import browser from '../../../../src/util/browser';
@@ -45,6 +46,7 @@ test('Map#isZooming returns true when scroll zooming', async () => {
         let now = 0;
         vi.spyOn(browser, 'now').mockImplementation(() => now);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.wheel(map.getCanvas(), {type: 'wheel', deltaY: -simulate.magicWheelZoomDelta});
         map._renderTaskQueue.run();
 
@@ -72,6 +74,7 @@ test('Map#isZooming returns true when double-click zooming', () => {
     let now = 0;
     vi.spyOn(browser, 'now').mockImplementation(() => now);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.dblclick(map.getCanvas());
     map._renderTaskQueue.run();
 
@@ -107,6 +110,7 @@ test('Map#isZooming returns true in globe view', () => {
     map.zoomTo(2, {duration: 0});
 
     // Double click
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.dblclick(map.getCanvas());
     map._renderTaskQueue.run();
 
@@ -115,6 +119,7 @@ test('Map#isZooming returns true in globe view', () => {
 
     // Scroll wheel
     finalCall = true;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.wheel(map.getCanvas(), {type: 'wheel', deltaY: -simulate.magicWheelZoomDelta});
     map._renderTaskQueue.run();
 

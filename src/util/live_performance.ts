@@ -7,10 +7,19 @@ import {
     isMapboxHTTPCDNURL
 } from './mapbox_url';
 
+type Prop = {name: string; value: string};
 type LivePerformanceMetrics = {
-    counters: Array<any>;
-    metadata: Array<any>;
-    attributes: Array<any>;
+    counters: Prop[];
+    metadata: Prop[];
+    attributes: Prop[];
+};
+
+type ResourceTimers = Record<string, Array<PerformanceResourceTiming>>;
+
+type NavigatorWithConnection = Navigator & {
+    connection?: {effectiveType?: string};
+    mozConnection?: {effectiveType?: string};
+    webkitConnection?: {effectiveType?: string};
 };
 
 export type LivePerformanceData = {
@@ -41,13 +50,8 @@ export const LivePerformanceUtils = {
     }
 } as const;
 
-function categorize(
-    arr: Array<PerformanceResourceTiming>,
-    fn: (entry: PerformanceResourceTiming) => string,
-): {
-    [key: string]: Array<PerformanceResourceTiming>;
-} {
-    const obj: Record<string, any> = {};
+function categorize(arr: Array<PerformanceResourceTiming>, fn: (entry: PerformanceResourceTiming) => string): ResourceTimers {
+    const obj: ResourceTimers = {};
     if (arr) {
         for (const item of arr) {
             const category = fn(item);
@@ -60,14 +64,12 @@ function categorize(
     return obj;
 }
 
-function getCountersPerResourceType(resourceTimers: {
-    [key: string]: Array<PerformanceResourceTiming>;
-}) {
-    const obj: Record<string, any> = {};
+function getCountersPerResourceType(resourceTimers: ResourceTimers): Record<string, number> {
+    const obj: Record<string, number> = {};
     if (resourceTimers) {
         for (const category in resourceTimers) {
             if (category !== 'other') {
-                for (const timer of resourceTimers[category]) {
+                for (const timer of resourceTimers[category]!) {
                     const min = `${category}ResolveRangeMin`;
                     const max = `${category}ResolveRangeMax`;
                     const reqCount = `${category}RequestCount`;
@@ -101,7 +103,7 @@ function getCountersPerResourceType(resourceTimers: {
 }
 
 function getResourceCategory(entry: PerformanceResourceTiming): string {
-    const url = entry.name.split('?')[0];
+    const url = entry.name.split('?')[0]!;
 
     if (isMapboxHTTPCDNURL(url) && url.includes('mapbox-gl.js')) return 'javascript';
     if (isMapboxHTTPCDNURL(url) && url.includes('mapbox-gl.css')) return 'css';
@@ -116,11 +118,11 @@ function getResourceCategory(entry: PerformanceResourceTiming): string {
 function getStyle(resourceTimers: Array<PerformanceResourceTiming>): string | null | undefined {
     if (resourceTimers) {
         for (const timer of resourceTimers) {
-            const url = timer.name.split('?')[0];
+            const url = timer.name.split('?')[0]!;
             if (isMapboxHTTPStyleURL(url)) {
                 const split = url.split('/').slice(-2);
                 if (split.length === 2) {
-                    return `mapbox://styles/${split[0]}/${split[1]}`;
+                    return `mapbox://styles/${split[0]!}/${split[1]!}`;
                 }
             }
         }
@@ -133,17 +135,13 @@ export function getLivePerformanceMetrics(data: LivePerformanceData): LivePerfor
     const resourcesByType = categorize(resourceTimers, getResourceCategory);
     const counters = getCountersPerResourceType(resourcesByType);
     const devicePixelRatio = window.devicePixelRatio;
-    // @ts-expect-error - TS2339 - Property 'connection' does not exist on type 'Navigator'. | TS2339 - Property 'mozConnection' does not exist on type 'Navigator'. | TS2339 - Property 'webkitConnection' does not exist on type 'Navigator'.
-    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    const effectiveType = connection ? (connection).effectiveType : undefined;
+    const connection = (navigator as NavigatorWithConnection).connection || (navigator as NavigatorWithConnection).mozConnection || (navigator as NavigatorWithConnection).webkitConnection;
+    const effectiveType = connection ? connection.effectiveType : undefined;
     const metrics: LivePerformanceMetrics = {counters: [], metadata: [], attributes: []};
 
     // Please read carefully before adding or modifying the following metrics:
     // https://github.com/mapbox/gl-js-team/blob/main/docs/live_performance_metrics.md
-    const addMetric = (arr: Array<{
-        name: string;
-        value: string;
-    }>, name: string, value?: number | string | null) => {
+    const addMetric = (arr: Array<{name: string; value: string}>, name: string, value?: number | string | null) => {
         if (value !== undefined && value !== null) {
             arr.push({name, value: value.toString()});
         }
@@ -157,8 +155,7 @@ export function getLivePerformanceMetrics(data: LivePerformanceData): LivePerfor
         addMetric(metrics.counters, "interactionRangeMax", data.interactionRange[1]);
     }
     if (markerTimers) {
-        for (const marker of Object.keys(LivePerformanceMarkers)) {
-            const markerName = LivePerformanceMarkers[marker];
+        for (const markerName of Object.values(LivePerformanceMarkers)) {
             const markerTimer = markerTimers.find((entry) => entry.name === markerName);
             if (markerTimer) {
                 addMetric(metrics.counters, markerName, markerTimer.startTime);

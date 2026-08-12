@@ -1,12 +1,14 @@
-import type Point from '@mapbox/point-geometry';
 import latest from '../reference/latest';
-
 import {deepUnbundle} from '../util/unbundle_jsonlint';
 import {createExpression} from '../expression/index';
 import {isFeatureConstant} from '../expression/is_constant';
+import assert from '../util/assert';
+
+import type Point from '@mapbox/point-geometry';
 import type {CanonicalTileID} from '../types/tile_id';
 import type {GlobalProperties, Feature} from '../expression/index';
 import type {FilterSpecification, ExpressionSpecification} from '../types';
+import type {ConfigOptions} from '../types/config_options';
 
 export type FeatureDistanceData = {
     bearing: [number, number];
@@ -20,6 +22,7 @@ export type FilterExpression = (
     featureTileCoord?: Point,
     featureDistanceData?: FeatureDistanceData,
 ) => boolean;
+
 export type FeatureFilter = {
     filter: FilterExpression;
     dynamicFilter?: FilterExpression;
@@ -82,7 +85,7 @@ function isExpressionFilter(filter: unknown): boolean {
  * @param {string} layerType the type of the layer this filter will be applied to.
  * @returns {Function} filter-evaluating function
  */
-function createFilter(filter?: FilterSpecification | ExpressionSpecification, layerType: string = 'fill'): FeatureFilter {
+function createFilter(filter?: FilterSpecification, scope: string = "", options: ConfigOptions | null = null, layerType: string = 'fill'): FeatureFilter {
     if (filter === null || filter === undefined) {
         return {filter: () => true, needGeometry: false, needFeature: false};
     }
@@ -95,8 +98,9 @@ function createFilter(filter?: FilterSpecification | ExpressionSpecification, la
 
     let staticFilter = true;
     try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         staticFilter = extractStaticFilter(filterExp);
-    } catch (e: any) {
+    } catch (e) {
         console.warn(
 `Failed to extract static filter. Filter will continue working, but at higher memory usage and slower framerate.
 This is most likely a bug, please report this via https://github.com/mapbox/mapbox-gl-js/issues/new?assignees=&labels=&template=Bug_report.md
@@ -108,26 +112,35 @@ ${JSON.stringify(filterExp, null, 2)}
     }
 
     // Compile the static component of the filter
-    const filterSpec = latest[`filter_${layerType}`];
-    const compiledStaticFilter = createExpression(staticFilter, filterSpec);
+    let filterFunc: PropertyDescriptor['value'] = null;
+    let filterSpec = null;
+    if (layerType !== 'background' && layerType !== 'sky' && layerType !== 'slot') {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        filterSpec = latest[`filter_${layerType}`];
+        assert(filterSpec);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        const compiledStaticFilter = createExpression(staticFilter, filterSpec, scope, options);
 
-    let filterFunc = null;
-    if (compiledStaticFilter.result === 'error') {
-        throw new Error(compiledStaticFilter.value.map(err => `${err.key}: ${err.message}`).join(', '));
-    } else {
-        filterFunc = (globalProperties: GlobalProperties, feature: Feature, canonical?: CanonicalTileID) => compiledStaticFilter.value.evaluate(globalProperties, feature, {}, canonical);
+        if (compiledStaticFilter.result === 'error') {
+            throw new Error(compiledStaticFilter.value.map(err => `${err.key}: ${err.message}`).join(', '));
+        } else {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+            filterFunc = (globalProperties: GlobalProperties, feature: Feature, canonical?: CanonicalTileID) => compiledStaticFilter.value.evaluate(globalProperties, feature, {}, canonical);
+        }
     }
 
     // If the static component is not equal to the entire filter then we have a dynamic component
     // Compile the dynamic component separately
-    let dynamicFilterFunc = null;
+    let dynamicFilterFunc: PropertyDescriptor['value'] = null;
     let needFeature = null;
     if (staticFilter !== filterExp) {
-        const compiledDynamicFilter = createExpression(filterExp, filterSpec);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        const compiledDynamicFilter = createExpression(filterExp, filterSpec, scope, options);
 
         if (compiledDynamicFilter.result === 'error') {
             throw new Error(compiledDynamicFilter.value.map(err => `${err.key}: ${err.message}`).join(', '));
         } else {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return
             dynamicFilterFunc = (globalProperties: GlobalProperties, feature: Feature, canonical?: CanonicalTileID, featureTileCoord?: Point, featureDistanceData?: FeatureDistanceData) => compiledDynamicFilter.value.evaluate(globalProperties, feature, {}, canonical, undefined, undefined, featureTileCoord, featureDistanceData);
             needFeature = !isFeatureConstant(compiledDynamicFilter.value.expression);
         }
@@ -137,14 +150,17 @@ ${JSON.stringify(filterExp, null, 2)}
     const needGeometry = geometryNeeded(staticFilter);
 
     return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         filter: filterFunc,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         dynamicFilter: dynamicFilterFunc ? dynamicFilterFunc : undefined,
         needGeometry,
         needFeature: !!needFeature
     };
 }
 
-function extractStaticFilter(filter: any): any {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractStaticFilter(filter: unknown | unknown[]): any {
     if (!isDynamicFilter(filter)) {
         return filter;
     }
@@ -153,7 +169,7 @@ function extractStaticFilter(filter: any): any {
     let result = deepUnbundle(filter);
 
     // 1. Union branches
-    unionDynamicBranches(result);
+    unionDynamicBranches(result as unknown[]);
 
     // 2. Collapse dynamic conditions to  `true`
     result = collapseDynamicBooleanExpressions(result);
@@ -161,16 +177,19 @@ function extractStaticFilter(filter: any): any {
     return result;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function collapseDynamicBooleanExpressions(expression: any): any {
     if (!Array.isArray(expression)) {
         return expression;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const collapsed = collapsedExpression(expression);
     if (collapsed === true) {
         return collapsed;
     } else {
-        return collapsed.map((subExpression) => collapseDynamicBooleanExpressions(subExpression));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        return collapsed.map((subExpression: unknown) => collapseDynamicBooleanExpressions(subExpression));
     }
 }
 
@@ -183,27 +202,23 @@ function collapseDynamicBooleanExpressions(expression: any): any {
  *
  * @param {Array<any>} filter the filter expression mutated in-place.
  */
-function unionDynamicBranches(filter: any) {
+function unionDynamicBranches(filter: unknown[]) {
     let isBranchingDynamically = false;
-    const branches = [];
-
+    const branches: unknown[] = [];
     if (filter[0] === 'case') {
         for (let i = 1; i < filter.length - 1; i += 2) {
             isBranchingDynamically = isBranchingDynamically || isDynamicFilter(filter[i]);
             branches.push(filter[i + 1]);
         }
-
-        branches.push(filter[filter.length - 1]);
+        branches.push(filter.at(-1));
     } else if (filter[0] === 'match') {
         isBranchingDynamically = isBranchingDynamically || isDynamicFilter(filter[1]);
-
         for (let i = 2; i < filter.length - 1; i += 2) {
             branches.push(filter[i + 1]);
         }
-        branches.push(filter[filter.length - 1]);
+        branches.push(filter.at(-1));
     } else if (filter[0] === 'step') {
         isBranchingDynamically = isBranchingDynamically || isDynamicFilter(filter[1]);
-
         for (let i = 1; i < filter.length - 1; i += 2) {
             branches.push(filter[i + 1]);
         }
@@ -216,20 +231,23 @@ function unionDynamicBranches(filter: any) {
 
     // traverse and recurse into children
     for (let i = 1; i < filter.length; i++) {
-        unionDynamicBranches(filter[i]);
+        unionDynamicBranches(filter[i] as unknown[]);
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isDynamicFilter(filter: any): boolean {
     // Base Cases
     if (!Array.isArray(filter)) {
         return false;
     }
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     if (isRootExpressionDynamic(filter[0])) {
         return true;
     }
 
     for (let i = 1; i < filter.length; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const child = filter[i];
         if (isDynamicFilter(child)) {
             return true;
@@ -255,10 +273,14 @@ const dynamicConditionExpressions = new Set([
     'to-boolean'
 ]);
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function collapsedExpression(expression: any): any {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     if (dynamicConditionExpressions.has(expression[0])) {
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         for (let i = 1; i < expression.length; i++) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const param = expression[i];
             if (isDynamicFilter(param)) {
                 return true;
@@ -273,55 +295,70 @@ function compare(a: number, b: number) {
     return a < b ? -1 : a > b ? 1 : 0;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function geometryNeeded(filter: Array<any> | boolean) {
     if (!Array.isArray(filter)) return false;
     if (filter[0] === 'within' || filter[0] === 'distance') return true;
     for (let index = 1; index < filter.length; index++) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         if (geometryNeeded(filter[index])) return true;
     }
     return false;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function convertFilter(filter?: Array<any> | null): unknown {
     if (!filter) return true;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const op = filter[0];
     if (filter.length <= 1) return (op !== 'any');
     const converted =
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === '==' ? convertComparisonOp(filter[1], filter[2], '==') :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === '!=' ? convertNegation(convertComparisonOp(filter[1], filter[2], '==')) :
         op === '<' ||
         op === '>' ||
         op === '<=' ||
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === '>=' ? convertComparisonOp(filter[1], filter[2], op) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === 'any' ? convertDisjunctionOp(filter.slice(1)) :
-        // @ts-expect-error - TS2769 - No overload matches this call.
-        op === 'all' ? ['all'].concat(filter.slice(1).map(convertFilter)) :
-        // @ts-expect-error - TS2769 - No overload matches this call.
-        op === 'none' ? ['all'].concat(filter.slice(1).map(convertFilter).map(convertNegation)) :
+        op === 'all' ? (['all'] as unknown[]).concat(filter.slice(1).map(convertFilter)) :
+        op === 'none' ? (['all'] as unknown[]).concat(filter.slice(1).map(convertFilter).map(convertNegation)) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === 'in' ? convertInOp(filter[1], filter.slice(2)) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === '!in' ? convertNegation(convertInOp(filter[1], filter.slice(2))) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === 'has' ? convertHasOp(filter[1]) :
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         op === '!has' ? convertNegation(convertHasOp(filter[1])) :
         true;
     return converted;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function convertComparisonOp(property: string, value: any, op: string) {
     switch (property) {
     case '$type':
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return [`filter-type-${op}`, value];
     case '$id':
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return [`filter-id-${op}`, value];
     default:
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return [`filter-${op}`, property, value];
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function convertDisjunctionOp(filters: Array<Array<any>>) {
-// @ts-expect-error - TS2769 - No overload matches this call.
-    return ['any'].concat(filters.map(convertFilter));
+    return (['any'] as unknown[]).concat(filters.map(convertFilter));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function convertInOp(property: string, values: Array<any>) {
     if (values.length === 0) { return false; }
     switch (property) {

@@ -2,6 +2,7 @@
   "version": 8,
   "metadata": {
     "test": {
+      "spriteFormat": "raster",
       "width": 512,
       "height": 512,
       "operations": [
@@ -47,6 +48,9 @@
         [
           "wait"
         ]
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
       ]
     }
   },

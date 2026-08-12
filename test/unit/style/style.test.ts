@@ -1,37 +1,42 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {
     describe,
     test,
-    beforeAll,
     beforeEach,
-    afterEach,
-    afterAll,
     expect,
     waitFor,
     vi,
 } from '../../util/vitest';
-import {getNetworkWorker, http, HttpResponse, getPNGResponse} from '../../util/network';
+import {mockFetch} from '../../util/network';
 import Style from '../../../src/style/style';
 import SourceCache from '../../../src/source/source_cache';
 import StyleLayer from '../../../src/style/style_layer';
 import Transform from '../../../src/geo/transform';
-import {extend} from '../../../src/util/util';
-import {RequestManager} from '../../../src/util/mapbox';
-import {Event, Evented} from '../../../src/util/evented';
+import {Event} from '../../../src/util/evented';
 import styleSpec from '../../../src/style-spec/reference/latest';
 import {
     setRTLTextPlugin,
     clearRTLTextPlugin,
     evented as rtlTextPluginEvented
 } from '../../../src/source/rtl_text_plugin';
+import Tile from '../../../src/source/tile';
 import {OverscaledTileID} from '../../../src/source/tile_id';
+import {ImageId} from '../../../src/style-spec/expression/types/image_id';
+import {StubMap, newStubStyle} from './utils';
+import {makeFQID} from '../../../src/util/fqid';
+import {RGBAImage} from '../../../src/util/image';
+import {ImageVariant} from '../../../src/style-spec/expression/types/image_variant';
+import {AtlasContentDescriptor} from '../../../src/render/atlas_content_descriptor';
+import ImageAtlas from '../../../src/render/image_atlas';
+
+import type {StyleImageMap} from '../../../src/style/style_image';
+import type {StringifiedImageVariant} from '../../../src/style-spec/expression/types/image_variant';
 
 function createStyleJSON(properties) {
-    return extend({
-        "version": 8,
+    return {"version": 8,
         "sources": {},
-        "layers": []
-    }, properties);
+        "layers": [], ...properties};
 }
 
 function createSource() {
@@ -54,50 +59,24 @@ function createGeoJSONSource() {
     };
 }
 
-class StubMap extends Evented {
-    constructor() {
-        super();
-        this.transform = new Transform();
-        this._requestManager = new RequestManager();
-        this._markers = [];
-        this._triggerCameraUpdate = () => {};
-        this._prioritizeAndUpdateProjection = () => {};
-    }
-
-    setCamera() {}
-
-    _getMapId() {
-        return 1;
-    }
-}
-
-let networkWorker: any;
-
-beforeAll(async () => {
-    networkWorker = await getNetworkWorker(window);
-});
-
-afterEach(() => {
-    networkWorker.resetHandlers();
-});
-
-afterAll(() => {
-    networkWorker.stop();
-});
-
 describe('Style', () => {
     test('registers plugin state change listener', () => {
         clearRTLTextPlugin();
-        networkWorker.use(http.all('*', () => new HttpResponse(null)));
+        mockFetch({
+            '.*': () => new Response(null)
+        });
         vi.spyOn(Style, 'registerForPluginStateChange');
         const style = new Style(new StubMap());
-        vi.spyOn(style.dispatcher, 'broadcast').mockImplementation(() => {});
+        vi.spyOn(style.dispatcher, 'send').mockImplementation(() => Promise.resolve([]));
         expect(Style.registerForPluginStateChange).toHaveBeenCalledTimes(1);
 
         setRTLTextPlugin("/plugin.js",);
-        expect(style.dispatcher.broadcast.mock.calls[0][0]).toEqual("syncRTLPluginState");
-        expect(style.dispatcher.broadcast.mock.calls[0][1]).toEqual({
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        expect(style.dispatcher.send.mock.calls[0][0]).toEqual("syncRTLPluginState");
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        expect(style.dispatcher.send.mock.calls[0][1]).toEqual({
             pluginStatus: 'deferred',
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             pluginURL: expect.stringContaining("/plugin.js")
         });
         // window.clearFakeWorkerPresence();
@@ -106,11 +85,13 @@ describe('Style', () => {
     /**
      * @note Currently we cannot mock workers
      * @see https://github.com/vitest-dev/vitest/issues/4033
-     * @todo Test with @vitest/web-worker
+     * @todo Test with `@vitest/web-worker`
      */
     test.skip('loads plugin immediately if already registered', async () => {
         clearRTLTextPlugin();
-        networkWorker.use(http.get('/plugin.js', new HttpResponse("doesn't matter")));
+        mockFetch({
+            '/plugin.js': () => new Response("doesn't matter")
+        });
         window.URL.createObjectURL = () => 'blob:';
 
         await new Promise(resolve => {
@@ -124,25 +105,28 @@ describe('Style', () => {
                     resolve();
                 }
             });
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             new Style(createStyleJSON());
         });
     });
 });
 
 describe('Style#loadURL', () => {
-    test('fires "dataloading"', async () => {
+    test('fires "dataloading"', () => {
         const style = new Style(new StubMap());
         const spy = vi.fn();
 
-        networkWorker.use(
-            http.get('/style.json', () => HttpResponse.json(createStyleJSON()))
-        );
+        mockFetch({
+            '/style.json': () => new Response(JSON.stringify(createStyleJSON()))
+        });
 
         style.on('dataloading', spy);
         style.loadURL('/style.json');
 
         expect(spy).toHaveBeenCalledTimes(1);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0].target).toEqual(style);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0].dataType).toEqual('style');
     });
 
@@ -150,11 +134,9 @@ describe('Style#loadURL', () => {
         const map = new StubMap();
         const spy = vi.spyOn(map._requestManager, 'transformRequest');
 
-        networkWorker.use(
-            http.get('/style.json', () => {
-                return HttpResponse.json(createStyleJSON());
-            })
-        );
+        mockFetch({
+            '/style.json': () => new Response(JSON.stringify(createStyleJSON()))
+        });
 
         const style = new Style(map);
         style.loadURL('/style.json');
@@ -169,26 +151,25 @@ describe('Style#loadURL', () => {
     test('validates the style', async () => {
         const style = new Style(new StubMap());
 
-        networkWorker.use(
-            http.get('/style.json', () => {
-                return HttpResponse.json(createStyleJSON({version: 'invalid'}));
-            })
-        );
+        mockFetch({
+            '/style.json': () => new Response(JSON.stringify(createStyleJSON({version: 'invalid'})))
+        });
 
         style.loadURL('/style.json');
 
         const {error} = await waitFor(style, "error");
         expect(error).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(error.message).toMatch(/version/);
 
     });
 
     test('skips validation for mapbox:// styles', async () => {
-        networkWorker.use(
-            http.get('https://api.mapbox.com/styles/v1/test/test', () => {
-                return HttpResponse.json(createStyleJSON({version: 'invalid'}));
-            })
-        );
+        mockFetch({
+            'https://api.mapbox.com/styles/v1/test/test': () => new Response(JSON.stringify(createStyleJSON({
+                version: 'invalid'
+            })))
+        });
 
         await new Promise(resolve => {
             const style = new Style(new StubMap())
@@ -204,30 +185,37 @@ describe('Style#loadURL', () => {
     });
 
     test('cancels pending requests if removed', () => {
+        mockFetch({
+            '/style.json': () => new Response(JSON.stringify(createStyleJSON()))
+        });
         const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
         const style = new Style(new StubMap());
-        style.loadURL('style.json');
+        style.loadURL('/style.json');
         style._remove();
         expect(abortSpy).toHaveBeenCalledTimes(1);
     });
 });
 
 describe('Style#loadJSON', () => {
-    test('fires "dataloading" (synchronously)', async () => {
+    test('fires "dataloading" (synchronously)', () => {
         const style = new Style(new StubMap());
         const spy = vi.fn();
 
         style.on('dataloading', spy);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         expect(spy).toHaveBeenCalledTimes(1);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0].target).toEqual(style);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0].dataType).toEqual('style');
     });
 
     test('fires "data" (asynchronously)', async () => {
         const style = new Style(new StubMap());
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         const e = await waitFor(style, "data");
@@ -235,54 +223,22 @@ describe('Style#loadJSON', () => {
         expect(e.dataType).toEqual('style');
     });
 
-    test('fires "data" when the sprite finishes loading', async () => {
-        networkWorker.use(
-            http.get('http://example.com/sprite.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('http://example.com/sprite.json', async () => {
-                return HttpResponse.json({});
-            })
-        );
-
-        const style = new Style(new StubMap());
-
-        style.loadJSON({
-            "version": 8,
-            "sources": {},
-            "layers": [],
-            "sprite": "http://example.com/sprite"
-        });
-
-        await new Promise(resolve => {
-            style.once('error', () => expect.unreachable());
-
-            style.once('data', (e) => {
-                expect(e.target).toBe(style);
-                expect(e.dataType).toEqual('style');
-
-                style.once('data', (e) => {
-                    expect(e.target).toBe(style);
-                    expect(e.dataType).toEqual('style');
-                    resolve();
-                });
-            });
-        });
-    });
-
     test('validates the style', async () => {
         const style = new Style(new StubMap());
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({version: 'invalid'}));
         const {error} = await waitFor(style, "error");
         expect(error).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(error.message).toMatch(/version/);
     });
 
     test('creates sources', async () => {
         const style = new Style(new StubMap());
 
-        style.loadJSON(extend(createStyleJSON(), {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(Object.assign(createStyleJSON(), {
             "sources": {
                 "mapbox": {
                     "type": "vector",
@@ -317,37 +273,9 @@ describe('Style#loadJSON', () => {
         expect(style.getLayer('fill') instanceof StyleLayer).toBeTruthy();
     });
 
-    test('transforms sprite json and image URLs before request', async () => {
-        networkWorker.use(
-            http.get('http://example.com/sprites/bright-v8.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('http://example.com/sprites/bright-v8.json', () => {
-                return HttpResponse.json({});
-            })
-        );
-
-        const map = new StubMap();
-        const transformSpy = vi.spyOn(map._requestManager, 'transformRequest');
-        const style = new Style(map);
-
-        style.loadJSON(extend(createStyleJSON(), {
-            "sprite": "http://example.com/sprites/bright-v8"
-        }));
-
-        await waitFor(style, 'style.load');
-
-        expect(transformSpy).toHaveBeenCalledTimes(2);
-        expect(transformSpy.mock.calls[0][0]).toEqual('http://example.com/sprites/bright-v8.json');
-        expect(transformSpy.mock.calls[0][1]).toEqual('SpriteJSON');
-        expect(transformSpy.mock.calls[1][0]).toEqual('http://example.com/sprites/bright-v8.png');
-        expect(transformSpy.mock.calls[1][1]).toEqual('SpriteImage');
-
-        await waitFor(style, "data");
-    });
-
     test('emits an error on non-existant vector source layer', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             sources: {
                 '-source-id-': {type: "vector", tiles: []}
@@ -369,17 +297,22 @@ describe('Style#loadJSON', () => {
         });
         style.update({});
         const event = await waitFor(style, "error");
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const err = event.error;
         expect(err).toBeTruthy();
-        expect(err.toString().indexOf('-source-layer-') !== -1).toBeTruthy();
-        expect(err.toString().indexOf('-source-id-') !== -1).toBeTruthy();
-        expect(err.toString().indexOf('-layer-id-') !== -1).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-source-layer-')).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-source-id-')).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-layer-id-')).toBeTruthy();
     });
 
     test('sets up layer event forwarding', async () => {
         const style = new Style(new StubMap());
 
         await new Promise(resolve => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             style.loadJSON(createStyleJSON({
                 layers: [{
                     id: 'background',
@@ -401,9 +334,98 @@ describe('Style#loadJSON', () => {
     });
 });
 
+// `_layers`, `_otherSourceCaches`, `_symbolSourceCaches`, and
+// `_fillExtrusionSourceCaches` are indexed by raw IDs from untrusted style
+// JSON. If they were initialized with `{}`, an ID of "__proto__" would invoke
+// the prototype setter rather than creating an own property, corrupting the
+// registry and breaking `for...in` iteration across the render pipeline.
+// These tests guard the `Object.create(null)` hardening against regression.
+describe('Style prototype-pollution hardening', () => {
+    test('layer id "__proto__" via loadJSON does not corrupt the registry', async () => {
+        const style = new Style(new StubMap());
+
+        style.loadJSON({
+            version: 8,
+            sources: {},
+            layers: [{id: '__proto__', type: 'background'}]
+        });
+
+        await waitFor(style, "style.load");
+
+        expect(Object.getPrototypeOf(style._layers)).toBeNull();
+        expect(Object.hasOwn(style._layers, '__proto__')).toBe(true);
+        expect(style.getLayer('__proto__')).toBeTruthy();
+        expect(Object.keys(style._layers)).toEqual(['__proto__']);
+    });
+
+    test('source id "__proto__" via loadJSON does not corrupt source-cache registries', async () => {
+        const style = new Style(new StubMap());
+
+        // JSON.parse models the realistic attack vector: hostile JSON over the
+        // network. An object-literal `{"__proto__": ...}` in JS source sets
+        // the prototype rather than creating an own property, so it cannot
+        // reach `addSource()` with id "__proto__". Validation runs (default)
+        // so this exercises the full path including validate_object.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const hostileStyle = JSON.parse('{"version":8,"sources":{"__proto__":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}},"layers":[]}');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(hostileStyle);
+
+        await waitFor(style, "style.load");
+
+        expect(Object.getPrototypeOf(style._otherSourceCaches)).toBeNull();
+        expect(Object.getPrototypeOf(style._symbolSourceCaches)).toBeNull();
+        expect(Object.getPrototypeOf(style._fillExtrusionSourceCaches)).toBeNull();
+        expect(Object.hasOwn(style._otherSourceCaches, '__proto__')).toBe(true);
+        expect(Object.hasOwn(style._symbolSourceCaches, '__proto__')).toBe(true);
+    });
+
+    test('addLayer with id "__proto__" does not corrupt the registry', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON());
+        await waitFor(style, "style.load");
+
+        style.addLayer({id: '__proto__', type: 'background'});
+
+        expect(Object.getPrototypeOf(style._layers)).toBeNull();
+        expect(style.getLayer('__proto__')).toBeTruthy();
+    });
+
+    test('addSource with id "__proto__" does not corrupt source-cache registries', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON());
+        await waitFor(style, "style.load");
+
+        style.addSource('__proto__', createGeoJSONSource());
+
+        expect(Object.getPrototypeOf(style._otherSourceCaches)).toBeNull();
+        expect(Object.getPrototypeOf(style._symbolSourceCaches)).toBeNull();
+        expect(Object.hasOwn(style._otherSourceCaches, '__proto__')).toBe(true);
+        expect(Object.hasOwn(style._symbolSourceCaches, '__proto__')).toBe(true);
+    });
+
+    test('merged source-cache registries stay null-prototype after mergeSources', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const hostileStyle = JSON.parse('{"version":8,"sources":{"__proto__":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}},"layers":[]}');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(hostileStyle);
+        await waitFor(style, "style.load");
+
+        style.mergeSources();
+
+        expect(Object.getPrototypeOf(style._mergedOtherSourceCaches)).toBeNull();
+        expect(Object.getPrototypeOf(style._mergedSymbolSourceCaches)).toBeNull();
+        expect(Object.getPrototypeOf(style._mergedFillExtrusionSourceCaches)).toBeNull();
+    });
+});
+
 describe('Style#_remove', () => {
     test('clears tiles', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             sources: {'source-id': createGeoJSONSource()}
         }));
@@ -417,6 +439,7 @@ describe('Style#_remove', () => {
 
     test('deregisters plugin listener', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         vi.spyOn(style.dispatcher, 'broadcast');
 
@@ -453,8 +476,9 @@ test('Style#update', () => {
         style.addLayer({id: 'third', source: 'source', type: 'fill', 'source-layer': 'source-layer'});
         style.removeLayer('second');
 
-        style.dispatcher.broadcast = function(key, value) {
+        style.dispatcher.broadcast = function (key, value) {
             expect(key).toEqual('updateLayers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(value.layers.map((layer) => { return layer.id; })).toEqual(['first', 'third']);
             expect(value.removedIds).toEqual(['second']);
         };
@@ -466,17 +490,21 @@ test('Style#update', () => {
 describe('Style#setState', () => {
     test('throw before loaded', () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(() => style.setState(createStyleJSON())).toThrowError(/load/i);
     });
 
     test('do nothing if there are no changes', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         [
             'addLayer',
             'removeLayer',
             'setPaintProperty',
             'setLayoutProperty',
+            'setLayerProperty',
+            'getLayerProperty',
             'setFilter',
             'addSource',
             'removeSource',
@@ -485,38 +513,43 @@ describe('Style#setState', () => {
             'setFlatLight'
         ].forEach((method) => vi.spyOn(style, method).mockImplementation(() => expect.unreachable(`${method} called`)));
         await waitFor(style, "style.load");
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const didChange = style.setState(createStyleJSON());
         expect(didChange).toBeFalsy();
     });
 
     test('Issue #3893: compare new source options against originally provided options rather than normalized properties', async () => {
-        networkWorker.use(
-            http.get('/tilejson.json', () => {
-                return HttpResponse.json({
-                    tiles: ['http://tiles.server']
-                });
-            })
-        );
+        mockFetch({
+            '/tilejson.json': () => new Response(JSON.stringify({
+                tiles: ['http://tiles.server']
+            }))
+        });
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const initial = createStyleJSON();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         initial.sources.mySource = {
             type: 'raster',
             url: '/tilejson.json'
         };
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(initial);
 
         await waitFor(style, "style.load");
 
         vi.spyOn(style, 'removeSource').mockImplementation(() => expect.unreachable('removeSource called'));
         vi.spyOn(style, 'addSource').mockImplementation(() => expect.unreachable('addSource called'));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.setState(initial);
 
         await waitFor(style, 'data');
     });
 
     test('return true if there is a change', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const initialState = createStyleJSON();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const nextState = createStyleJSON({
             sources: {
                 foo: {
@@ -527,14 +560,17 @@ describe('Style#setState', () => {
         });
 
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(initialState);
         await waitFor(style, "style.load");
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const didChange = style.setState(nextState);
         expect(didChange).toBeTruthy();
         expect(style.stylesheet).toStrictEqual(nextState);
     });
 
     test('sets GeoJSON source data if different', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const initialState = createStyleJSON({
             "sources": {"source-id": createGeoJSONSource()}
         });
@@ -552,6 +588,7 @@ describe('Style#setState', () => {
             ]
         };
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const nextState = createStyleJSON({
             "sources": {
                 "source-id": {
@@ -562,12 +599,14 @@ describe('Style#setState', () => {
         });
 
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(initialState);
 
         await waitFor(style, "style.load");
         const geoJSONSource = style.getSource('source-id');
         vi.spyOn(style, 'setGeoJSONSourceData');
         vi.spyOn(geoJSONSource, 'setData');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const didChange = style.setState(nextState);
 
         expect(style.setGeoJSONSourceData).toHaveBeenCalledWith('source-id', geoJSONSourceData);
@@ -585,6 +624,7 @@ describe('Style#addSource', () => {
 
     test('throw if missing source type', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         const source = createSource();
@@ -594,8 +634,26 @@ describe('Style#addSource', () => {
         expect(() => style.addSource('source-id', source)).toThrowError(/type/i);
     });
 
+    test.each(['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__'])('throw a clean error on unknown source type "%s"', async (type) => {
+        // "toString"/"constructor"/etc resolve through the prototype chain in the
+        // sourceTypes registry, and `builtIns` in Style#addSource
+        // only schema-validates a handful of known types, so anything else -
+        // including these prototype member names - reaches `new sourceTypes[type](...)`
+        // unchecked. That must not throw "sourceTypes.toString is not a constructor".
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON());
+        await waitFor(style, "style.load");
+
+        const source = createSource();
+        source.type = type;
+
+        expect(() => style.addSource('source-id', source)).toThrowError(/unknown source type/i);
+    });
+
     test('fires "data" event', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const source = createSource();
 
@@ -609,6 +667,7 @@ describe('Style#addSource', () => {
 
     test('throws on duplicates', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const source = createSource();
         await waitFor(style, "style.load");
@@ -620,6 +679,7 @@ describe('Style#addSource', () => {
 
     test('emits on invalid source', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await new Promise(resolve => {
             style.on('style.load', () => {
@@ -640,6 +700,7 @@ describe('Style#addSource', () => {
 
     test('sets up source event forwarding', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'background',
@@ -674,6 +735,7 @@ describe('Style#removeSource', () => {
 
     test('fires "data" event', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const source = createSource();
         await new Promise(resolve => {
@@ -688,6 +750,7 @@ describe('Style#removeSource', () => {
 
     test('clears tiles', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             sources: {'source-id': createGeoJSONSource()}
         }));
@@ -699,8 +762,23 @@ describe('Style#removeSource', () => {
         expect(sourceCache.clearTiles).toHaveBeenCalledTimes(1);
     });
 
+    test('tells the workers to discard the source', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            sources: {'source-id': createGeoJSONSource()}
+        }));
+
+        await waitFor(style, "style.load");
+        vi.spyOn(style.dispatcher, 'broadcast');
+        style.removeSource('source-id');
+
+        expect(style.dispatcher.broadcast).toHaveBeenCalledWith('removeSource', {type: 'geojson', source: 'source-id', scope: ''});
+    });
+
     test('throws on non-existence', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await waitFor(style, "style.load");
         expect(() => {
@@ -710,6 +788,7 @@ describe('Style#removeSource', () => {
 
     async function createStyle() {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             'sources': {
                 'mapbox-source': createGeoJSONSource()
@@ -747,8 +826,9 @@ describe('Style#removeSource', () => {
         });
     });
 
-    test('tears down source event forwarding', async () => {
+    test('tears down source event forwarding', () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         let source = createSource();
 
@@ -759,11 +839,14 @@ describe('Style#removeSource', () => {
             style.removeSource('source-id');
 
             // Suppress error reporting
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             source.on('error', () => {});
 
             style.on('data', () => { expect.unreachable(); });
             style.on('error', () => { expect.unreachable(); });
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             source.fire(new Event('data'));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             source.fire(new Event('error'));
         });
     });
@@ -779,6 +862,7 @@ describe('Style#setGeoJSONSourceData', () => {
 
     test('throws on non-existence', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await waitFor(style, "style.load");
         expect(() => style.setGeoJSONSourceData('source-id', geoJSON)).toThrowError(/There is no source with this ID/);
@@ -793,6 +877,7 @@ describe('Style#addLayer', () => {
 
     test('sets up layer event forwarding', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         await new Promise(resolve => {
@@ -814,6 +899,7 @@ describe('Style#addLayer', () => {
 
     test('throws on non-existant vector source layer', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             sources: {
                 // At least one source must be added to trigger the load event
@@ -832,16 +918,21 @@ describe('Style#addLayer', () => {
             'source-layer': '-source-layer-'
         });
         const event = await waitFor(style, "error");
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const err = event.error;
 
         expect(err).toBeTruthy();
-        expect(err.toString().indexOf('-source-layer-') !== -1).toBeTruthy();
-        expect(err.toString().indexOf('-source-id-') !== -1).toBeTruthy();
-        expect(err.toString().indexOf('-layer-id-') !== -1).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-source-layer-')).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-source-id-')).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        expect(err.toString().includes('-layer-id-')).toBeTruthy();
     });
 
     test('emits error on invalid layer', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await new Promise(resolve => {
             style.on('style.load', () => {
@@ -862,13 +953,14 @@ describe('Style#addLayer', () => {
 
     test('#4040 does not mutate source property when provided inline', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await waitFor(style, "style.load");
         const source = {
             "type": "geojson",
             "data": {
                 "type": "Point",
-                "coordinates": [ 0, 0]
+                "coordinates": [0, 0]
             }
         };
         const layer = {id: 'inline-source-layer', type: 'circle', source};
@@ -878,7 +970,8 @@ describe('Style#addLayer', () => {
 
     test('reloads source', async () => {
         const style = new Style(new StubMap());
-        style.loadJSON(extend(createStyleJSON(), {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(Object.assign(createStyleJSON(), {
             "sources": {
                 "mapbox": {
                     "type": "vector",
@@ -910,7 +1003,8 @@ describe('Style#addLayer', () => {
         '#3895 reloads source (instead of clearing) if adding this layer with the same type, immediately after removing it',
         async () => {
             const style = new Style(new StubMap());
-            style.loadJSON(extend(createStyleJSON(), {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            style.loadJSON(Object.assign(createStyleJSON(), {
                 "sources": {
                     "mapbox": {
                         "type": "vector",
@@ -950,7 +1044,8 @@ describe('Style#addLayer', () => {
         'clears source (instead of reloading) if adding this layer with a different type, immediately after removing it',
         async () => {
             const style = new Style(new StubMap());
-            style.loadJSON(extend(createStyleJSON(), {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            style.loadJSON(Object.assign(createStyleJSON(), {
                 "sources": {
                     "mapbox": {
                         "type": "vector",
@@ -987,6 +1082,7 @@ describe('Style#addLayer', () => {
 
     test('fires "data" event', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const layer = {id: 'background', type: 'background'};
 
@@ -1002,6 +1098,7 @@ describe('Style#addLayer', () => {
 
     test('emits error on duplicates', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const layer = {id: 'background', type: 'background'};
 
@@ -1019,6 +1116,7 @@ describe('Style#addLayer', () => {
 
     test('adds to the end by default', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'a',
@@ -1037,6 +1135,7 @@ describe('Style#addLayer', () => {
 
     test('adds before the given layer', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'a',
@@ -1055,6 +1154,7 @@ describe('Style#addLayer', () => {
 
     test('fire error if before layer does not exist', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'a',
@@ -1079,7 +1179,8 @@ describe('Style#addLayer', () => {
 
     test('fires an error on non-existant source layer', async () => {
         const style = new Style(new StubMap());
-        style.loadJSON(extend(createStyleJSON(), {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(Object.assign(createStyleJSON(), {
             sources: {
                 dummy: {
                     type: 'geojson',
@@ -1114,6 +1215,7 @@ describe('Style#removeLayer', () => {
 
     test('fires "data" event', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const layer = {id: 'background', type: 'background'};
 
@@ -1130,6 +1232,7 @@ describe('Style#removeLayer', () => {
 
     test('tears down layer event forwarding', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'background',
@@ -1158,6 +1261,7 @@ describe('Style#removeLayer', () => {
 
     test('fires an error on non-existence', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         await waitFor(style, "style.load");
@@ -1173,6 +1277,7 @@ describe('Style#removeLayer', () => {
 
     test('removes from the order', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'a',
@@ -1190,6 +1295,7 @@ describe('Style#removeLayer', () => {
 
     test('does not remove dereffed layers', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [{
                 id: 'a',
@@ -1215,6 +1321,7 @@ describe('Style#moveLayer', () => {
 
     test('fires "data" event', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         const layer = {id: 'background', type: 'background'};
 
@@ -1231,6 +1338,7 @@ describe('Style#moveLayer', () => {
 
     test('fires an error on non-existence', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         await new Promise(resolve => {
@@ -1246,6 +1354,7 @@ describe('Style#moveLayer', () => {
 
     test('changes the order', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [
                 {id: 'a', type: 'background'},
@@ -1261,6 +1370,7 @@ describe('Style#moveLayer', () => {
 
     test('moves to existing location', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON({
             layers: [
                 {id: 'a', type: 'background'},
@@ -1273,6 +1383,39 @@ describe('Style#moveLayer', () => {
         style.moveLayer('b', 'b');
         expect(style._order).toEqual(['a', 'b', 'c']);
     });
+
+    test('Throws a warning when layers have different slots', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            layers: [
+                {id: 'a', type: 'background', slot: 'main'},
+                {id: 'b', type: 'background', slot: 'aux'}
+            ]
+        }));
+
+        await waitFor(style, "style.load");
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        style.moveLayer('b', 'a');
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith('Layer with id "a" has a different slot. Layers can only be rearranged within the same slot.');
+        expect(style._order).toEqual(['a', 'b']);
+    });
+
+    test('Does not throw warning when layer has not a slot', async () => {
+        const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            layers: [
+                {id: 'a', type: 'background', slot: 'main'},
+                {id: 'b', type: 'background'}
+            ]
+        }));
+
+        await waitFor(style, "style.load");
+        style.moveLayer('b', 'a');
+        expect(style._order).toEqual(['b', 'a']);
+    });
 });
 
 describe('Style#setPaintProperty', () => {
@@ -1280,7 +1423,8 @@ describe('Style#setPaintProperty', () => {
         '#4738 postpones source reload until layers have been broadcast to workers',
         async () => {
             const style = new Style(new StubMap());
-            style.loadJSON(extend(createStyleJSON(), {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            style.loadJSON(Object.assign(createStyleJSON(), {
                 "sources": {
                     "geojson": {
                         "type": "geojson",
@@ -1316,10 +1460,12 @@ describe('Style#setPaintProperty', () => {
                             resolve();
                         });
 
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                         source.setData({"type": "FeatureCollection", "features": []});
                         style.setPaintProperty('circle', 'circle-color', {type: 'identity', property: 'foo'});
                     }
 
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     if (begun && e.sourceDataType === 'content') {
                         // setData() worker-side work is complete; simulate an
                         // animation frame a few ms later, so that this test can
@@ -1408,6 +1554,7 @@ describe('Style#getPaintProperty', () => {
         expect(style._changes.isDirty()).toBeFalsy();
 
         const value = style.getPaintProperty('background', 'background-color');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         value.stops[0][0] = 1;
         style.setPaintProperty('background', 'background-color', value);
         expect(style._changes.isDirty()).toBeTruthy();
@@ -1486,6 +1633,420 @@ describe('Style#setLayoutProperty', () => {
     });
 });
 
+describe('Style#setLayerProperty', () => {
+    test('#5802 clones the input', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {
+                        "type": "FeatureCollection",
+                        "features": []
+                    }
+                }
+            },
+            "layers": [
+                {
+                    "id": "line",
+                    "type": "line",
+                    "source": "geojson"
+                }
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        const value = {stops: [[0, 'butt'], [10, 'round']]};
+        style.setLayerProperty('line', 'line-cap', value);
+        expect(style.getLayoutProperty('line', 'line-cap')).not.toBe(value);
+        expect(style._changes.isDirty()).toBeTruthy();
+
+        style.update({});
+        expect(style._changes.isDirty()).toBeFalsy();
+
+        value.stops[0][0] = 1;
+        style.setLayerProperty('line', 'line-cap', value);
+        expect(style._changes.isDirty()).toBeTruthy();
+    });
+
+    test('respects validate option', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {
+                        "type": "FeatureCollection",
+                        "features": []
+                    }
+                }
+            },
+            "layers": [
+                {
+                    "id": "line",
+                    "type": "line",
+                    "source": "geojson"
+                }
+            ]
+        });
+
+        await waitFor(style, "style.load");
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        style.setLayerProperty('line', 'line-cap', 'invalidcap', {validate: false});
+        expect(console.error).not.toHaveBeenCalled();
+        expect(style._changes.isDirty()).toBeTruthy();
+        style.update({});
+
+        style.setLayerProperty('line', 'line-cap', 'differentinvalidcap');
+        expect(console.error).toHaveBeenCalledTimes(1);
+    });
+
+    test(
+        '#4738 postpones source reload until layers have been broadcast to workers',
+        async () => {
+            const style = new Style(new StubMap());
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            style.loadJSON(Object.assign(createStyleJSON(), {
+                "sources": {
+                    "geojson": {
+                        "type": "geojson",
+                        "data": {"type": "FeatureCollection", "features": []}
+                    }
+                },
+                "layers": [
+                    {
+                        "id": "circle",
+                        "type": "circle",
+                        "source": "geojson"
+                    }
+                ]
+            }));
+
+            const tr = new Transform();
+            tr.resize(512, 512);
+
+            await waitFor(style, "style.load");
+            style.update({zoom: tr.zoom, fadeDuration: 0});
+            const sourceCache = style.getOwnSourceCache('geojson');
+            const source = style.getSource('geojson');
+
+            let begun = false;
+            let styleUpdateCalled = false;
+
+            await new Promise(resolve => {
+                source.on('data', (e) => setTimeout(() => {
+                    if (!begun && sourceCache.loaded()) {
+                        begun = true;
+                        vi.spyOn(sourceCache, 'reload').mockImplementation(() => {
+                            expect(styleUpdateCalled).toBeTruthy(); // loadTile called before layer data broadcast
+                            resolve();
+                        });
+
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+                        source.setData({"type": "FeatureCollection", "features": []});
+                        style.setLayerProperty('circle', 'circle-color', {type: 'identity', property: 'foo'});
+                    }
+
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    if (begun && e.sourceDataType === 'content') {
+                        // setData() worker-side work is complete; simulate an
+                        // animation frame a few ms later, so that this test can
+                        // confirm that SourceCache#reload() isn't called until
+                        // after the next Style#update()
+                        setTimeout(() => {
+                            styleUpdateCalled = true;
+                            style.update({});
+                        }, 50);
+                    }
+                }), 0);
+            });
+        });
+
+    test('#5802 clones the input', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {
+                    "id": "background",
+                    "type": "background"
+                }
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        const value = {stops: [[0, 'red'], [10, 'blue']]};
+        style.setLayerProperty('background', 'background-color', value);
+        expect(style.getPaintProperty('background', 'background-color')).not.toBe(value);
+        expect(style._changes.isDirty()).toBeTruthy();
+
+        style.update({});
+        expect(style._changes.isDirty()).toBeFalsy();
+
+        value.stops[0][0] = 1;
+        style.setLayerProperty('background', 'background-color', value);
+        expect(style._changes.isDirty()).toBeTruthy();
+    });
+
+    test('appearances', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {
+                    "id": "background",
+                    "type": "background"
+                }
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        const value = [
+            {
+                "condition": ["==", ["feature-state", "availability"], "partial"],
+                "properties": {
+                    "icon-image": ["image", "charging-station", {"params": {"fill": "orange"}}],
+                    "icon-size": 1.1
+                }
+            },
+            {
+                "name": "No availability",
+                "condition": ["==", ["feature-state", "availability"], "none"],
+                "properties": {
+                    "icon-image": ["image", "charging-station", {"params": {"fill": "red"}}],
+                    "icon-size": 1
+                }
+            }
+        ];
+        style.setLayerProperty('background', 'appearances', value);
+        expect(style._layers['background'].appearances.length).not.toBe(0);
+        expect(style._changes.isDirty()).toBeTruthy();
+
+        style.update({});
+        expect(style._changes.isDirty()).toBeFalsy();
+    });
+
+    test('minzoom', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        style.setLayerProperty('background', 'minzoom', 5);
+        expect(style._layers['background'].minzoom).toBe(5);
+        expect(style._changes.isDirty()).toBeTruthy();
+    });
+
+    test('maxzoom', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        style.setLayerProperty('background', 'maxzoom', 12);
+        expect(style._layers['background'].maxzoom).toBe(12);
+        expect(style._changes.isDirty()).toBeTruthy();
+    });
+
+    test('filter', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [
+                {"id": "line", "type": "line", "source": "geojson"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        const filter = ['==', ['get', 'type'], 'road'];
+        style.setLayerProperty('line', 'filter', filter);
+        expect(style.getFilter('line')).toEqual(filter);
+        expect(style.getFilter('line')).not.toBe(filter);
+        expect(style._changes.isDirty()).toBeTruthy();
+    });
+
+    test('slot', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        style.setLayerProperty('background', 'slot', 'middle');
+        expect(style._layers['background'].slot).toBe('middle');
+    });
+
+});
+
+describe('Style#getLayerProperty', () => {
+    test('returns undefined for unknown layer', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": []
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('nonexistent', 'minzoom')).toBeUndefined();
+    });
+
+    test('returns minzoom and maxzoom', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background", "minzoom": 3, "maxzoom": 12}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('background', 'minzoom')).toBe(3);
+        expect(style.getLayerProperty('background', 'maxzoom')).toBe(12);
+    });
+
+    test('returns filter', async () => {
+        const filter = ['==', ['get', 'type'], 'road'];
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [
+                {"id": "line", "type": "line", "source": "geojson", filter}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('line', 'filter')).toEqual(filter);
+    });
+
+    test('returns slot', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "vt": {"type": "vector", "tiles": ["http://example.com/{z}/{x}/{y}.pbf"]}
+            },
+            "layers": [
+                {"id": "line", "type": "line", "source": "vt", "source-layer": "roads", "slot": "middle"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('line', 'slot')).toBe('middle');
+    });
+
+    test('returns appearances round-tripped through serialize', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        const appearances = [
+            {
+                "condition": ["==", ["feature-state", "availability"], "partial"],
+                "properties": {
+                    "icon-image": ["image", "charging-station", {"params": {"fill": "orange"}}],
+                    "icon-size": 1.1
+                }
+            }
+        ];
+        style.setLayerProperty('background', 'appearances', appearances);
+        expect(style.getLayerProperty('background', 'appearances')).toEqual(appearances);
+    });
+
+    test('returns undefined for unset root properties', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [
+                {"id": "line", "type": "line", "source": "geojson"}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('line', 'minzoom')).toBeUndefined();
+        expect(style.getLayerProperty('line', 'maxzoom')).toBeUndefined();
+        expect(style.getLayerProperty('line', 'filter')).toBeUndefined();
+        expect(style.getLayerProperty('line', 'slot')).toBeUndefined();
+    });
+
+    test('delegates to getPaintProperty for paint properties', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "red"}}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('background', 'background-color')).toEqual('red');
+    });
+
+    test('delegates to getLayoutProperty for layout properties', async () => {
+        const style = new Style(new StubMap());
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [
+                {"id": "line", "type": "line", "source": "geojson", "layout": {"line-cap": "round"}}
+            ]
+        });
+
+        await waitFor(style, 'style.load');
+        expect(style.getLayerProperty('line', 'line-cap')).toBe('round');
+    });
+});
+
 describe('Style#getLayoutProperty', () => {
     test('#5802 clones the output', async () => {
         const style = new Style(new StubMap());
@@ -1515,6 +2076,7 @@ describe('Style#getLayoutProperty', () => {
         expect(style._changes.isDirty()).toBeFalsy();
 
         const value = style.getLayoutProperty('line', 'line-cap');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         value.stops[0][0] = 1;
         style.setLayoutProperty('line', 'line-cap', value);
         expect(style._changes.isDirty()).toBeTruthy();
@@ -1545,9 +2107,11 @@ describe('Style#setFilter', () => {
         const style = createStyle();
 
         await waitFor(style, "style.load");
-        style.dispatcher.broadcast = function(key, value) {
+        style.dispatcher.broadcast = function (key, value) {
             expect(key).toEqual('updateLayers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].id).toEqual('symbol');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].filter).toEqual(['==', 'id', 1]);
         };
 
@@ -1578,9 +2142,11 @@ describe('Style#setFilter', () => {
         style.setFilter('symbol', filter);
         style.update({}); // flush pending operations
 
-        style.dispatcher.broadcast = function(key, value) {
+        style.dispatcher.broadcast = function (key, value) {
             expect(key).toEqual('updateLayers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].id).toEqual('symbol');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].filter).toEqual(['==', 'id', 2]);
         };
         filter[2] = 2;
@@ -1634,9 +2200,11 @@ describe('Style#setFilter', () => {
         const style = createStyle();
 
         await waitFor(style, "style.load");
-        style.dispatcher.broadcast = function(key, value) {
+        style.dispatcher.broadcast = function (key, value) {
             expect(key).toEqual('updateLayers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].id).toEqual('symbol');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(value.layers[0].filter).toEqual('notafilter');
         };
 
@@ -1672,8 +2240,9 @@ describe('Style#setLayerZoomRange', () => {
         const style = createStyle();
 
         await waitFor(style, "style.load");
-        style.dispatcher.broadcast = function(key, value) {
+        style.dispatcher.broadcast = function (key, value) {
             expect(key).toEqual('updateLayers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(value.map((layer) => { return layer.id; })).toEqual(['symbol']);
         };
 
@@ -1776,186 +2345,9 @@ test('Style#hasLayer, Style#has*Layers()', () => {
     });
 });
 
-describe('Style#queryRenderedFeatures', () => {
-    let style: any, transform: any;
-
-    beforeEach(async () => {
-        style = new Style(new StubMap());
-        transform = new Transform();
-        transform.resize(512, 512);
-
-        function queryMapboxFeatures(layers, serializedLayers, getFeatureState, queryGeom, params) {
-            const features = {
-                'land': [{
-                    type: 'Feature',
-                    layer: style._layers.land.serialize(),
-                    geometry: {
-                        type: 'Polygon'
-                    }
-                }, {
-                    type: 'Feature',
-                    layer: style._layers.land.serialize(),
-                    geometry: {
-                        type: 'Point'
-                    }
-                }],
-                'landref': [{
-                    type: 'Feature',
-                    layer: style._layers.landref.serialize(),
-                    geometry: {
-                        type: 'Line'
-                    }
-                }]
-            };
-
-            // format result to shape of tile.queryRenderedFeatures result
-            for (const layer in features) {
-                features[layer] = features[layer].map((feature, featureIndex) =>
-                    ({feature, featureIndex}));
-            }
-
-            if (params.layers) {
-                for (const l in features) {
-                    if (params.layers.indexOf(l) < 0) {
-                        delete features[l];
-                    }
-                }
-            }
-
-            return features;
-        }
-
-        style.loadJSON({
-            "version": 8,
-            "sources": {
-                "mapbox": {
-                    "type": "geojson",
-                    "data": {type: "FeatureCollection", features: []}
-                },
-                "other": {
-                    "type": "geojson",
-                    "data": {type: "FeatureCollection", features: []}
-                }
-            },
-            "layers": [{
-                "id": "land",
-                "type": "line",
-                "source": "mapbox",
-                "source-layer": "water",
-                "layout": {
-                    'line-cap': 'round'
-                },
-                "paint": {
-                    "line-color": "red"
-                },
-                "metadata": {
-                    "something": "else"
-                }
-            }, {
-                "id": "landref",
-                "ref": "land",
-                "paint": {
-                    "line-color": "blue"
-                }
-            }, {
-                "id": "land--other",
-                "type": "line",
-                "source": "other",
-                "source-layer": "water",
-                "layout": {
-                    'line-cap': 'round'
-                },
-                "paint": {
-                    "line-color": "red"
-                },
-                "metadata": {
-                    "something": "else"
-                }
-            }]
-        });
-
-        await waitFor(style, 'style.load');
-        style.getOwnSourceCache('mapbox').tilesIn = () => {
-            return [{
-                queryGeometry: {},
-                tilespaceGeometry: {},
-                bufferedTilespaceGeometry: {},
-                bufferedTilespaceBounds: {},
-                tile: {queryRenderedFeatures: queryMapboxFeatures, tileID: new OverscaledTileID(0, 0, 0, 0, 0)},
-                tileID: new OverscaledTileID(0, 0, 0, 0, 0)
-            }];
-        };
-        style.getOwnSourceCache('other').tilesIn = () => {
-            return [];
-        };
-
-        style.getOwnSourceCache('mapbox').transform = transform;
-        style.getOwnSourceCache('other').transform = transform;
-
-        style.update({zoom: 0});
-        style.updateSources(transform);
-    });
-
-    test('returns feature type', () => {
-        const results = style.queryRenderedFeatures([0, 0], {}, transform);
-        expect(results[0].geometry.type).toEqual('Line');
-    });
-
-    test('filters by `layers` option', () => {
-        const results = style.queryRenderedFeatures([0, 0], {layers: ['land']}, transform);
-        expect(results.length).toEqual(2);
-    });
-
-    test('checks type of `layers` option', () => {
-        let errors = 0;
-        vi.spyOn(style, 'fire').mockImplementation((event) => {
-            if (event.error && event.error.message.includes('parameters.layers must be an Array.')) errors++;
-        });
-        style.queryRenderedFeatures([0, 0], {layers:'string'}, transform);
-        expect(errors).toEqual(1);
-    });
-
-    test('includes layout properties', () => {
-        const results = style.queryRenderedFeatures([0, 0], {}, transform);
-        const layout = results[0].layer.layout;
-        expect(layout['line-cap']).toEqual('round');
-    });
-
-    test('includes paint properties', () => {
-        const results = style.queryRenderedFeatures([0, 0], {}, transform);
-        expect(results[2].layer.paint['line-color']).toEqual('red');
-    });
-
-    test('includes metadata', () => {
-        const results = style.queryRenderedFeatures([0, 0], {}, transform);
-
-        const layer = results[1].layer;
-        expect(layer.metadata.something).toEqual('else');
-    });
-
-    test('include multiple layers', () => {
-        const results = style.queryRenderedFeatures([0, 0], {layers: ['land', 'landref']}, transform);
-        expect(results.length).toEqual(3);
-    });
-
-    test('does not query sources not implicated by `layers` parameter', () => {
-        style.getOwnSourceCache('mapbox').queryRenderedFeatures = function() { expect.unreachable(); };
-        style.queryRenderedFeatures([0, 0], {layers: ['land--other']}, transform);
-    });
-
-    test('fires an error if layer included in params does not exist on the style', () => {
-        let errors = 0;
-        vi.spyOn(style, 'fire').mockImplementation((event) => {
-            if (event.error && event.error.message.includes('does not exist in the map\'s style and cannot be queried for features.')) errors++;
-        });
-        const results = style.queryRenderedFeatures([0, 0], {layers:['merp']}, transform);
-        expect(errors).toEqual(1);
-        expect(results.length).toEqual(0);
-    });
-});
-
 test('Style defers expensive methods', async () => {
     const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     style.loadJSON(createStyleJSON({
         "sources": {
             "streets": createGeoJSONSource(),
@@ -1984,7 +2376,8 @@ test('Style defers expensive methods', async () => {
 
     style.update({});
 
-    expect(style.fire.mock.calls[0][0].type).toEqual('data');
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    expect(style.fire.mock.calls[0][0].type).toEqual('neworder');
 
     // called per source
     expect(style.reloadSource).toHaveBeenCalledTimes(2);
@@ -2005,8 +2398,10 @@ describe('Style#query*Features', () => {
 
     beforeEach(() => {
         transform = new Transform();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         transform.resize(100, 100);
         style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         style.loadJSON({
             "version": 8,
             "sources": {
@@ -2022,17 +2417,22 @@ describe('Style#query*Features', () => {
         onError = vi.fn();
 
         return new Promise((resolve) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             style.on('error', onError).on('style.load', () => resolve());
         });
     });
 
     test('querySourceFeatures emits an error on incorrect filter', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(style.querySourceFeatures([10, 100], {filter: 7}, transform)).toEqual([]);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(onError.mock.calls[0][0].error.message).toMatch(/querySourceFeatures\.filter/);
     });
 
     test('queryRenderedFeatures emits an error on incorrect filter', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(style.queryRenderedFeatures([0, 0], {filter: 7}, transform)).toEqual([]);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(onError.mock.calls[0][0].error.message).toMatch(/queryRenderedFeatures\.filter/);
     });
 
@@ -2040,10 +2440,12 @@ describe('Style#query*Features', () => {
         let errors = 0;
         vi.spyOn(style, 'fire').mockImplementation((event) => {
             if (event.error) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 console.log(event.error.message);
                 errors++;
             }
         });
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         style.queryRenderedFeatures([0, 0], {filter: "invalidFilter", validate: false}, transform);
         expect(errors).toEqual(0);
     });
@@ -2053,57 +2455,31 @@ describe('Style#query*Features', () => {
         vi.spyOn(style, 'fire').mockImplementation((event) => {
             if (event.error) errors++;
         });
-        style.querySourceFeatures([{x: 0, y: 0}], {filter: "invalidFilter", validate: false}, transform);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        style.querySourceFeatures('foo', {filter: "invalidFilter", validate: false}, transform);
         expect(errors).toEqual(0);
     });
-});
 
-describe('Style#addSourceType', () => {
-    const _types = {'existing' () {}};
-
-    beforeEach(() => {
-        vi.spyOn(Style, 'getSourceType').mockImplementation(name => _types[name]);
-        vi.spyOn(Style, 'setSourceType').mockImplementation((name, create) => {
-            _types[name] = create;
+    test('queryRenderedFeatures does not break on custom layers', () => {
+        style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        style.loadJSON({
+            "version": 8,
+            "sources": {},
+            "layers": []
         });
-    });
-
-    test('adds factory function', () => {
-        const style = new Style(new StubMap());
-        const SourceType = function () {};
-
-        // expect no call to load worker source
-        style.dispatcher.broadcast = function (type) {
-            if (type === 'loadWorkerSource') {
-                expect.unreachable();
-            }
-        };
-
-        style.addSourceType('foo', SourceType, () => {
-            expect(_types['foo']).toEqual(SourceType);
-        });
-    });
-
-    test('triggers workers to load worker source code', () => {
-        const style = new Style(new StubMap());
-        const SourceType = function () {};
-        SourceType.workerSourceURL = 'worker-source.js';
-
-        style.dispatcher.broadcast = function (type, params) {
-            if (type === 'loadWorkerSource') {
-                expect(_types['bar']).toEqual(SourceType);
-                expect(params.name).toEqual('bar');
-                expect(params.url).toEqual('worker-source.js');
-            }
-        };
-
-        style.addSourceType('bar', SourceType, (err) => { expect(err).toBeFalsy(); });
-    });
-
-    test('refuses to add new type over existing name', () => {
-        const style = new Style(new StubMap());
-        style.addSourceType('existing', () => {}, (err) => {
-            expect(err).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        style.on('style.load', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            style.addLayer({
+                "id": "custom",
+                "type": "custom",
+                render() {}
+            });
+            expect(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                style.queryRenderedFeatures([0, 0], {}, transform);
+            }).not.toThrowError();
         });
     });
 });
@@ -2176,6 +2552,7 @@ describe('Style#setTerrain', () => {
 
     test('raises error during creation terrain without source', async () => {
         const style = new Style(new StubMap());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
 
         await waitFor(style, "style.load");
@@ -2195,6 +2572,7 @@ describe('Style#setTerrain', () => {
     test('updates terrain properties', async () => {
         const style = new Style(new StubMap());
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         style.loadJSON(createStyleJSON());
         await waitFor(style, "style.load");
 
@@ -2289,12 +2667,19 @@ describe('Style#setFog', () => {
 });
 
 describe('Style#getFog', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultHighColor = styleSpec.fog["high-color"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultStarIntensity = styleSpec.fog["star-intensity"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultSpaceColor = styleSpec.fog["space-color"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultRange = styleSpec.fog["range"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultColor = styleSpec.fog["color"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultHorizonBlend = styleSpec.fog["horizon-blend"].default;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const defaultVerticalRange = styleSpec.fog["vertical-range"].default;
 
     test('rolls up inline source into style', async () => {
@@ -2313,9 +2698,13 @@ describe('Style#getFog', () => {
             "range": [0, 1],
             "color": "white",
             "horizon-blend": 0,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "high-color": defaultHighColor,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "star-intensity": defaultStarIntensity,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "space-color": defaultSpaceColor,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "vertical-range": defaultVerticalRange
         });
     });
@@ -2332,12 +2721,19 @@ describe('Style#getFog', () => {
         await waitFor(style, "style.load");
         expect(style.getFog()).toBeTruthy();
         expect(style.getFog()).toEqual({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "range": defaultRange,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "color": defaultColor,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "horizon-blend": defaultHorizonBlend,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "high-color": defaultHighColor,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "star-intensity": defaultStarIntensity,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "space-color": defaultSpaceColor,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             "vertical-range": defaultVerticalRange
         });
     });
@@ -2398,3 +2794,839 @@ test('Style#castShadows check', async () => {
     expect(sourceCache.castsShadows).toBeFalsy();
 });
 
+describe('Style#setColorTheme', () => {
+    test('GLJS-905 empty lut loads faster than non-empty', async () => {
+        const style = new Style(new StubMap());
+        expect(style._styleColorTheme.lutLoadingCorrelationID).toEqual(0);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {
+                        "type": "FeatureCollection",
+                        "features": []
+                    }
+                }
+            },
+            "color-theme": {
+                "data": "iVBORw0KGgoAAAANSUhEUgAABAAAAAAgCAYAAACM/gqmAAAAAXNSR0IArs4c6QAABSFJREFUeF7t3cFO40AQAFHnBv//wSAEEgmJPeUDsid5h9VqtcMiZsfdPdXVzmVZlo+3ZVm+fr3//L7257Lm778x+prL1ff0/b//H+z/4/M4OkuP/n70Nc7f+nnb+yzb//sY6vxt5xXPn+dP/aH+GsXJekb25izxR/ypZ6ucUefv9g4z2jPP3/HPHwAAgABAABgACIACkAAsAL1SD4yKWQAUAHUBdAG8buKNYoYL8PEX4FcHQAAAAAAAAAAAAAAAAAAAAAAA8LAeGF1mABAABAABQACQbZP7+hk5AwACAAAAAAAAAAAAAAAAAAAAAAAA4EE9AICMx4QBAAAAAAAANgvJsxGQV1dA/PxmMEtxU9YoABQACoC5CgDxX/wvsb2sEf/Ff/Ff/N96l5n73+/5YAB4CeBqx2VvMqXgUfD2npkzBCAXEBeQcrkoa5x/FxAXEBcQF5A2Wy3/t32qNYr8I//Mln+MABgBMAJgBMAIgBEAIwBGAIwAGAEwAmAE4K4eAGCNQIw+qQ0AmQ+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB/6gEABAB5RgACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAN/UAAPKcAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgEFNODICRtDkDO/gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOhvlPUWem+h9xKQ+V4CUt9wO6KZnn/Pv+ff8z/bW5DFP59CUnJbWSP+iX/iX78znqED/urxnwHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADoNMcHUAdQAQcAUfAe8xEwH0O86t3IPz8OvClu17WqD/UH+oP9cf1Gdia01d/LQsDgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABkCnSQwABgACj8Aj8D1mItAMAB1wHfDS3S5r5F/5V/6Vf3XAW12h/mIArHY89iZTAAQA2XtmBKAWqOslyf4rgBXACmAFcIur8k/bJ/mnQTr5V/6Vf+fKv0YAjAAYATACYATACIARACMARgCMABgBMAJgBMAIgBEAIwCdZuiA64AjwAgwAtxjpg6cDlztLlLA7/Pr1gueyr56/jx/5ZzUNeof9Y/6R/0zk4HGAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHQaQ4DgAGAgCPgCHiPmTqQOpC1u8gAYACMjAf5V/6Vf+XfmTrQ8l97v8Z/5X8GAAOAAcAAYAAwABgADAAGAAOAAcAAYAAwABgADIBO0xgADAAdCB0IHYgeMxkADAAdkGM7IPbf/pfuWlmj/lH/qH/UPzMZGAwABgADgAHAAGAAMAAYAAwABgADgAHAAGAAMAAYAJ3mMAAYAAg4Ao6A95jJAGAA6EDrQJfuclkj/8q/8q/8O1MHWv47Nv8xABgADAAGAAOAAcAAYAAwABgADAAGAAOAAcAAYAB0msYAYADoQOhA6ED0mMkAYADogBzbAbH/9r/YFWWN+kf9o/5R/8xkYDAAGAAMAAYAA4ABwABgADAAGAAMAAYAA4ABwABgAHSawwBgACDgCDgC3mMmA4ABoAOtA126y2WN/Cv/yr/y70wdaPnv2PzHAGAAMAAYAAwABgADgAHAAGAAMAAYAAwABgADgAHQaRoDgAGgA6EDoQPRYyYDgAGgA3JsB8T+2/9iV5Q16h/1j/pH/TOTgcEAYAAwABgADAAGAAOAAcAAYAAwABgADAAGAAPgyQ2AT4NBIB3ew5dkAAAAAElFTkSuQmCC"
+            },
+            "layers": [
+                {
+                    "id": "line",
+                    "type": "line",
+                    "source": "geojson"
+                }
+            ]
+        });
+
+        await waitFor(style, "style.load");
+
+        expect(style._styleColorTheme.lutLoadingCorrelationID).toEqual(1);
+
+        const bwColorTheme = "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";
+        style.setColorTheme({"data": bwColorTheme});
+        style.setColorTheme({"data": ""});
+        expect(style._styleColorTheme.lutLoadingCorrelationID).toEqual(3);
+
+        await waitFor(style, "colorthemeset");
+        await waitFor(style, "colorthemeset");
+        expect(style._styleColorTheme.lut).toEqual(null);
+    });
+});
+
+test('Style#addImage', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    const errorSpy = vi.fn();
+    style.on('error', errorSpy);
+    vi.spyOn(style, 'fire');
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    const imageId = ImageId.from('image');
+    style.addImage(imageId, {});
+
+    expect(style._changes.isDirty()).toEqual(true);
+
+    expect(style.dispatcher.broadcast).toHaveBeenCalledTimes(1);
+    expect(style.dispatcher.broadcast).toHaveBeenLastCalledWith(
+        'setImages',
+        {scope: '', images: [imageId]}
+    );
+
+    expect(style.fire).toHaveBeenCalledTimes(1);
+    expect(style.fire).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            type: 'data',
+            dataType: 'style'
+        })
+    );
+
+    // Adding an image with the same name should fire an error
+    style.addImage(imageId, {});
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            type: 'error',
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            error: expect.objectContaining({message: 'An image with the name "image" already exists.'})
+        })
+    );
+});
+
+test('Style#addImages', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    vi.spyOn(style, 'fire');
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    const styleImageMap = new Map();
+    const imageId1 = ImageId.from('image1');
+    const imageId2 = ImageId.from('image2');
+    styleImageMap.set(imageId1, {});
+    styleImageMap.set(imageId2, {});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.addImages(styleImageMap);
+
+    expect(style._changes.isDirty()).toEqual(true);
+
+    expect(style.dispatcher.broadcast).toHaveBeenCalledTimes(1);
+    expect(style.dispatcher.broadcast).toHaveBeenLastCalledWith(
+        'setImages',
+        {scope: '', images: [imageId1, imageId2]}
+    );
+
+    expect(style.fire).toHaveBeenCalledTimes(1);
+    expect(style.fire).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            type: 'data',
+            dataType: 'style'
+        })
+    );
+});
+
+test('Style#addImages broadcasts spriteLoaded when the sprite is empty', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    // An empty sprite resolves with no images. The worker still needs the
+    // 'spriteLoaded' broadcast or it defers tile parsing forever.
+    style.addImages(new Map(), true);
+
+    expect(style.dispatcher.broadcast).toHaveBeenCalledWith(
+        'spriteLoaded',
+        {scope: ''}
+    );
+});
+
+test('Style#addImages does not broadcast spriteLoaded for an empty image set unrelated to a sprite', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    style.addImages(new Map());
+
+    expect(style.dispatcher.broadcast).not.toHaveBeenCalledWith(
+        'spriteLoaded',
+        {scope: ''}
+    );
+});
+
+test('Style#_loadSprite broadcasts spriteLoaded when the sprite fails to load', async () => {
+    mockFetch({
+        'sprite.*json': () => Promise.resolve(new Response(null, {status: 404, statusText: 'Not Found'})),
+        'sprite.*png': () => Promise.resolve(new Response(null, {status: 404, statusText: 'Not Found'}))
+    });
+
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    vi.spyOn(style.dispatcher, 'broadcast');
+    const errorSpy = vi.fn();
+    style.on('error', errorSpy);
+
+    style._loadSprite('http://example.com/sprite');
+    await waitFor(style, 'data');
+
+    // A failed sprite request must still notify the worker so it stops
+    // deferring tile parsing.
+    expect(style.dispatcher.broadcast).toHaveBeenCalledWith(
+        'spriteLoaded',
+        {scope: ''}
+    );
+    expect(errorSpy).toHaveBeenCalled();
+});
+
+test('Style#updateImage', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    const imageId = ImageId.from('image');
+    style.addImage(imageId, {width: 1, height: 1, data: new Uint8Array(4)});
+    style.update({}); // reset style changes
+
+    vi.spyOn(style, 'fire');
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    // Basic update does not trigger update in Workers
+    style.updateImage(imageId, {width: 1, height: 1, data: new Uint8Array(4)});
+
+    expect(style._changes.isDirty()).toEqual(false);
+    expect(style.dispatcher.broadcast).toHaveBeenCalledTimes(0);
+    expect(style.fire).toHaveBeenCalledTimes(0);
+
+    // Performing symbol layout must trigger update in Workers
+    style.updateImage(imageId, {width: 1, height: 1, data: new Uint8Array(4)}, true);
+
+    expect(style._changes.isDirty()).toEqual(true);
+    expect(style.dispatcher.broadcast).toHaveBeenCalledTimes(1);
+    expect(style.dispatcher.broadcast).toHaveBeenLastCalledWith(
+        'setImages',
+        {scope: '', images: [imageId]}
+    );
+
+    expect(style.fire).toHaveBeenCalledTimes(1);
+    expect(style.fire).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            type: 'data',
+            dataType: 'style'
+        })
+    );
+});
+
+test('Style#removeImage', async () => {
+    const style = new Style(new StubMap());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON());
+    await waitFor(style, 'style.load');
+
+    const imageId = ImageId.from('image');
+    style.addImage(imageId, {});
+    style.update({}); // reset style changes
+
+    vi.spyOn(style, 'fire');
+    vi.spyOn(style.dispatcher, 'broadcast');
+
+    style.removeImage(imageId);
+
+    expect(style._changes.isDirty()).toEqual(true);
+    expect(style.dispatcher.broadcast).toHaveBeenCalledTimes(1);
+    expect(style.dispatcher.broadcast).toHaveBeenLastCalledWith(
+        'setImages',
+        {scope: '', images: []}
+    );
+
+    expect(style.fire).toHaveBeenCalledTimes(1);
+    expect(style.fire).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+            type: 'data',
+            dataType: 'style'
+        })
+    );
+});
+
+test('Style#checkAtlasCache does not leak atlas content across style scopes', async () => {
+    const map = new StubMap();
+
+    const privateStyle = new Style(map, {scope: 'private'});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    privateStyle.loadJSON(createStyleJSON());
+    await waitFor(privateStyle, 'style.load');
+
+    const publicStyle = new Style(map, {scope: 'public', imageManager: privateStyle.imageManager});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    publicStyle.loadJSON(createStyleJSON());
+    await waitFor(publicStyle, 'style.load');
+
+    const imageId = ImageId.from('shared-icon');
+    const redPixels = new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255]);
+    const bluePixels = new Uint8Array([0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255]);
+
+    privateStyle.addImage(imageId, {data: new RGBAImage({width: 2, height: 2}, redPixels), pixelRatio: 1, version: 1, sdf: false, usvg: false});
+    publicStyle.addImage(imageId, {data: new RGBAImage({width: 2, height: 2}, bluePixels), pixelRatio: 1, version: 1, sdf: false, usvg: false});
+
+    const variantId = new ImageVariant('shared-icon').toString();
+    const privateIcons: StyleImageMap<StringifiedImageVariant> = new Map([[variantId, privateStyle.imageManager.getImage(imageId, 'private')]]);
+    const publicIcons: StyleImageMap<StringifiedImageVariant> = new Map([[variantId, publicStyle.imageManager.getImage(imageId, 'public')]]);
+    const noPatterns: StyleImageMap<StringifiedImageVariant> = new Map();
+
+    const privateVersions = privateStyle.imageManager.getImageVersions('private');
+    const publicVersions = publicStyle.imageManager.getImageVersions('public');
+
+    const privateDescriptor = new AtlasContentDescriptor(privateIcons, noPatterns, privateVersions, null, 'private');
+    const publicDescriptor = new AtlasContentDescriptor(publicIcons, noPatterns, publicVersions, null, 'public');
+
+    // The descriptor hash includes the scope, so the two unrelated per-scope
+    // images no longer collide despite having identical id/version/scale.
+    expect(privateDescriptor.hash).not.toEqual(publicDescriptor.hash);
+
+    // Simulate the private scope's tile being processed first, caching its atlas.
+    const privateAtlas = new ImageAtlas(privateIcons, noPatterns, null, privateVersions, 'private');
+    privateStyle.imageManager.imageAtlasCache.getOrCache(privateAtlas);
+
+    const result = await publicStyle.checkAtlasCache(undefined, {descriptor: publicDescriptor, scope: 'public'});
+    expect(result).toBeNull();
+});
+
+test('Style#_updateTilesForChangedImages', async () => {
+    const style = new Style(new StubMap());
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(createStyleJSON({sources: {geojson: {type: 'geojson', data: {type: 'FeatureCollection', features: []}}}}));
+
+    await waitFor(style, 'style.load');
+    vi.spyOn(style, '_updateTilesForChangedImages');
+
+    const sourceCache = style.getSourceCache('geojson');
+    vi.spyOn(sourceCache, 'setDependencies');
+    vi.spyOn(sourceCache, 'reloadTilesForDependencies');
+
+    const imageId = ImageId.from('missing-image');
+    const imageIdStr = imageId.toString();
+    const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+
+    const tile = new Tile(tileID);
+    sourceCache._tiles[tileID.key] = tile;
+    vi.spyOn(tile, 'setDependencies');
+
+    expect(tile.hasDependency(['icons'], [imageIdStr])).toEqual(false);
+
+    const result = await style.getImages(0, {icons: [imageId], patterns: [], source: 'geojson', scope: '', tileID});
+    expect(result.images.size).toEqual(0);
+
+    expect(style._updateTilesForChangedImages).toHaveBeenCalledTimes(1);
+    expect(sourceCache.setDependencies).toHaveBeenCalledTimes(2);
+    expect(sourceCache.setDependencies).toHaveBeenCalledWith(tileID.key, 'icons', [imageIdStr]);
+
+    expect(tile.setDependencies).toHaveBeenCalledTimes(2);
+    expect(tile.setDependencies).toHaveBeenCalledWith('icons', [imageIdStr]);
+    expect(tile.hasDependency(['icons'], [imageIdStr])).toEqual(true);
+
+    style.addImage(imageId, {});
+    style.update({});
+
+    expect(style._updateTilesForChangedImages).toHaveBeenCalledTimes(2);
+    expect(sourceCache.reloadTilesForDependencies).toHaveBeenCalledTimes(1);
+    expect(sourceCache.reloadTilesForDependencies).toHaveBeenCalledWith(['icons', 'patterns'], [imageIdStr]);
+});
+
+test('Occlusion ordering', async () => {
+    const style = new Style(new StubMap());
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const initialStyle = createStyleJSON({
+        sources: {
+            composite: {type: 'vector', tiles: []},
+            'mapbox-dem': {
+                type: 'raster-dem',
+                tiles: ['http://example.com/{z}/{x}/{y}.png'],
+                tileSize: 256,
+                maxzoom: 14
+            }
+        },
+        layers: [
+            {id: 'land-1', type: 'background'},
+            {id: 'symbol-occlusion-1', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: 'symbol', type: 'symbol', source: 'composite', 'source-layer': 'poi'},
+            {id: '3d-building-1', type: 'fill-extrusion', source: 'composite', 'source-layer': 'building'},
+            {id: 'symbol-occlusion-2', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: '3d-building-2', type: 'fill-extrusion', source: 'composite', 'source-layer': 'building'},
+            {id: 'land-2', type: 'background'},
+            {id: 'symbol-occlusion-3', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: 'land-3', type: 'background'},
+        ]
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(initialStyle);
+
+    await waitFor(style, "style.load");
+
+    expect(style.order).toEqual([
+        makeFQID('land-1'),
+        makeFQID('symbol'),
+        makeFQID('3d-building-1'),
+        makeFQID('3d-building-2'),
+        makeFQID('symbol-occlusion-1'),
+        makeFQID('symbol-occlusion-2'),
+        makeFQID('land-2'),
+        makeFQID('symbol-occlusion-3'),
+        makeFQID('land-3'),
+    ]);
+});
+
+test('Occlusion ordering & draped layers', async () => {
+    const style = new Style(new StubMap());
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const initialStyle = createStyleJSON({
+        terrain: {source: 'mapbox-dem', exaggeration: 1.5},
+        sources: {
+            composite: {type: 'vector', tiles: []},
+            'mapbox-dem': {
+                type: 'raster-dem',
+                tiles: ['http://example.com/{z}/{x}/{y}.png'],
+                tileSize: 256,
+                maxzoom: 14
+            }
+        },
+        layers: [
+            {id: 'land-1', type: 'background'},
+            {id: 'symbol-occlusion-1', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: 'symbol', type: 'symbol', source: 'composite', 'source-layer': 'poi'},
+            {id: '3d-building-1', type: 'fill-extrusion', source: 'composite', 'source-layer': 'building'},
+            {id: 'symbol-occlusion-2', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: '3d-building-2', type: 'fill-extrusion', source: 'composite', 'source-layer': 'building'},
+            {id: 'land-2', type: 'background'},
+            {id: 'symbol-occlusion-3', type: 'symbol', source: 'composite', 'source-layer': 'poi', paint: {"icon-occlusion-opacity": 1.0}},
+            {id: 'land-3', type: 'background'},
+        ]
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    style.loadJSON(initialStyle);
+
+    await waitFor(style, "style.load");
+
+    expect(style.order).toEqual([
+        makeFQID('land-1'),
+        makeFQID('land-2'),
+        makeFQID('land-3'),
+        makeFQID('symbol'),
+        makeFQID('3d-building-1'),
+        makeFQID('3d-building-2'),
+        makeFQID('symbol-occlusion-1'),
+        makeFQID('symbol-occlusion-2'),
+        makeFQID('symbol-occlusion-3'),
+    ]);
+});
+
+describe('Style#_updatePlacement', () => {
+    test('does not re-trigger placement on repaint with fadeDuration: 0 when nothing changed', async () => {
+        const map = new StubMap();
+        // Mock painter with scaleFactor (required by _updatePlacement)
+        // @ts-expect-error - painter is not part of StubMap but required for _updatePlacement
+        map.painter = {scaleFactor: 1};
+
+        // Mock replacement source with updateTime (required by _updatePlacement)
+        const replacementSource = {updateTime: 0};
+
+        const style = new Style(map);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [{
+                "id": "symbol",
+                "type": "symbol",
+                "source": "geojson"
+            }]
+        });
+
+        await waitFor(style, 'style.load');
+
+        const tr = map.transform;
+        tr.resize(512, 512);
+
+        // Compile the style layers before calling _updatePlacement
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+
+        // First call to _updatePlacement - initializes placement
+        style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        // Placement should be done after first call with fadeDuration: 0
+        expect(style.pauseablePlacement.isDone()).toBeTruthy();
+
+        // Spy on placement methods AFTER initial placement
+        const startNewPlacementSpy = vi.spyOn(style.pauseablePlacement, 'startNewPlacement');
+        const continuePlacementSpy = vi.spyOn(style.pauseablePlacement, 'continuePlacement');
+
+        // Second call to _updatePlacement - should NOT trigger new placement
+        style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        // Assert placement methods were NOT called
+        expect(startNewPlacementSpy).not.toHaveBeenCalled();
+        expect(continuePlacementSpy).not.toHaveBeenCalled();
+
+        // Third call to _updatePlacement - verify consistent behavior
+        style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        // Assert placement methods STILL were not called (verifies it's not a one-time skip)
+        expect(startNewPlacementSpy).not.toHaveBeenCalled();
+        expect(continuePlacementSpy).not.toHaveBeenCalled();
+    });
+
+    test('returns true when symbol layer is added after load due to symbolBucketsChanged', async () => {
+        const map = new StubMap();
+        // @ts-expect-error - painter is not part of StubMap but required for _updatePlacement
+        map.painter = {scaleFactor: 1};
+        const replacementSource = {updateTime: 0};
+
+        const style = new Style(map);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": []
+        });
+
+        await waitFor(style, 'style.load');
+
+        const tr = map.transform;
+        tr.resize(512, 512);
+
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+        style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        expect(style.pauseablePlacement.isDone()).toBeTruthy();
+
+        style.addLayer({
+            "id": "symbol",
+            "type": "symbol",
+            "source": "geojson"
+        });
+
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+
+        // Spy on crossTileSymbolIndex.addLayer to return true (simulating new symbol buckets)
+        // This happens in real scenarios when tiles have symbol features
+        vi.spyOn(style.crossTileSymbolIndex, 'addLayer').mockReturnValue(true);
+
+        const result = style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        expect(result).toBeTruthy();
+    });
+
+    test('returns true when transformChanged', async () => {
+        const map = new StubMap();
+        // @ts-expect-error - painter is not part of StubMap but required for _updatePlacement
+        map.painter = {scaleFactor: 1};
+        const replacementSource = {updateTime: 0};
+
+        const style = new Style(map);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [{
+                "id": "symbol",
+                "type": "symbol",
+                "source": "geojson"
+            }]
+        });
+
+        await waitFor(style, 'style.load');
+
+        const tr = map.transform;
+        tr.resize(512, 512);
+
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+        style._updatePlacement(tr, false, 0, false, replacementSource);
+
+        expect(style.pauseablePlacement.isDone()).toBeTruthy();
+
+        // Change transform to trigger transformChanged
+        tr.zoom = 5;
+
+        // Use fadeDuration > 0 so that setStale() is called when placement is
+        // considered stale due to transform change (line 4210-4211 in style.ts)
+        const result = style._updatePlacement(tr, false, 300, false, replacementSource);
+
+        expect(result).toBeTruthy();
+    });
+
+    test('returns true when replacementSourceChanged', async () => {
+        const map = new StubMap();
+        // @ts-expect-error - painter is not part of StubMap but required for _updatePlacement
+        map.painter = {scaleFactor: 1};
+
+        const style = new Style(map);
+        style.loadJSON({
+            "version": 8,
+            "sources": {
+                "geojson": {
+                    "type": "geojson",
+                    "data": {"type": "FeatureCollection", "features": []}
+                }
+            },
+            "layers": [{
+                "id": "symbol",
+                "type": "symbol",
+                "source": "geojson"
+            }]
+        });
+
+        await waitFor(style, 'style.load');
+
+        const tr = map.transform;
+        tr.resize(512, 512);
+
+        style.update({zoom: tr.zoom, fadeDuration: 0});
+        style._updatePlacement(tr, false, 0, false, {updateTime: 0});
+
+        expect(style.pauseablePlacement.isDone()).toBeTruthy();
+
+        // Change replacementSource updateTime to trigger replacementSourceChanged
+        const result = style._updatePlacement(tr, false, 300, false, {updateTime: 1});
+
+        expect(result).toBeTruthy();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Style FRC init-time wiring
+//
+// Two integration points that aren't covered by the pure-function tests in
+// frc_coverage.test.ts:
+//   1. When a style loads with an hd_road_coverage layer, Style must create a
+//      dedicated SourceCache (renderSourceType: HdRoadCoverage) and stash an
+//      HdCoverageState on `_hdCoverage`. This is the moment the conflation
+//      pipeline turns on.
+//   2. When setConfigProperty changes `sdCoverageFadeRange` at runtime, the
+//      next call to style.updateFrcCoverageFadeRange() must pick up the new
+//      value and push it onto the painter. This is the contract the runtime
+//      toggle depends on.
+// ---------------------------------------------------------------------------
+
+describe('Style HD coverage source-cache wiring', () => {
+    const HD_COVERAGE_LAYER = 'hd_road_coverage';
+
+    // In test env HD is statically loaded, so _updateHdCoverageSourceCache always
+    // constructs an empty HdCoverageState on first call. The real signal that a
+    // coverage cache was created is `coverageSourceCaches[<source>]` being populated.
+
+    function loadStyleWithLayer(layer) {
+        const {style} = newStubStyle();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            sources: {
+                'hd-roads': {
+                    type: 'vector',
+                    tiles: ['http://example.com/{z}/{x}/{y}.mvt']
+                }
+            },
+            layers: [layer]
+        }));
+        return style;
+    }
+
+    test('Style with no hd_road_coverage layer leaves coverageSourceCaches empty', async () => {
+        const style = loadStyleWithLayer({
+            id: 'just-a-fill',
+            type: 'fill',
+            source: 'hd-roads',
+            'source-layer': 'building'
+        });
+        await waitFor(style, 'style.load');
+        // State may exist (always-create), but no coverage caches inside.
+        const coverageKeys = Object.keys(style._sourceCaches).filter(k => k.startsWith('hd-road-coverage:'));
+        expect(coverageKeys.length).toBe(0);
+        if (style._hdCoverage) {
+            expect(Object.keys(style._hdCoverage.coverageSourceCaches).length).toBe(0);
+        }
+    });
+
+    test('Adding a fill layer with source-layer hd_road_coverage creates the state and cache', async () => {
+        const style = loadStyleWithLayer({
+            id: 'hd-coverage-helper',
+            type: 'fill',
+            source: 'hd-roads',
+            'source-layer': HD_COVERAGE_LAYER,
+            paint: {'fill-color': 'red', 'fill-opacity': 0}
+        });
+        await waitFor(style, 'style.load');
+        // Wait for HD Module to be loaded
+        await vi.waitUntil(() => style._hdCoverage !== null, {timeout: 2000});
+
+        expect(style._hdCoverage).not.toBeNull();
+        // The dedicated cache key is `hd-road-coverage:<sourceId>`.
+        const cacheKey = `hd-road-coverage:hd-roads`;
+        expect(style._sourceCaches[cacheKey]).toBeDefined();
+        // SourceCache has _renderSourceType === HdRoadCoverage (=3 per tile.ts).
+        expect(style._sourceCaches[cacheKey]._renderSourceType).toBe(3);
+        // State has a back-reference under coverageSourceCaches[sourceId].
+        expect(style._hdCoverage.coverageSourceCaches['hd-roads']).toBe(style._sourceCaches[cacheKey]);
+    });
+
+    test('Idempotent — second fill layer with same source/source-layer does not double up the cache', async () => {
+        const {style} = newStubStyle();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            sources: {
+                'hd-roads': {type: 'vector', tiles: ['http://example.com/{z}/{x}/{y}.mvt']}
+            },
+            layers: [{
+                id: 'cov-a', type: 'fill', source: 'hd-roads', 'source-layer': HD_COVERAGE_LAYER
+            }, {
+                id: 'cov-b', type: 'fill', source: 'hd-roads', 'source-layer': HD_COVERAGE_LAYER
+            }]
+        }));
+        await waitFor(style, 'style.load');
+
+        const cacheKey = `hd-road-coverage:hd-roads`;
+        // Wait for HD module to be loaded
+        await vi.waitUntil(() => style._sourceCaches[cacheKey] !== undefined, {timeout: 2000});
+        expect(style._sourceCaches[cacheKey]).toBeDefined();
+        // Only one coverage cache total for this source.
+        const coverageKeys = Object.keys(style._sourceCaches).filter(k => k.startsWith('hd-road-coverage:'));
+        expect(coverageKeys.length).toBe(1);
+    });
+
+    test('Non-fill layer with the same source-layer does NOT create a coverage cache', async () => {
+        const style = loadStyleWithLayer({
+            id: 'cov-line',
+            type: 'line',
+            source: 'hd-roads',
+            'source-layer': HD_COVERAGE_LAYER
+        });
+        await waitFor(style, 'style.load');
+
+        const coverageKeys = Object.keys(style._sourceCaches).filter(k => k.startsWith('hd-road-coverage:'));
+        expect(coverageKeys.length).toBe(0);
+    });
+
+    test('Fill layer pointing at a NON-vector source does NOT create a coverage cache', async () => {
+        const {style} = newStubStyle();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            sources: {
+                'gj': {type: 'geojson', data: {type: 'FeatureCollection', features: []}}
+            },
+            layers: [{
+                id: 'cov', type: 'fill', source: 'gj', 'source-layer': HD_COVERAGE_LAYER
+            }]
+        }));
+        await waitFor(style, 'style.load');
+
+        const coverageKeys = Object.keys(style._sourceCaches).filter(k => k.startsWith('hd-road-coverage:'));
+        expect(coverageKeys.length).toBe(0);
+    });
+});
+
+describe('Style FRC config update propagation', () => {
+    // Style.updateFrcCoverageFadeRange is the bridge between style.options
+    // (where setConfigProperty writes) and painter.frcCoverageFadeRange
+    // (where vector_tile_source reads). These tests verify that bridge:
+    //   - Default schema [0,0] → painter stays null.
+    //   - Setting the option to a valid range → painter picks it up.
+    //   - Resetting to [0,0] → painter goes back to null.
+    //   - Without a painter on the map, calling is a safe no-op.
+
+    function loadStyleWithSchema(opts = {}) {
+        const {style} = newStubStyle();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        style.loadJSON(createStyleJSON({
+            // fragment:false keeps schema on the root style, otherwise Style wraps
+            // it as an internal "basemap" import and setConfigProperty('') wouldn't apply.
+            fragment: false,
+            schema: {
+                sdCoverageFadeRange: {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                    default: opts.defaultRange || [0, 0],
+                    type: 'number',
+                    array: true,
+                    minValue: 0,
+                    maxValue: 24
+                },
+                sdCoverageSourceLayers: {
+                    default: ['road', 'structure'],
+                    type: 'string',
+                    array: true
+                }
+            }
+        }));
+        return style;
+    }
+
+    function attachStubPainter(style) {
+        const painter = {frcCoverageFadeRange: null, frcCoverageSourceLayers: []};
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        style.map.painter = painter;
+        return painter;
+    }
+
+    test('Default schema [0,0] → painter.frcCoverageFadeRange stays null', async () => {
+        const style = loadStyleWithSchema();
+        await waitFor(style, 'style.load');
+        const painter = attachStubPainter(style);
+
+        style.updateFrcCoverageFadeRange();
+        expect(painter.frcCoverageFadeRange).toBeNull();
+    });
+
+    test('setConfigProperty([14,15]) → next updateFrcCoverageFadeRange pushes [14,15] onto painter', async () => {
+        const style = loadStyleWithSchema();
+        await waitFor(style, 'style.load');
+        const painter = attachStubPainter(style);
+
+        style.setConfigProperty('', 'sdCoverageFadeRange', [14, 15]);
+        style.updateFrcCoverageFadeRange();
+        expect(painter.frcCoverageFadeRange).toEqual([14, 15]);
+    });
+
+    test('Resetting config back to [0,0] → painter.frcCoverageFadeRange goes back to null', async () => {
+        const style = loadStyleWithSchema();
+        await waitFor(style, 'style.load');
+        const painter = attachStubPainter(style);
+
+        style.setConfigProperty('', 'sdCoverageFadeRange', [14, 15]);
+        style.updateFrcCoverageFadeRange();
+        expect(painter.frcCoverageFadeRange).toEqual([14, 15]);
+
+        style.setConfigProperty('', 'sdCoverageFadeRange', [0, 0]);
+        style.updateFrcCoverageFadeRange();
+        expect(painter.frcCoverageFadeRange).toBeNull();
+    });
+
+    test('Changing sdCoverageSourceLayers updates painter.frcCoverageSourceLayers', async () => {
+        const style = loadStyleWithSchema();
+        await waitFor(style, 'style.load');
+        const painter = attachStubPainter(style);
+
+        // Source layers only get pushed when fadeRange is active.
+        style.setConfigProperty('', 'sdCoverageFadeRange', [14, 15]);
+        style.setConfigProperty('', 'sdCoverageSourceLayers', ['(sd-traffic)traffic']);
+        style.updateFrcCoverageFadeRange();
+        expect(painter.frcCoverageSourceLayers).toEqual(['(sd-traffic)traffic']);
+    });
+
+    test('updateFrcCoverageFadeRange is a safe no-op when map.painter is undefined', async () => {
+        const style = loadStyleWithSchema({defaultRange: [14, 15]});
+        await waitFor(style, 'style.load');
+        // Deliberately do NOT attach a painter.
+        expect(style.map.painter).toBeUndefined();
+        // Must not throw.
+        expect(() => style.updateFrcCoverageFadeRange()).not.toThrow();
+    });
+});

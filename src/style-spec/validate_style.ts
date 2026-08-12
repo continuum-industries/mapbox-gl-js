@@ -2,6 +2,7 @@ import {validateStyle as validateStyleMin} from './validate_style.min';
 import {v8} from './style-spec';
 import readStyle from './read_style';
 
+import type {StyleReference} from './reference/latest';
 import type {ValidationErrors} from './validate_style.min';
 import type {StyleSpecification} from './types';
 
@@ -10,8 +11,8 @@ import type {StyleSpecification} from './types';
  *
  * @private
  * @alias validate
- * @param {Object|String|Buffer} style The style to be validated. If a `String`
- *     or `Buffer` is provided, the returned errors will contain line numbers.
+ * @param {Object|String|Uint8Array} style The style to be validated. If a `String`
+ *     or `Uint8Array` is provided, the returned errors will contain line numbers.
  * @param {Object} [styleSpec] The style specification to validate against.
  *     If omitted, the spec version is inferred from the stylesheet.
  * @returns {Array<ValidationError|ParsingError>}
@@ -21,16 +22,15 @@ import type {StyleSpecification} from './types';
  *   var errors = validate(style);
  */
 
-export default function validateStyle(style: StyleSpecification | string | Buffer, styleSpec: any = v8): ValidationErrors {
+export default function validateStyle(style: StyleSpecification | string | Uint8Array, styleSpec: StyleReference = v8): ValidationErrors {
     let s = style;
 
     try {
         s = readStyle(s);
-    } catch (e: any) {
-        return [e];
+    } catch (e) {
+        return [e] as ValidationErrors;
     }
 
-    // @ts-expect-error - TS2345 - Argument of type 'string | StyleSpecification | Buffer' is not assignable to parameter of type 'StyleSpecification'.
     return validateStyleMin(s, styleSpec);
 }
 

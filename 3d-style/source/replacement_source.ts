@@ -1,18 +1,24 @@
 import Point from '@mapbox/point-geometry';
 import EXTENT from '../../src/style-spec/data/extent';
-import {UnwrappedTileID, CanonicalTileID} from '../../src/source/tile_id';
 import {triangleIntersectsTriangle, polygonContainsPoint} from '../../src/util/intersection_tests';
+import deepEqual from '../../src/style-spec/util/deep_equal';
+import {getOuterScopeFromFQID} from '../../src/util/fqid';
 
+import type {UnwrappedTileID, CanonicalTileID} from '../../src/source/tile_id';
 import type {Bucket} from '../../src/data/bucket';
 import type {Footprint, TileFootprint} from '../util/conflation';
 import type SourceCache from '../../src/source/source_cache';
 
+export const ReplacementOrderLandmark = Number.MAX_SAFE_INTEGER;
+export const ReplacementOrderBuilding = ReplacementOrderLandmark - 1;
+
 // Abstract interface that acts as a source for footprints used in the replacement process
 interface FootprintSource {
-    getSourceId(): string;
-    getFootprints(): Array<TileFootprint>;
-    getOrder(): number;
-    getClipMask(): number;
+    getSourceId: () => string;
+    getFootprints: () => Array<TileFootprint>;
+    getOrder: () => number;
+    getClipMask: () => number;
+    getClipScope: () => Array<string>;
 }
 
 type Region = {
@@ -23,6 +29,7 @@ type Region = {
     footprintTileId: UnwrappedTileID;
     order: number;
     clipMask: number;
+    clipScope: Array<string>;
 };
 
 type RegionData = {
@@ -34,7 +41,22 @@ type RegionData = {
     footprint: Footprint;
     order: number;
     clipMask: number;
+    clipScope: Array<string>;
 };
+
+function scopeSkipsClipping(scope: string, scopes: Array<string>): boolean {
+    if (scopes.length === 0) return false;
+    let current: string = scope;
+    while (current !== '') {
+        if (scopes.includes(current)) return false;
+        current = getOuterScopeFromFQID(current);
+    }
+    return true;
+}
+
+export function skipClipping(region: Region, layerIndex: number, mask: number, scope: string): boolean {
+    return region.order < layerIndex || region.order === ReplacementOrderLandmark || !(region.clipMask & mask) || scopeSkipsClipping(scope, region.clipScope);
+}
 
 class ReplacementSource {
     _updateTime: number;
@@ -93,7 +115,8 @@ class ReplacementSource {
                 footprint: region.footprint,
                 footprintTileId: region.tileId,
                 order: region.order,
-                clipMask: region.clipMask
+                clipMask: region.clipMask,
+                clipScope: region.clipScope
             });
         }
 
@@ -105,6 +128,7 @@ class ReplacementSource {
         cache: SourceCache;
         order: number;
         clipMask: number;
+        clipScope: Array<string>;
     }>) {
         this._setSources(sources.map(source => {
             return {
@@ -116,7 +140,7 @@ class ReplacementSource {
 
                     for (const id of source.cache.getVisibleCoordinates()) {
                         const tile = source.cache.getTile(id);
-                        const bucket: Bucket | null | undefined = (tile.buckets[source.layer] as any);
+                        const bucket: Bucket | null | undefined = tile.buckets[source.layer];
                         if (bucket) {
                             bucket.updateFootprints(id.toUnwrapped(), footprints);
                         }
@@ -129,6 +153,9 @@ class ReplacementSource {
                 },
                 getClipMask: () => {
                     return source.clipMask;
+                },
+                getClipScope: () => {
+                    return source.clipScope;
                 }
             };
         }));
@@ -142,6 +169,7 @@ class ReplacementSource {
         }
         const order = source.getOrder();
         const clipMask = source.getClipMask();
+        const clipScope = source.getClipScope();
 
         for (const fp of footprints) {
             if (!fp.footprint) {
@@ -158,7 +186,8 @@ class ReplacementSource {
                 tileId: fp.id,
                 footprint: fp.footprint,
                 order,
-                clipMask
+                clipMask,
+                clipScope
             });
         }
 
@@ -167,7 +196,7 @@ class ReplacementSource {
 
     _computeReplacement() {
         this._activeRegions.sort((a, b) => {
-            return a.priority - b.priority || comparePoint(a.min, b.min) || comparePoint(a.max, b.max);
+            return a.priority - b.priority || comparePoint(a.min, b.min) || comparePoint(a.max, b.max) || a.order - b.order || a.clipMask - b.clipMask || compareClipScopes(a.clipScope, b.clipScope);
         });
 
         // Check if active regions have changed since last update
@@ -180,8 +209,8 @@ class ReplacementSource {
                 const curr = this._activeRegions[idx];
                 const prev = this._prevRegions[idx];
 
-                regionsChanged = curr.priority !== prev.priority || !boundsEquals(curr, prev) || (curr.order !== prev.order) || (curr.clipMask !== prev.clipMask);
-
+                regionsChanged = curr.priority !== prev.priority || !boundsEquals(curr, prev) || (curr.order !== prev.order) || (curr.clipMask !== prev.clipMask || !deepEqual(curr.clipScope, prev.clipScope));
+                this._activeRegions[idx].hiddenByOverlap = prev.hiddenByOverlap;
                 ++idx;
             }
         }
@@ -190,7 +219,7 @@ class ReplacementSource {
             ++this._updateTime;
 
             for (const region of this._activeRegions) {
-                if (region.order !== Infinity) {
+                if (region.order !== ReplacementOrderLandmark) {
                     this._globalClipBounds.min.x = Math.min(this._globalClipBounds.min.x, region.min.x);
                     this._globalClipBounds.min.y = Math.min(this._globalClipBounds.min.y, region.min.y);
                     this._globalClipBounds.max.x = Math.max(this._globalClipBounds.max.x, region.max.x);
@@ -241,7 +270,7 @@ class ReplacementSource {
                                 continue;
                             }
 
-                            if (active.order !== Infinity) {
+                            if (active.order !== ReplacementOrderLandmark) {
                                 continue;
                             }
 
@@ -277,6 +306,11 @@ class ReplacementSource {
 
 function comparePoint(a: Point, b: Point): number {
     return a.x - b.x || a.y - b.y;
+}
+
+function compareClipScopes(a: string[], b: string[]) {
+    const concat = (t: string, n: string) => { return t + n; };
+    return a.length - b.length || a.reduce(concat, '').localeCompare(b.reduce(concat, ''));
 }
 
 function boundsEquals(
@@ -315,7 +349,7 @@ function regionsEquals(a: Array<Region>, b: Array<Region>): boolean {
     }
 
     for (let i = 0; i < a.length; i++) {
-        if (a[i].sourceId !== b[i].sourceId || !boundsEquals(a[i], b[i]) || a[i].order !== b[i].order || a[i].clipMask !== b[i].clipMask) {
+        if (a[i].sourceId !== b[i].sourceId || !boundsEquals(a[i], b[i]) || a[i].order !== b[i].order || a[i].clipMask !== b[i].clipMask || !deepEqual(a[i].clipScope, b[i].clipScope)) {
             return false;
         }
     }
@@ -361,7 +395,7 @@ function transformAabbToTile(min: Point, max: Point, id: UnwrappedTileID): {
 function footprintTrianglesIntersect(
     footprint: Footprint,
     vertices: Array<Point>,
-    indices: Array<number> | Uint16Array,
+    indices: Array<number> | Uint16Array | Uint32Array,
     indexOffset: number,
     indexCount: number,
     baseVertex: number,
@@ -382,9 +416,11 @@ function footprintTrianglesIntersect(
         const mxy = Math.max(a.y, b.y, c.y);
 
         candidateTriangles.length = 0;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         footprint.grid.query(new Point(mnx, mny), new Point(mxx, mxy), candidateTriangles);
 
         for (let j = 0; j < candidateTriangles.length; j++) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const triIdx = candidateTriangles[j];
             const v0 = fpVertices[fpIndices[triIdx * 3 + 0]];
             const v1 = fpVertices[fpIndices[triIdx * 3 + 1]];
@@ -434,15 +470,17 @@ function transformPointToTile(x: number, y: number, src: CanonicalTileID, dst: C
     return new Point(xf, yf);
 }
 
-function pointInFootprint(p: Point, region: Region): boolean {
+function pointInFootprint(p: Point, footprint: Footprint): boolean {
     // get a list of all triangles that potentially cover this point.
     const candidateTriangles = [];
-    region.footprint.grid.queryPoint(p, candidateTriangles);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    footprint.grid.queryPoint(p, candidateTriangles);
 
     // finally check if the point is in any of the triangles.
-    const fpIndices: Array<number> = region.footprint.indices;
-    const fpVertices: Array<Point> = region.footprint.vertices;
+    const fpIndices = footprint.indices;
+    const fpVertices: Array<Point> = footprint.vertices;
     for (let j = 0; j < candidateTriangles.length; j++) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const triIdx = candidateTriangles[j];
         const triangle = [
             fpVertices[fpIndices[triIdx * 3 + 0]],

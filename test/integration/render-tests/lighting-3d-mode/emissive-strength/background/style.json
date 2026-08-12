@@ -3,7 +3,10 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ]
     }
   },
   "sources": {},
@@ -30,9 +33,9 @@
       "id": "background",
       "type": "background",
       "paint": {
-        "background-color": "green",
+        "background-color": "white",
         "background-opacity": 1.0,
-        "background-emissive-strength": 0.5
+        "background-emissive-strength": 0.8
       }
     }
   ]

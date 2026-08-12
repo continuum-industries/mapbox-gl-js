@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, createMap as globalCreateMap} from '../../../util/vitest';
 import VectorTileSource from '../../../../src/source/vector_tile_source';
@@ -18,7 +19,9 @@ function createMap(logoPosition, logoRequired, deleteStyle) {
             },
             layers: []
         },
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         logoPosition: logoPosition || undefined,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         deleteStyle: deleteStyle || undefined
     };
 
@@ -27,19 +30,22 @@ function createMap(logoPosition, logoRequired, deleteStyle) {
 }
 
 function createSource(options, logoRequired) {
-    const source = new VectorTileSource('id', options, {send () {}});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    const source = new VectorTileSource('id', options, {send() {}});
     source.onAdd({
         _requestManager: {
             _skuToken: '1234567890123',
             canonicalizeTileset: tileJSON => tileJSON.tiles
         },
         transform: {angle: 0, pitch: 0, showCollisionBoxes: false},
-        _getMapId: () => 1
+        _getMapId: () => 1,
+        getWorldview: () => {}
     });
     source.on('error', (e) => {
         throw e.error;
     });
     const logoFlag = "mapbox_logo";
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     source[logoFlag] = logoRequired === undefined ? true : logoRequired;
     return source;
 }
@@ -65,6 +71,7 @@ test('LogoControl appears in the position specified by the position option', () 
 test('LogoControl is displayed when no style is supplied', () => {
     const map = createMap('bottom-left', false, true, true);
     expect(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         map.getContainer().querySelector('.mapboxgl-ctrl-bottom-left .mapboxgl-ctrl').style.display
     ).toEqual('block');
 });
@@ -73,6 +80,7 @@ test('LogoControl is not displayed when the mapbox_logo property is false', () =
     const map = createMap('top-left', false);
     map.on('load', () => {
         expect(
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             map.getContainer().querySelectorAll('.mapboxgl-ctrl-top-left > .mapboxgl-ctrl')[0].style.display
         ).toEqual('none');
     });

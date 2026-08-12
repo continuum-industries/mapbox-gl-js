@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, beforeEach, test, expect, createMap as globalCreateMap} from '../../util/vitest';
 import Hash from '../../../src/ui/hash';
@@ -7,7 +8,9 @@ describe('hash', () => {
         window.location.hash = '';
     });
     function createHash(name) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const hash = new Hash(name);
+
         hash._updateHash = hash._updateHashUnthrottled.bind(hash);
         return hash;
     }

@@ -3,6 +3,8 @@ import throttle from '../util/throttle';
 
 import type {Map} from './map';
 
+const HASH_SUFFIX_RE = /(#.+)?$/;
+
 /*
  * Adds the map's position to its page's location hash.
  * Passed as an option to the map object.
@@ -23,6 +25,7 @@ export default class Hash {
         ], this);
 
         // Mobile Safari doesn't allow updating the hash more than 100 times per 30 seconds.
+
         this._updateHash = throttle(this._updateHashUnthrottled.bind(this), 30 * 1000 / 100);
     }
 
@@ -86,7 +89,7 @@ export default class Hash {
         const hash = location.hash.replace('#', '');
         if (this._hashName) {
             // Split the parameter-styled hash into parts and find the value we need
-            let keyval;
+            let keyval: string[];
             hash.split('&').map(
                 part => part.split('=')
             ).forEach(part => {
@@ -103,8 +106,7 @@ export default class Hash {
         const map = this._map;
         if (!map) return false;
         const loc = this._getCurrentHash();
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type 'number'.
-        if (loc.length >= 3 && !loc.some(v => isNaN(v))) {
+        if (loc.length >= 3 && !loc.some(v => isNaN(Number(v)))) {
             const bearing = map.dragRotate.isEnabled() && map.touchZoomRotate.isEnabled() ? +(loc[3] || 0) : map.getBearing();
             map.jumpTo({
                 center: [+loc[2], +loc[1]],
@@ -119,10 +121,13 @@ export default class Hash {
 
     _updateHashUnthrottled() {
         // Replace if already present, else append the updated hash string
-        history.replaceState(history.state, '', location.href.replace(/(#.+)?$/, this.getHashString()));
+        history.replaceState(history.state, '', location.href.replace(HASH_SUFFIX_RE, this.getHashString()));
     }
 }
 
+/**
+ * @private
+ */
 export function getHashString(map: Map, mapFeedback?: boolean): string {
     const center = map.getCenter(),
         zoom = Math.round(map.getZoom() * 100) / 100,

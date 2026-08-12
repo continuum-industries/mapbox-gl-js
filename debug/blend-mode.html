@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Line Blend Mode</title>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        html,
+        body,
+        #map {
+            height: 100%;
+        }
+
+        #controls {
+            position: absolute;
+            background: #fff;
+            top: 0;
+            left: 0;
+            padding: 10px;
+            max-width: 300px;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+        }
+
+        .control-group {
+            margin-bottom: 10px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 3px;
+            font-weight: bold;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+        }
+
+        .control-group input[type="text"] {
+            width: 100%;
+            padding: 4px;
+            box-sizing: border-box;
+        }
+
+        .control-group select {
+            width: 100%;
+            padding: 4px;
+        }
+
+        .control-group input[type="checkbox"] {
+            margin-right: 5px;
+        }
+
+        .slider-value {
+            display: inline-block;
+            margin-left: 5px;
+            font-weight: normal;
+        }
+
+        .section-divider {
+            border: none;
+            border-top: 2px solid #ccc;
+            margin: 12px 0 10px;
+        }
+
+        .section-title {
+            font-weight: bold;
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: #333;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id='map'></div>
+    <div id='controls'>
+        <div class="section-title">Layer 1 — Flight Lines</div>
+
+        <div class="control-group">
+            <label>
+                <input type="checkbox" id="blendModeEnabled" checked onchange="toggleBlendMode(this)">
+                Enable Blend Mode
+            </label>
+        </div>
+
+        <div class="control-group">
+            <label for="blendModeSelect">Blend Mode:</label>
+            <select id="blendModeSelect" onchange="updateBlendMode()">
+                <option value="multiply">multiply</option>
+                <option value="additive" selected>additive</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="opacitySlider">
+                Opacity: <span class="slider-value" id="opacityValue">1.00</span>
+            </label>
+            <input type="range" id="opacitySlider" min="0" max="1" step="0.001" value="1" oninput="updateOpacity(this)">
+        </div>
+
+        <div class="control-group">
+            <label for="additiveClampSlider">
+                Additive Clamp: <span class="slider-value" id="additiveClampValue">0 (auto)</span>
+            </label>
+            <input type="range" id="additiveClampSlider" min="0" max="200" step="1" value="0" oninput="updateAdditiveClamp(this)">
+        </div>
+
+        <div class="control-group">
+            <label for="basemapSelect">Basemap & Line Color:</label>
+            <select id="basemapSelect" onchange="updateBasemap()">
+                <option value="light">Light (Blue Lines)</option>
+                <option value="dark" selected>Dark (Yellow Lines)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="geojsonUrl">GeoJSON URL:</label>
+            <input type="text" id="geojsonUrl" value="https://docs.mapbox.com/mapbox-gl-js/assets/flights-200k.geojson">
+            <button onclick="loadGeoJSON()" style="margin-top: 5px; width: 100%; padding: 4px;">Load GeoJSON</button>
+        </div>
+
+        <hr class="section-divider">
+        <div class="section-title">Layer 2 — Star Shape</div>
+
+        <div class="control-group">
+            <label>
+                <input type="checkbox" id="polygonBlendModeEnabled" checked onchange="togglePolygonBlendMode(this)">
+                Enable Blend Mode
+            </label>
+        </div>
+
+        <div class="control-group">
+            <label for="polygonBlendModeSelect">Blend Mode:</label>
+            <select id="polygonBlendModeSelect" onchange="updatePolygonBlendMode()">
+                <option value="multiply">multiply</option>
+                <option value="additive">additive</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="polygonColorSelect">Line Color:</label>
+            <select id="polygonColorSelect" onchange="updatePolygonColor()">
+                <option value="#0080ff">Blue</option>
+                <option value="#ff4400">Red</option>
+                <option value="#00cc44">Green</option>
+                <option value="#ffcc00">Yellow</option>
+                <option value="#aa00ff">Purple</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="maineOpacitySlider">
+                Opacity: <span class="slider-value" id="maineOpacityValue">0.00</span>
+            </label>
+            <input type="range" id="maineOpacitySlider" min="0" max="1" step="0.01" value="0"
+                oninput="updateStarOpacity(this)">
+        </div>
+    </div>
+
+    <script type="module">
+        import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+        import { getAccessToken } from './access_token_generated.js';
+
+        let currentOpacity = 1.0;
+        let currentBlendMode = 'additive';
+        let blendModeEnabled = true;
+        let additiveClamp = 0;
+
+        let polygonBlendModeEnabled = true;
+        let polygonBlendMode = 'multiply';
+        let polygonLineColor = '#0080ff';
+        let starOpacity = 0;
+
+        const basemapConfig = {
+            light: {
+                url: 'mapbox://styles/mapbox/light-v11',
+                lineColor: [0, 0, 255] // Blue
+            },
+            dark: {
+                url: 'mapbox://styles/mapbox/dark-v11',
+                lineColor: [255, 255, 0] // Yellow
+            }
+        };
+
+        let currentBasemap = 'dark';
+
+        // Abstract 6-pointed star centred on Munich [11.576, 48.137]
+        const cx = 11.576, cy = 48.137;
+        const starCoordinates = [
+            [cx + 0.0,  cy + 16.0],
+            [cx + 5.0,  cy + 9.0],
+            [cx + 16.0, cy + 9.0],
+            [cx + 7.0,  cy + 1.0],
+            [cx + 11.0, cy - 10.0],
+            [cx + 0.0,  cy - 4.0],
+            [cx - 11.0, cy - 10.0],
+            [cx - 7.0,  cy + 1.0],
+            [cx - 16.0, cy + 9.0],
+            [cx - 5.0,  cy + 9.0],
+            [cx + 0.0,  cy + 16.0]
+        ];
+
+        const starGeoJSON = {
+            type: 'Feature',
+            geometry: {
+                type: 'Polygon',
+                coordinates: [starCoordinates]
+            }
+        };
+
+        const map = window.map = new mapboxgl.Map({
+            accessToken: getAccessToken(),
+            container: 'map',
+            projection: 'mercator',
+            style: {
+                imports: [
+                    {
+                        id: 'basemap',
+                        url: basemapConfig.dark.url
+                    }
+                ],
+                version: 8,
+                sources: {
+                    'overlay': {
+                        type: 'geojson',
+                        data: document.getElementById('geojsonUrl').value,
+                    },
+                    'star': {
+                        type: 'geojson',
+                        data: starGeoJSON
+                    }
+                },
+                layers: [
+                    {
+                        id: 'star-outline',
+                        type: 'line',
+                        source: 'star',
+                        paint: {
+                            'line-color': polygonLineColor,
+                            'line-width': 200,
+                            'line-opacity': starOpacity,
+                            'line-blend-mode': polygonBlendMode
+                        }
+                    },
+                    {
+                        id: 'overlay',
+                        type: 'line',
+                        source: 'overlay',
+                        paint: {
+                            'line-color': `rgba(${basemapConfig.dark.lineColor.join(',')}, ${currentOpacity})`,
+                            'line-blend-mode': currentBlendMode,
+                            'line-blend-additive-clamp': additiveClamp,
+                            'line-width': 1
+                        }
+                    }
+                ]
+            },
+            center: [cx, cy],
+            zoom: 4,
+            pitch: 0,
+            hash: true
+        });
+
+        function getLineColor() {
+            const color = basemapConfig[currentBasemap].lineColor;
+            return `rgba(${color.join(',')}, ${currentOpacity})`;
+        }
+
+        function updateLayer() {
+            if (map.getLayer('overlay')) {
+                map.setPaintProperty('overlay', 'line-color', getLineColor());
+                map.setPaintProperty('overlay', 'line-blend-mode', blendModeEnabled ? currentBlendMode : 'default');
+                map.setPaintProperty('overlay', 'line-blend-additive-clamp', additiveClamp);
+            }
+        }
+
+        function updateAdditiveClamp(slider) {
+            additiveClamp = parseFloat(slider.value);
+            document.getElementById('additiveClampValue').textContent = additiveClamp === 0 ? '0 (auto)' : additiveClamp.toFixed(0);
+            updateLayer();
+        }
+
+        function updateOpacity(slider) {
+            currentOpacity = parseFloat(slider.value);
+            document.getElementById('opacityValue').textContent = currentOpacity.toFixed(2);
+            updateLayer();
+        }
+
+        function updateBlendMode() {
+            currentBlendMode = document.getElementById('blendModeSelect').value;
+            updateLayer();
+        }
+
+        function toggleBlendMode(checkbox) {
+            blendModeEnabled = checkbox.checked;
+            document.getElementById('blendModeSelect').disabled = !blendModeEnabled;
+            updateLayer();
+        }
+
+        function updateBasemap() {
+            currentBasemap = document.getElementById('basemapSelect').value;
+            const config = basemapConfig[currentBasemap];
+
+            map.setStyle({
+                imports: [
+                    {
+                        id: 'basemap',
+                        url: config.url
+                    }
+                ],
+                version: 8,
+                sources: {
+                    'overlay': {
+                        type: 'geojson',
+                        data: document.getElementById('geojsonUrl').value,
+                    },
+                    'star': {
+                        type: 'geojson',
+                        data: starGeoJSON
+                    }
+                },
+                layers: [
+                    {
+                        id: 'star-outline',
+                        type: 'line',
+                        source: 'star',
+                        paint: {
+                            'line-color': polygonLineColor,
+                            'line-width': 200,
+                            'line-opacity': starOpacity,
+                            'line-blend-mode': polygonBlendModeEnabled ? polygonBlendMode : 'default'
+                        }
+                    },
+                    {
+                        id: 'overlay',
+                        type: 'line',
+                        source: 'overlay',
+                        paint: {
+                            'line-color': getLineColor(),
+                            'line-blend-mode': blendModeEnabled ? currentBlendMode : 'default',
+                            'line-blend-additive-clamp': additiveClamp,
+                            'line-width': 1
+                        }
+                    }
+                ]
+            });
+        }
+
+        function loadGeoJSON() {
+            const url = document.getElementById('geojsonUrl').value;
+            if (map.getSource('overlay')) {
+                map.getSource('overlay').setData(url);
+            } else {
+                updateBasemap();
+            }
+        }
+
+        function updateStarOpacity(slider) {
+            starOpacity = parseFloat(slider.value);
+            document.getElementById('maineOpacityValue').textContent = starOpacity.toFixed(2);
+            if (map.getLayer('star-outline')) {
+                map.setPaintProperty('star-outline', 'line-opacity', starOpacity);
+            }
+        }
+
+        function togglePolygonBlendMode(checkbox) {
+            polygonBlendModeEnabled = checkbox.checked;
+            document.getElementById('polygonBlendModeSelect').disabled = !polygonBlendModeEnabled;
+            if (map.getLayer('star-outline')) {
+                map.setPaintProperty('star-outline', 'line-blend-mode', polygonBlendModeEnabled ? polygonBlendMode : 'default');
+            }
+        }
+
+        function updatePolygonBlendMode() {
+            polygonBlendMode = document.getElementById('polygonBlendModeSelect').value;
+            if (map.getLayer('star-outline') && polygonBlendModeEnabled) {
+                map.setPaintProperty('star-outline', 'line-blend-mode', polygonBlendMode);
+            }
+        }
+
+        function updatePolygonColor() {
+            polygonLineColor = document.getElementById('polygonColorSelect').value;
+            if (map.getLayer('star-outline')) {
+                map.setPaintProperty('star-outline', 'line-color', polygonLineColor);
+            }
+        }
+
+        window.updateOpacity = updateOpacity;
+        window.updateAdditiveClamp = updateAdditiveClamp;
+        window.updateBlendMode = updateBlendMode;
+        window.toggleBlendMode = toggleBlendMode;
+        window.updateBasemap = updateBasemap;
+        window.loadGeoJSON = loadGeoJSON;
+        window.updateStarOpacity = updateStarOpacity;
+        window.togglePolygonBlendMode = togglePolygonBlendMode;
+        window.updatePolygonBlendMode = updatePolygonBlendMode;
+        window.updatePolygonColor = updatePolygonColor;
+    </script>
+</body>
+
+</html>

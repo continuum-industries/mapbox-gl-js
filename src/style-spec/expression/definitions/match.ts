@@ -1,7 +1,6 @@
-import assert from 'assert';
-
+import assert from '../../util/assert';
 import {typeOf} from '../values';
-import {ValueType} from '../types';
+import {typeEquals, ValueType} from '../types';
 
 import type {Type} from '../types';
 import type {Expression, SerializedExpression} from '../expression';
@@ -29,19 +28,18 @@ class Match implements Expression {
         this.otherwise = otherwise;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Match | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Match | null | void {
         if (args.length < 5)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
             return context.error(`Expected at least 4 arguments, but found only ${args.length - 1}.`);
         if (args.length % 2 !== 1)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
             return context.error(`Expected an even number of arguments.`);
 
-        let inputType;
+        let inputType: Type | undefined;
         let outputType: Type | null | undefined;
         if (context.expectedType && context.expectedType.kind !== 'value') {
             outputType = context.expectedType;
         }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const cases: Record<string, any> = {};
         const outputs = [];
         for (let i = 2; i < args.length - 1; i += 2) {
@@ -52,35 +50,27 @@ class Match implements Expression {
                 labels = [labels];
             }
 
-            const labelContext = context.concat(i);
-            // @ts-expect-error - TS2339 - Property 'length' does not exist on type 'unknown'.
-            if (labels.length === 0) {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
-                return labelContext.error('Expected at least one branch label.');
+            if ((labels as unknown[]).length === 0) {
+                return context.error('Expected at least one branch label.', i);
             }
 
-            // @ts-expect-error - TS2488 - Type 'unknown' must have a '[Symbol.iterator]()' method that returns an iterator.
-            for (const label of labels) {
+            for (const label of (labels as unknown[])) {
                 if (typeof label !== 'number' && typeof label !== 'string') {
-                    // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
-                    return labelContext.error(`Branch labels must be numbers or strings.`);
+                    return context.error(`Branch labels must be numbers or strings.`, i);
                 } else if (typeof label === 'number' && Math.abs(label) > Number.MAX_SAFE_INTEGER) {
-                    // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
-                    return labelContext.error(`Branch labels must be integers no larger than ${Number.MAX_SAFE_INTEGER}.`);
+                    return context.error(`Branch labels must be integers no larger than ${Number.MAX_SAFE_INTEGER}.`, i);
 
                 } else if (typeof label === 'number' && Math.floor(label) !== label) {
-                    // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
-                    return labelContext.error(`Numeric branch labels must be integer values.`);
+                    return context.error(`Numeric branch labels must be integer values.`, i);
 
                 } else if (!inputType) {
                     inputType = typeOf(label);
-                } else if (labelContext.checkSubtype(inputType, typeOf(label))) {
+                } else if (context.checkSubtype(inputType, typeOf(label), i)) {
                     return null;
                 }
 
                 if (typeof cases[String(label)] !== 'undefined') {
-                    // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Match'.
-                    return labelContext.error('Branch labels must be unique.');
+                    return context.error('Branch labels must be unique.', i);
                 }
 
                 cases[String(label)] = outputs.length;
@@ -95,21 +85,22 @@ class Match implements Expression {
         const input = context.parse(args[1], 1, ValueType);
         if (!input) return null;
 
-        const otherwise = context.parse(args[args.length - 1], args.length - 1, outputType);
+        const otherwise = context.parse(args.at(-1), args.length - 1, outputType);
         if (!otherwise) return null;
 
         assert(inputType && outputType);
 
-        if (input.type.kind !== 'value' && context.concat(1).checkSubtype((inputType), input.type)) {
+        if (input.type.kind !== 'value' && context.checkSubtype((inputType), input.type, 1)) {
             return null;
         }
 
-        return new Match((inputType), (outputType as any), input, cases, outputs, otherwise);
+        return new Match(inputType, outputType, input, cases, outputs, otherwise);
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     evaluate(ctx: EvaluationContext): any {
-        const input = (this.input.evaluate(ctx));
-        const output = (typeOf(input) === this.inputType && this.outputs[this.cases[input]]) || this.otherwise;
+        const input = (this.input.evaluate(ctx)) as number | string;
+        const output = (typeEquals(typeOf(input), this.inputType) && this.outputs[this.cases[input]!]) || this.otherwise;
         return output.evaluate(ctx);
     }
 
@@ -137,28 +128,28 @@ class Match implements Expression {
             [index: number]: number;
         } = {}; // lookup index into groupedByOutput for a given output expression
         for (const label of sortedLabels) {
-            const outputIndex = outputLookup[this.cases[label]];
+            const outputIndex = outputLookup[this.cases[label]!];
             if (outputIndex === undefined) {
                 // First time seeing this output, add it to the end of the grouped list
-                outputLookup[this.cases[label]] = groupedByOutput.length;
-                groupedByOutput.push([this.cases[label], [label]]);
+                outputLookup[this.cases[label]!] = groupedByOutput.length;
+                groupedByOutput.push([this.cases[label]!, [label]]);
             } else {
                 // We've seen this expression before, add the label to that output's group
-                groupedByOutput[outputIndex][1].push(label);
+                groupedByOutput[outputIndex]![1].push(label);
             }
         }
 
-        const coerceLabel = (label: number | string) => this.inputType.kind === 'number' ? Number(label) : label;
+        const coerceLabel = (label: number | string) => (this.inputType.kind === 'number' ? Number(label) : label);
 
         for (const [outputIndex, labels] of groupedByOutput) {
             if (labels.length === 1) {
                 // Only a single label matches this output expression
-                serialized.push(coerceLabel(labels[0]));
+                serialized.push(coerceLabel(labels[0]!));
             } else {
                 // Array of literal labels pointing to this output expression
                 serialized.push(labels.map(coerceLabel));
             }
-            serialized.push(this.outputs[outputIndex].serialize());
+            serialized.push(this.outputs[outputIndex]!.serialize());
         }
         serialized.push(this.otherwise.serialize());
         return serialized;

@@ -1,12 +1,12 @@
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 
 import type {
     StructArray,
     StructArrayMember
 } from '../util/struct_array';
-
 import type Program from '../render/program';
 import type Context from '../gl/context';
+import type {UniformBindings} from '../render/uniform_binding';
 
 /**
  * @enum {string} AttributeType
@@ -14,11 +14,11 @@ import type Context from '../gl/context';
  * @readonly
  */
 const AttributeType = {
-    Int8:   'BYTE',
-    Uint8:  'UNSIGNED_BYTE',
-    Int16:  'SHORT',
+    Int8: 'BYTE',
+    Uint8: 'UNSIGNED_BYTE',
+    Int16: 'SHORT',
     Uint16: 'UNSIGNED_SHORT',
-    Int32:  'INT',
+    Int32: 'INT',
     Uint32: 'UNSIGNED_INT',
     Float32: 'FLOAT'
 };
@@ -69,11 +69,10 @@ class VertexBuffer {
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, array.arrayBuffer);
     }
 
-    enableAttributes(gl: WebGL2RenderingContext, program: Program<any>) {
-        for (let j = 0; j < this.attributes.length; j++) {
-            const member = this.attributes[j];
-            const attribIndex: number | undefined = program.attributes[member.name];
-            if (attribIndex !== undefined) {
+    enableAttributes(gl: WebGL2RenderingContext, program: Program<UniformBindings>) {
+        for (const member of this.attributes) {
+            const attribIndex = program.getAttributeLocation(gl, member.name);
+            if (attribIndex !== -1) {
                 gl.enableVertexAttribArray(attribIndex);
             }
         }
@@ -85,30 +84,40 @@ class VertexBuffer {
      * @param program The active WebGL program.
      * @param vertexOffset Index of the starting vertex of the segment.
      */
-    setVertexAttribPointers(gl: WebGL2RenderingContext, program: Program<any>, vertexOffset?: number | null) {
-        for (let j = 0; j < this.attributes.length; j++) {
-            const member = this.attributes[j];
-            const attribIndex: number | undefined = program.attributes[member.name];
-
-            if (attribIndex !== undefined) {
-                gl.vertexAttribPointer(
-                    attribIndex,
-                    member.components,
-                    (gl as any)[AttributeType[member.type]],
-                    false,
-                    this.itemSize,
-                    member.offset + (this.itemSize * (vertexOffset || 0))
-                );
+    setVertexAttribPointers(gl: WebGL2RenderingContext, program: Program<UniformBindings>, vertexOffset?: number | null) {
+        for (const member of this.attributes) {
+            const attribIndex = program.getAttributeLocation(gl, member.name);
+            if (attribIndex !== -1) {
+                const byteOffset = member.offset + (this.itemSize * (vertexOffset || 0));
+                // Use vertexAttribIPointer for integer types and vertexAttribPointer for float
+                if (member.type === 'Float32') {
+                    gl.vertexAttribPointer(
+                        attribIndex,
+                        member.components,
+                        gl.FLOAT,
+                        false,
+                        this.itemSize,
+                        byteOffset
+                    );
+                } else {
+                    gl.vertexAttribIPointer(
+                        attribIndex,
+                        member.components,
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                        gl[AttributeType[member.type]],
+                        this.itemSize,
+                        byteOffset
+                    );
+                }
             }
         }
     }
 
-    setVertexAttribDivisor(gl: WebGL2RenderingContext, program: Program<any>, value: number) {
+    setVertexAttribDivisor(gl: WebGL2RenderingContext, program: Program<UniformBindings>, value: number) {
         for (let j = 0; j < this.attributes.length; j++) {
             const member = this.attributes[j];
-            const attribIndex: number | undefined = program.attributes[member.name];
-
-            if (attribIndex !== undefined && this.instanceCount && this.instanceCount > 0) {
+            const attribIndex = program.getAttributeLocation(gl, member.name);
+            if (attribIndex !== -1 && this.instanceCount && this.instanceCount > 0) {
                 gl.vertexAttribDivisor(attribIndex, value);
             }
         }

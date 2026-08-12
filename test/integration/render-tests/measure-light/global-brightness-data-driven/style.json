@@ -14,6 +14,9 @@
 
           ]
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web-windows-chrome", "reason": "Flaky on windows platform only:"}
       ]
     }
   },
@@ -147,7 +150,6 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "fill",

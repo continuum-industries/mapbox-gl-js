@@ -2,16 +2,17 @@ import type Program from './program';
 import type VertexBuffer from '../gl/vertex_buffer';
 import type IndexBuffer from '../gl/index_buffer';
 import type Context from '../gl/context';
+import type {UniformBindings} from './uniform_binding';
 
 class VertexArrayObject {
-    context: Context;
-    boundProgram: Program<any> | null | undefined;
+    context!: Context;
+    boundProgram: Program<UniformBindings> | null | undefined;
     boundLayoutVertexBuffer: VertexBuffer | null | undefined;
     boundPaintVertexBuffers: Array<VertexBuffer>;
     boundIndexBuffer: IndexBuffer | null | undefined;
     boundVertexOffset: number | null | undefined;
     boundDynamicVertexBuffers: Array<VertexBuffer | null | undefined>;
-    vao: any;
+    vao: WebGLVertexArrayObject | null;
 
     constructor() {
         this.boundProgram = null;
@@ -23,14 +24,16 @@ class VertexArrayObject {
         this.vao = null;
     }
 
-    bind(context: Context,
-         program: Program<any>,
-         layoutVertexBuffer: VertexBuffer,
-         paintVertexBuffers: Array<VertexBuffer>,
-         indexBuffer: IndexBuffer | null | undefined,
-         vertexOffset: number | null | undefined,
-         dynamicVertexBuffers: Array<VertexBuffer | null | undefined>,
-         vertexAttribDivisorValue?: number | null) {
+    bind(
+        context: Context,
+        program: Program<UniformBindings>,
+        layoutVertexBuffer: VertexBuffer,
+        paintVertexBuffers: Array<VertexBuffer>,
+        indexBuffer: IndexBuffer | null | undefined,
+        vertexOffset: number | null | undefined,
+        dynamicVertexBuffers: Array<VertexBuffer | null | undefined>,
+        vertexAttribDivisorValue?: number | null
+    ) {
 
         this.context = context;
 
@@ -75,15 +78,15 @@ class VertexArrayObject {
         }
     }
 
-    freshBind(program: Program<any>,
-              layoutVertexBuffer: VertexBuffer,
-              paintVertexBuffers: Array<VertexBuffer>,
-              indexBuffer: IndexBuffer | null | undefined,
-              vertexOffset: number | null | undefined,
-              dynamicVertexBuffers: Array<VertexBuffer | null | undefined>,
-              vertexAttribDivisorValue?: number | null) {
-        const numNextAttributes = program.numAttributes;
-
+    freshBind(
+        program: Program<UniformBindings>,
+        layoutVertexBuffer: VertexBuffer,
+        paintVertexBuffers: Array<VertexBuffer>,
+        indexBuffer: IndexBuffer | null | undefined,
+        vertexOffset: number | null | undefined,
+        dynamicVertexBuffers: Array<VertexBuffer | null | undefined>,
+        vertexAttribDivisorValue?: number | null
+    ) {
         const context = this.context;
         const gl = context.gl;
 
@@ -123,8 +126,6 @@ class VertexArrayObject {
         if (indexBuffer) {
             indexBuffer.bind();
         }
-
-        context.currentNumAttributes = numNextAttributes;
     }
 
     destroy() {

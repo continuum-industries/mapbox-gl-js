@@ -1,27 +1,26 @@
-import Tile from './tile';
 import Texture from '../render/texture';
 import TileBounds from './tile_bounds';
-import {extend, pick} from '../util/util';
+import {pick} from '../util/util';
 import {Event, ErrorEvent, Evented} from '../util/evented';
 import {makeFQID} from '../util/fqid';
 
+import type Tile from './tile';
 import type {Map} from '../ui/map';
 import type Dispatcher from '../util/dispatcher';
-import type {ISource} from './source';
 import type {Callback} from '../types/callback';
 import type {OverscaledTileID} from './tile_id';
-import type {SourceSpecification} from '../style-spec/types';
+import type {ISource, SourceEvents} from './source';
+import type {TextureImage} from '../render/texture';
 
 type DataType = 'raster';
 
-function isRaster(data: any): boolean {
+function isRaster(data: unknown): boolean {
     return data instanceof ImageData ||
         data instanceof HTMLCanvasElement ||
         data instanceof ImageBitmap ||
         data instanceof HTMLImageElement;
 }
 
-/* eslint-disable jsdoc/check-examples */
 /**
  * Interface for custom sources. This is a specification for
  * implementers to model: it is not an exported method or class.
@@ -72,7 +71,6 @@ function isRaster(data: any): boolean {
  *     });
  * });
  */
-/* eslint-enable jsdoc/check-examples */
 
 /**
  * Optional method called when the source has been added to the Map with {@link Map#addSource}.
@@ -131,50 +129,29 @@ function isRaster(data: any): boolean {
  * @returns {Promise<TextureImage | undefined | null>} The promise that resolves to the tile image data as an `HTMLCanvasElement`, `HTMLImageElement`, `ImageData`, `ImageBitmap` or object with `width`, `height`, and `data`.
  * If `loadTile` resolves to `undefined`, a map will render an overscaled parent tile in the tile’s space. If `loadTile` resolves to `null`, a map will render nothing in the tile’s space.
  */
-export interface CustomSourceInterface<T> extends Evented {
+export interface CustomSourceInterface<T> {
     id: string;
     type: 'custom';
-    dataType: DataType | null | undefined;
-    minzoom: number | null | undefined;
-    maxzoom: number | null | undefined;
-    scheme: string | null | undefined;
-    tileSize: number | null | undefined;
-    minTileCacheSize: number | null | undefined;
-    maxTileCacheSize: number | null | undefined;
-    attribution: string | null | undefined;
-    mapbox_logo: boolean | undefined;
-    bounds: [number, number, number, number] | null | undefined;
-    hasTile: (
-        tileID: {
-            z: number;
-            x: number;
-            y: number;
-        },
-    ) => boolean | null | undefined;
-    loadTile: (
-        tileID: {
-            z: number;
-            x: number;
-            y: number;
-        },
-        options: {
-            signal: AbortSignal;
-        },
-    ) => Promise<T | null | undefined>;
-    unloadTile: (
-        tileID: {
-            z: number;
-            x: number;
-            y: number;
-        },
-    ) => void | null | undefined;
-    onAdd: (map: Map) => void | null | undefined;
-    onRemove: (map: Map) => void | null | undefined;
+    dataType?: DataType | null;
+    minzoom?: number | null;
+    maxzoom?: number | null;
+    scheme?: string | null;
+    tileSize?: number | null;
+    minTileCacheSize?: number;
+    maxTileCacheSize?: number;
+    attribution?: string | null;
+    mapbox_logo?: boolean;
+    bounds?: [number, number, number, number] | null;
+    hasTile?: (tileID: {z: number; x: number; y: number}) => boolean | null;
+    loadTile: (tileID: {z: number; x: number; y: number}, options: {signal: AbortSignal}) => Promise<T | null | undefined>;
+    unloadTile?: (tileID: {z: number; x: number; y: number}) => void | null;
+    onAdd?: (map: Map) => void | null;
+    onRemove?: (map: Map) => void | null;
 }
 
-class CustomSource<T> extends Evented implements ISource {
+class CustomSource<T> extends Evented<SourceEvents> implements ISource {
     id: string;
-    scope: string;
+    scope!: string;
     type: 'custom';
     scheme: string;
     minzoom: number;
@@ -183,14 +160,18 @@ class CustomSource<T> extends Evented implements ISource {
     attribution: string | undefined;
     // eslint-disable-next-line camelcase
     mapbox_logo: boolean | undefined;
+    vectorLayers?: never;
+    vectorLayerIds?: never;
+    rasterLayers?: never;
+    rasterLayerIds?: never;
 
     roundZoom: boolean | undefined;
     tileBounds: TileBounds | null | undefined;
-    minTileCacheSize: number | null | undefined;
-    maxTileCacheSize: number | null | undefined;
+    minTileCacheSize?: number;
+    maxTileCacheSize?: number;
     reparseOverscaled: boolean | undefined;
 
-    _map: Map;
+    map!: Map;
     _loaded: boolean;
     _dispatcher: Dispatcher;
     _dataType: DataType | null | undefined;
@@ -230,16 +211,16 @@ class CustomSource<T> extends Evented implements ISource {
             this.tileBounds = new TileBounds(this._implementation.bounds, this.minzoom, this.maxzoom);
         }
 
-        // @ts-expect-error - TS2339 - Property 'update' does not exist on type 'CustomSourceInterface<T>'.
-        implementation.update = this._update.bind(this);
+        const impl = implementation as CustomSourceInterface<T> & {
+            update: () => void;
+            clearTiles: () => void;
+            coveringTiles: () => {z: number; x: number; y: number}[];
+        };
+        impl.update = this._update.bind(this);
+        impl.clearTiles = this._clearTiles.bind(this);
+        impl.coveringTiles = this._coveringTiles.bind(this);
 
-        // @ts-expect-error - TS2339 - Property 'clearTiles' does not exist on type 'CustomSourceInterface<T>'.
-        implementation.clearTiles = this._clearTiles.bind(this);
-
-        // @ts-expect-error - TS2339 - Property 'coveringTiles' does not exist on type 'CustomSourceInterface<T>'.
-        implementation.coveringTiles = this._coveringTiles.bind(this);
-
-        extend(this, pick(implementation, ['dataType', 'scheme', 'minzoom', 'maxzoom', 'tileSize', 'attribution', 'minTileCacheSize', 'maxTileCacheSize']));
+        Object.assign(this, pick(implementation, ['dataType', 'scheme', 'minzoom', 'maxzoom', 'tileSize', 'attribution', 'minTileCacheSize', 'maxTileCacheSize']));
     }
 
     serialize() {
@@ -257,7 +238,7 @@ class CustomSource<T> extends Evented implements ISource {
     }
 
     onAdd(map: Map): void {
-        this._map = map;
+        this.map = map;
         this._loaded = false;
         this.fire(new Event('dataloading', {dataType: 'source'}));
         if (this._implementation.onAdd) this._implementation.onAdd(map);
@@ -279,25 +260,14 @@ class CustomSource<T> extends Evented implements ISource {
         return !this.tileBounds || this.tileBounds.contains(tileID.canonical);
     }
 
-    loadTile(tile: Tile, callback: Callback<undefined>): void {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    async loadTile(tile: Tile, callback: Callback<undefined>): Promise<void> {
         const {x, y, z} = tile.tileID.canonical;
         const controller = new AbortController();
-        const signal = controller.signal;
+        tile.request = controller;
 
-        // @ts-expect-error - TS2741 - Property 'cancel' is missing in type 'Promise<void | Awaited<T>>' but required in type 'Cancelable'.
-        tile.request = Promise
-            .resolve(this._implementation.loadTile({x, y, z}, {signal}))
-            .then(tileLoaded.bind(this))
-            .catch(error => {
-                // silence AbortError
-                if (error.code === 20) return;
-                tile.state = 'errored';
-                callback(error);
-            });
-
-        tile.request.cancel = () => controller.abort();
-
-        function tileLoaded(data?: T | null) {
+        try {
+            const data = await this._implementation.loadTile({x, y, z}, {signal: controller.signal});
             delete tile.request;
 
             if (tile.aborted) {
@@ -318,7 +288,7 @@ class CustomSource<T> extends Evented implements ISource {
             // A map will render nothing in the tile’s space.
             if (data === null) {
                 const emptyImage = {width: this.tileSize, height: this.tileSize, data: null};
-                this.loadTileData(tile, (emptyImage as any));
+                this.loadTileData(tile, emptyImage as T);
                 tile.state = 'loaded';
                 return callback(null);
             }
@@ -331,12 +301,16 @@ class CustomSource<T> extends Evented implements ISource {
             this.loadTileData(tile, data);
             tile.state = 'loaded';
             callback(null);
+        } catch (error) {
+            if (controller.signal.aborted) return;
+            tile.state = 'errored';
+            callback(error as Error);
         }
     }
 
     loadTileData(tile: Tile, data: T): void {
         // Only raster data supported at the moment
-        tile.setTexture((data as any), this._map.painter);
+        tile.setTexture(data as TextureImage, this.map.painter);
     }
 
     unloadTile(tile: Tile, callback?: Callback<undefined>): void {
@@ -345,11 +319,11 @@ class CustomSource<T> extends Evented implements ISource {
         if (tile.texture && tile.texture instanceof Texture) {
             // Clean everything else up owned by the tile, but preserve the texture.
             // Destroy first to prevent racing with the texture cache being popped.
-            tile.destroy(true);
+            tile.destroy(false);
 
             // Save the texture to the cache
             if (tile.texture && tile.texture instanceof Texture) {
-                this._map.painter.saveTileTexture(tile.texture);
+                this.map.painter.saveTileTexture(tile.texture);
             }
         } else {
             tile.destroy();
@@ -364,8 +338,8 @@ class CustomSource<T> extends Evented implements ISource {
     }
 
     abortTile(tile: Tile, callback?: Callback<undefined>): void {
-        if (tile.request && tile.request.cancel) {
-            tile.request.cancel();
+        if (tile.request) {
+            tile.request.abort();
             delete tile.request;
         }
 
@@ -381,7 +355,7 @@ class CustomSource<T> extends Evented implements ISource {
         x: number;
         y: number;
     }[] {
-        const tileIDs = this._map.transform.coveringTiles({
+        const tileIDs = this.map.transform.coveringTiles({
             tileSize: this.tileSize,
             minzoom: this.minzoom,
             maxzoom: this.maxzoom,
@@ -393,7 +367,7 @@ class CustomSource<T> extends Evented implements ISource {
 
     _clearTiles() {
         const fqid = makeFQID(this.id, this.scope);
-        this._map.style.clearSource(fqid);
+        this.map.style.clearSource(fqid);
     }
 
     _update() {

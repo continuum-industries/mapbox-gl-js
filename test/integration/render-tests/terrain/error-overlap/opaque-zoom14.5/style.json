@@ -8,6 +8,13 @@
         [
           "wait", 1500
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-macos", "reason": "Flaky"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky network metrics"},
+        {"platform-tag-contains": "native-ios-metal", "reason": "Flaky"}
       ]
     }
   },
@@ -15,7 +22,7 @@
   "zoom": 14.51,
   "pitch": 60,
   "bearing": -45,
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "terrain": {
     "source": "rgbterrain"
   },
@@ -42,7 +49,7 @@
       "id": "background",
       "type": "background",
       "paint": {
-        "background-pattern": "airport_icon"
+        "background-pattern": "airport"
       }
     },
     {

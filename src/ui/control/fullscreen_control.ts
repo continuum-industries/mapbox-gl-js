@@ -1,11 +1,19 @@
 import * as DOM from '../../util/dom';
-
 import {bindAll, warnOnce} from '../../util/util';
 
-import type {Map} from '../map';
+import type {Map, IControl} from '../map';
 
-type Options = {
-    container?: HTMLElement;
+type WebkitDocument = Document & {
+    webkitFullscreenElement?: Element;
+    webkitCancelFullScreen?: () => void;
+};
+
+type WebkitFullscreenElement = Element & {
+    webkitRequestFullscreen?: () => void;
+};
+
+export type FullscreenControlOptions = {
+    container?: HTMLElement | null;
 };
 
 /**
@@ -21,15 +29,15 @@ type Options = {
  * @see [Example: View a fullscreen map](https://www.mapbox.com/mapbox-gl-js/example/fullscreen/)
  */
 
-class FullscreenControl {
-    _map: Map;
-    _controlContainer: HTMLElement;
+class FullscreenControl implements IControl {
+    _map!: Map;
+    _controlContainer!: HTMLElement;
     _fullscreen: boolean;
-    _fullscreenchange: string;
-    _fullscreenButton: HTMLElement;
-    _container: HTMLElement;
+    _fullscreenchange!: string;
+    _fullscreenButton!: HTMLElement;
+    _container!: HTMLElement;
 
-    constructor(options?: Options) {
+    constructor(options: FullscreenControlOptions | null = {}) {
         this._fullscreen = false;
         if (options && options.container) {
             if (options.container instanceof HTMLElement) {
@@ -64,21 +72,20 @@ class FullscreenControl {
 
     onRemove() {
         this._controlContainer.remove();
-        this._map = (null as any);
+        this._map = null;
         document.removeEventListener(this._fullscreenchange, this._changeIcon);
     }
 
     _checkFullscreenSupport(): boolean {
         return !!(
             document.fullscreenEnabled ||
-            (document as any).webkitFullscreenEnabled
+            (document as {webkitFullscreenEnabled?: boolean}).webkitFullscreenEnabled
         );
     }
 
     _setupUI() {
         const button = this._fullscreenButton = DOM.create('button', (`mapboxgl-ctrl-fullscreen`), this._controlContainer);
         DOM.create('span', `mapboxgl-ctrl-icon`, button).setAttribute('aria-hidden', 'true');
-        // @ts-expect-error - TS2339 - Property 'type' does not exist on type 'HTMLElement'.
         button.type = 'button';
         this._updateTitle();
         this._fullscreenButton.addEventListener('click', this._onClickFullscreen);
@@ -102,7 +109,7 @@ class FullscreenControl {
     _changeIcon() {
         const fullscreenElement =
             document.fullscreenElement ||
-            (document as any).webkitFullscreenElement;
+            (document as WebkitDocument).webkitFullscreenElement;
 
         if ((fullscreenElement === this._container) !== this._fullscreen) {
             this._fullscreen = !this._fullscreen;
@@ -115,14 +122,16 @@ class FullscreenControl {
     _onClickFullscreen() {
         if (this._isFullscreen()) {
             if (document.exitFullscreen) {
-                (document as any).exitFullscreen();
-            } else if ((document as any).webkitCancelFullScreen) {
-                (document as any).webkitCancelFullScreen();
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                document.exitFullscreen();
+            } else if ((document as WebkitDocument).webkitCancelFullScreen) {
+                (document as WebkitDocument).webkitCancelFullScreen();
             }
         } else if (this._container.requestFullscreen) {
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
             this._container.requestFullscreen();
-        } else if ((this._container as any).webkitRequestFullscreen) {
-            (this._container as any).webkitRequestFullscreen();
+        } else if ((this._container as WebkitFullscreenElement).webkitRequestFullscreen) {
+            (this._container as WebkitFullscreenElement).webkitRequestFullscreen();
         }
     }
 }

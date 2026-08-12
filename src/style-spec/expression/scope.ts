@@ -6,12 +6,10 @@ import type {Expression} from './expression';
  */
 class Scope {
     parent: Scope | null | undefined;
-    bindings: {
-        [_: string]: Expression;
-    };
+    bindings: Record<string, Expression>;
     constructor(parent?: Scope, bindings: Array<[string, Expression]> = []) {
         this.parent = parent;
-        this.bindings = {};
+        this.bindings = Object.create(null) as Record<string, Expression>;
         for (const [name, expression] of bindings) {
             this.bindings[name] = expression;
         }

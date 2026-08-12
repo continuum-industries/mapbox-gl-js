@@ -1,42 +1,44 @@
 import {getArrayBuffer, ResourceType} from '../util/ajax';
-
 import parseGlyphPBF from './parse_glyph_pbf';
 
-import type {StyleGlyph} from './style_glyph';
+import type {StyleGlyph, StyleGlyphs} from './style_glyph';
 import type {RequestManager} from '../util/mapbox';
 import type {Callback} from '../types/callback';
 
-export default function (fontstack: string,
-                           range: number,
-                           urlTemplate: string,
-                           requestManager: RequestManager,
-                           callback: Callback<{
-                               glyphs: {
-                                   [key: number]: StyleGlyph | null;
-                               };
-                               ascender?: number;
-                               descender?: number;
-                           }>) {
+export type GlyphRange = {
+    glyphs?: StyleGlyphs;
+    ascender?: number;
+    descender?: number;
+};
+
+export async function loadGlyphRange(
+    fontstack: string,
+    range: number,
+    urlTemplate: string,
+    requestManager: RequestManager,
+    callback: Callback<GlyphRange>
+) {
     const begin = range * 256;
     const end = begin + 255;
 
-    const request = requestManager.transformRequest(
-        requestManager.normalizeGlyphsURL(urlTemplate)
-            .replace('{fontstack}', fontstack)
-            .replace('{range}', `${begin}-${end}`),
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        ResourceType.Glyphs);
+    let result: GlyphRange;
+    try {
+        const request = await requestManager.transformRequest(
+            requestManager.normalizeGlyphsURL(urlTemplate)
+                .replace('{fontstack}', fontstack)
+                .replace('{range}', `${begin}-${end}`),
+            ResourceType.Glyphs);
 
-    getArrayBuffer(request, (err?: Error | null, data?: ArrayBuffer | null) => {
-        if (err) {
-            callback(err);
-        } else if (data) {
-            const glyphs: Record<string, any> = {};
-            const glyphData = parseGlyphPBF(data);
-            for (const glyph of glyphData.glyphs) {
-                glyphs[glyph.id] = glyph;
-            }
-            callback(null, {glyphs, ascender: glyphData.ascender, descender: glyphData.descender});
+        const {data} = await getArrayBuffer(request);
+        const glyphs: Record<string, StyleGlyph> = {};
+        const glyphData = parseGlyphPBF(data);
+        for (const glyph of glyphData.glyphs) {
+            glyphs[glyph.id] = glyph;
         }
-    });
+        result = {glyphs, ascender: glyphData.ascender, descender: glyphData.descender};
+    } catch (err) {
+        // No controller: every rejection must settle the callback, or the GlyphManager dedup entry blocks forever.
+        return callback(err as Error);
+    }
+    callback(null, result);
 }

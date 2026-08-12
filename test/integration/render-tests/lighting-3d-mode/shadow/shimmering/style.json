@@ -4,7 +4,14 @@
     "test": {
       "width": 800,
       "height": 800,
-      "allowed": 0.00004
+      "pixelRatio": 0.5,
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 5e-05},
+        {"platform-tag-contains": "native", "threshold": 9.6e-05}
+      ]
     }
   },
   "lights": [

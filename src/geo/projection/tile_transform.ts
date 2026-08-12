@@ -1,12 +1,13 @@
 import Point from '@mapbox/point-geometry';
-import MercatorCoordinate, {altitudeFromMercatorZ, lngFromMercatorX, latFromMercatorY} from '../mercator_coordinate';
+import {altitudeFromMercatorZ, lngFromMercatorX, latFromMercatorY} from '../mercator_coordinate';
 import EXTENT from '../../style-spec/data/extent';
 import {vec3} from 'gl-matrix';
 import {Aabb} from '../../util/primitives';
 import {aabbForTileOnGlobe} from './globe_util';
-import assert from 'assert';
+import assert from '../../style-spec/util/assert';
 import {CanonicalTileID} from '../../source/tile_id';
 
+import type MercatorCoordinate from '../mercator_coordinate';
 import type Projection from './projection';
 import type {ProjectedPoint} from './projection';
 import type Transform from '../transform';
@@ -20,7 +21,7 @@ export type TileTransform = {
     projection: Projection;
 };
 
-export default function tileTransform(id: any, projection: Projection): TileTransform {
+export default function tileTransform(id: {z: number; x: number; y: number}, projection: Projection): TileTransform {
     if (!projection.isReprojectedInTileSpace) {
         return {scale: 1 << id.z, x: id.x, y: id.y, x2: id.x + 1, y2: id.y + 1, projection};
     }

@@ -4,10 +4,11 @@ import type {UnwrappedTileID} from '../../src/source/tile_id';
 
 export type Footprint = {
     vertices: Array<Point>;
-    indices: Array<number>;
+    indices: Uint32Array | Array<number>;
     grid: TriangleGridIndex;
     min: Point;
     max: Point;
+    buildingIds?: Set<number>;
 };
 
 export type TileFootprint = {

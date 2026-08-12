@@ -4,10 +4,9 @@
   "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
   "metadata": {
     "test": {
-      "allowed": 0.00085,
+      
       "height": 512,
       "width": 512,
-      "standardDerivatives": true,
       "operations": [
         ["wait"],
         ["addLayer", {
@@ -18,6 +17,9 @@
         ["wait"],
         ["setLayoutProperty", "eraser", "clip-layer-types", ["symbol"]],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00085}
       ]
     }
   },

@@ -1,16 +1,17 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi} from '../../util/vitest';
-import Protobuf from 'pbf';
+import {PbfReader} from 'pbf';
 import {VectorTile} from '@mapbox/vector-tile';
 import Point from '@mapbox/point-geometry';
 import segment from '../../../src/data/segment';
 import LineBucket from '../../../src/data/bucket/line_bucket';
 import LineStyleLayer from '../../../src/style/style_layer/line_style_layer';
-// eslint-disable-next-line import/no-unresolved
 import tileStub from '../../fixtures/mbsv5-6-18-23.vector.pbf?arraybuffer';
 
 // Load a line feature from fixture tile.
-const vt = new VectorTile(new Protobuf(tileStub));
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+const vt = new VectorTile(new PbfReader(tileStub));
 const feature = vt.layers.road.feature(0);
 
 function createLine(numPoints) {
@@ -110,9 +111,11 @@ test('LineBucket segmentation', () => {
 
     // first add an initial, small feature to make sure the next one starts at
     // a non-zero offset
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     bucket.addFeature({}, [createLine(10)]);
 
     // add a feature that will break across the group boundary
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     bucket.addFeature({}, [createLine(128)]);
 
     // Each polygon must fit entirely within a segment, so we expect the

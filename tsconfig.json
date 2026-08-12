@@ -1,47 +1,8 @@
 {
-  "compilerOptions": {
-    "allowJs": true,
-    "allowSyntheticDefaultImports": true,
-    "checkJs": true,
-    "esModuleInterop": true,
-    "incremental": true,
-    "isolatedModules": true,
-    "module": "ESNext",
-    "moduleDetection": "force",
-    "moduleResolution": "bundler",
-    "noEmit": true,
-    "noFallthroughCasesInSwitch": true,
-    "resolveJsonModule": true,
-    "strict": false,
-    "target": "es2022",
-    "useDefineForClassFields": false,
-    "verbatimModuleSyntax": true,
-    "lib": [
-      "ESNext",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "types": [
-      "node",
-      "jest",
-      "geojson",
-      "offscreencanvas"
-    ],
-    "baseUrl": ".",
-  },
-  "include": [
-    "./src/**/*",
-    "./test/unit/**/*",
-    "./test/util/**/*",
-    "./vitest.config.*",
-    "./rollup.config.*",
-  ],
-  "exclude": [
-    "./dist",
-    "./build",
-    "./node_modules",
-    "./src/style-spec/bin",
-    "./src/style-spec/dist",
-    "./test/util/mockServiceWorker.js"
+  "files": [],
+  "references": [
+    {"path": "./tsconfig.browser.json"},
+    {"path": "./tsconfig.strict.json"},
+    {"path": "./tsconfig.node.json"}
   ]
 }

@@ -2,9 +2,9 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body { margin: 0; padding: 0; }
         html, body, #originalMap, #newMap { height: 100%; }
@@ -39,17 +39,17 @@
 
 <body>
 
-<div id='originalMap' style="float: left"></div>
-<div id='newMap' style="float: right"></div>
-<label id='originalLabel'>Original Map</label>
-<label id='newLabel'>New Map</label>
-<div id='checkboxes'>
-    <label><input id='show-overdraw-checkbox' type='checkbox'> overdraw debug</label><br />
+<div id="originalMap" style="float: left"></div>
+<div id="newMap" style="float: right"></div>
+<label id="originalLabel">Original mapboxgl.Map</label>
+<label id="newLabel">New mapboxgl.Map</label>
+<div id="checkboxes">
+    <label><input id="show-overdraw-checkbox" type="checkbox"> overdraw debug</label><br />
 </div>
 
-<script src='../dist/mapbox-gl-dev.js'></script>
-<script src='../debug/access_token_generated.js'></script>
-<script>
+<script type="module">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
 
 function localizeLayers(map) {
     map.on('load', function() {
@@ -65,6 +65,7 @@ function localizeLayers(map) {
 }
 
 var originalMap = window.originalMap = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'originalMap',
     zoom: 8.8,
     center: [121.574, 31.1489],
@@ -76,6 +77,7 @@ var originalMap = window.originalMap = new mapboxgl.Map({
 localizeLayers(originalMap);
 
 var newMap = window.newMap = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'newMap',
     zoom: 8.8,
     center: [121.574, 31.1489],

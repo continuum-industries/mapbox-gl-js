@@ -2,6 +2,7 @@
   "version": 8,
   "metadata": {
     "test": {
+      "spriteFormat": "raster",
       "width": 512,
       "height": 512,
       "operations": [
@@ -22,6 +23,9 @@
         ["moveLayer", "road_major", "road_minor"],
         ["moveLayer", "contour-line", "building"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "https://github.com/mapbox/mapbox-gl-native/issues/10412"}
       ]
     }
   },

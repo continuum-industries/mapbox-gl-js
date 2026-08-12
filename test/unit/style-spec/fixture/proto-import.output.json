@@ -1,0 +1,6 @@
+[
+  {
+    "message": "imports[0].id: import id can't be \"__proto__\"",
+    "line": 4
+  }
+]

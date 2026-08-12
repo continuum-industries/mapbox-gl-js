@@ -1,11 +1,11 @@
 import StyleLayer from '../style_layer';
 import browser from '../../util/browser';
-import properties from './raster_particle_style_layer_properties';
-import {PossiblyEvaluated} from '../properties';
+import {getLayoutProperties, getPaintProperties} from './raster_particle_style_layer_properties';
 import {renderColorRamp} from '../../util/color_ramp';
-import {RGBAImage} from '../../util/image';
 
-import type {ConfigOptions} from "../properties";
+import type {RuntimeModuleType} from '../style_layer';
+import type {PossiblyEvaluated, ConfigOptions} from '../properties';
+import type {RGBAImage} from '../../util/image';
 import type {Map as MapboxMap} from '../../ui/map';
 import type {PaintProps} from './raster_particle_style_layer_properties';
 import type {LayerSpecification} from '../../style-spec/types';
@@ -13,30 +13,56 @@ import type Texture from '../../render/texture';
 import type Framebuffer from '../../gl/framebuffer';
 import type SourceCache from '../../source/source_cache';
 import type {LUT} from "../../util/lut";
+import type {ProgramName} from '../../render/program';
 
 const COLOR_RAMP_RES = 256;
 
 class RasterParticleStyleLayer extends StyleLayer {
-    paint: PossiblyEvaluated<PaintProps>;
+    override type!: 'raster-particle';
+
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     // Shared rendering resources
 
-    colorRamp: RGBAImage;
+    colorRamp!: RGBAImage;
     colorRampTexture: Texture | null | undefined;
-    tileFramebuffer: Framebuffer;
-    particleFramebuffer: Framebuffer;
-    particlePositionRGBAImage: RGBAImage;
+    tileFramebuffer!: Framebuffer;
+    particleFramebuffer!: Framebuffer;
+    particlePositionRGBAImage!: RGBAImage;
 
     previousDrawTimestamp: number | null | undefined;
     lastInvalidatedAt: number;
 
     constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        const properties = {
+            layout: getLayoutProperties(),
+            paint: getPaintProperties()
+        };
         super(layer, properties, scope, lut, options);
         this._updateColorRamp();
         this.lastInvalidatedAt = browser.now();
     }
 
-    onRemove(_: MapboxMap): void {
+    override mayUse(type: RuntimeModuleType): boolean {
+        return type === 'HD';
+    }
+
+    override _clear() {
+        if (this.colorRampTexture) {
+            this.colorRampTexture.destroy();
+            this.colorRampTexture = null;
+        }
+        if (this.tileFramebuffer) {
+            this.tileFramebuffer.destroy();
+            this.tileFramebuffer = null;
+        }
+        if (this.particleFramebuffer) {
+            this.particleFramebuffer.destroy();
+            this.particleFramebuffer = null;
+        }
+    }
+
+    override onRemove(_: MapboxMap): void {
         if (this.colorRampTexture) {
             this.colorRampTexture.destroy();
         }
@@ -55,19 +81,19 @@ class RasterParticleStyleLayer extends StyleLayer {
         return !!expr.value;
     }
 
-    getProgramIds(): Array<string> {
+    override getProgramIds(): ProgramName[] {
         return ['rasterParticle'];
     }
 
-    hasOffscreenPass(): boolean {
+    override hasOffscreenPass(): boolean {
         return this.visibility !== 'none';
     }
 
-    isDraped(_?: SourceCache | null): boolean {
+    override isDraped(_?: SourceCache | null): boolean {
         return false;
     }
 
-    _handleSpecialPaintPropertyUpdate(name: string) {
+    override _handleSpecialPaintPropertyUpdate(name: string) {
         if (name === 'raster-particle-color' || name === 'raster-particle-max-speed') {
             this._updateColorRamp();
             this._invalidateAnimationState();
@@ -82,13 +108,13 @@ class RasterParticleStyleLayer extends StyleLayer {
         if (!this.hasColorMap()) return;
 
         const expression = this._transitionablePaint._values['raster-particle-color'].value.expression;
-        const end = this._transitionablePaint._values['raster-particle-max-speed'].value.expression.evaluate({zoom: 0});
+        const end: number = this._transitionablePaint._values['raster-particle-max-speed'].value.expression.evaluate({zoom: 0});
 
         this.colorRamp = renderColorRamp({
             expression,
             evaluationKey: 'rasterParticleSpeed',
             image: this.colorRamp,
-            clips: [{start:0, end}],
+            clips: [{start: 0, end}],
             resolution: COLOR_RAMP_RES,
         });
         this.colorRampTexture = null;
@@ -96,6 +122,10 @@ class RasterParticleStyleLayer extends StyleLayer {
 
     _invalidateAnimationState() {
         this.lastInvalidatedAt = browser.now();
+    }
+
+    override tileCoverLift(): number {
+        return this.paint.get('raster-particle-elevation');
     }
 }
 

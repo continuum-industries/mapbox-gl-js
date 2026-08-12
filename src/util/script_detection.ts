@@ -253,6 +253,91 @@ export function charHasNeutralVerticalOrientation(char: number): boolean {
 }
 
 /**
+ * Returns true if the given Unicode codepoint should be drawn rotated when the line
+ * is oriented vertically. These codepoints have a Neutral Vertical Orientation and
+ * will return true when checked with the `hasNeutralVerticalOrientation` function.
+ *
+ *  This check currently covers only a limited set of Unicode codepoints but can be
+ *  extended in the future if needed. The decision to rotate a character depends on
+ *  regional conventions and the intended usage. Determining whether glyph rotation
+ * is necessary—and selecting the appropriate vertical glyph—requires consideration
+ * of these conventions.
+ *
+ * Based on https://www.unicode.org/Public/vertical/revision-17/VerticalOrientation-17.txt
+ *
+ * Currently, this check only covers CJK Symbols and Punctuation, as well as Katakana.
+ * For characters with a `Tr` (Transformed typographically, with fallback to Rotated) Vertical Orientation, the final
+ * decision follows web rendering conventions.
+ *
+ * In general, characters with `R` (Rotated 90 degrees clockwise compared to the code charts) or `Tr` orientations can
+ * be rotated in vertical writing mode. However, regional conventions also influence whether rotation is appropriate.
+ * For now, only a limited set of characters is covered, but we can extend the range if needed.
+ */
+
+export function needsRotationInVerticalMode(char: number): boolean {
+    // CJK Symbols and Punctuation range
+    // Characters in the range U+3014 - U+301F (`u'〔'` to `u'〟'`) are all classified as `Tr`.
+    // However, only U+3014 - U+3017 (`u'〔'` to `u'〗'`) have dedicated vertical replacements.
+    // The vertical appearance of the remaining glyphs depends on fonts and regional conventions.
+
+    // A proposed update to vertical writing mode is outlined in:
+    // https://www.unicode.org/reports/tr50/tr50-32.html#vertical_alternates
+    // This proposal suggests changes that slightly differ from current web rendering behavior.
+    // Since it is still in draft status, we currently adhere to web rendering results.
+    // To ensure compatibility, only those commonly accepted as rotated in vertical mode are marked as such.
+    if (char === 0x3013 /* geta mark */ ||
+        char === 0x3018 /* left white tortoise shell bracket */ ||
+        char === 0x3019 /* right white tortoise shell bracket */ ||
+        char === 0x301C /* wave dash */) {
+        return true;
+    }
+
+    // Katakana range
+    if (char === 0x30A0 /* katakana-hiragana double hyphen */ ||
+        char === 0x30FC /* katakana-hiragana prolonged sound mark */) {
+        return true;
+    }
+
+    // Basic directional arrows (U+2190–U+2193)
+    // ← and → were previously substituted to ↑ and ↓ via verticalize_punctuation.ts;
+    // rotation produces the same visual result (rotating ← 90° CW = ↑ appearance),
+    // so the substitution was removed in favour of handling all four here.
+    if (char >= 0x2190 /* leftwards arrow */ && char <= 0x2193 /* downwards arrow */) {
+        return true;
+    }
+
+    // General Punctuation — horizontal dashes and leaders defined in Shift JIS 2-byte code
+    // 0x2015 (HORIZONTAL BAR) is intentionally excluded here even though UAX #50 assigns it vo=R.
+    // It is the substitution target for both U+007C `|` and U+FF5C `｜` in verticalize_punctuation.ts
+    if (char === 0x2010 /* hyphen */ ||
+        char === 0x2025 /* two dot leader */) {
+        return true;
+    }
+
+    // Mathematical Operators
+    if (char === 0x2225 /* parallel to */) {
+        return true;
+    }
+
+    // Box Drawing characters — the whole block rotates so lines connect correctly in vertical labels
+    if (char >= 0x2500 /* box drawings light horizontal */ && char <= 0x254B /* box drawings heavy vertical and horizontal */) {
+        return true;
+    }
+
+    // Halfwidth and Fullwidth Forms — characters defined in Shift JIS 2-byte code that should rotate
+    if (char === 0xFF0E /* fullwidth full stop */ ||
+        char === 0xFF1D /* fullwidth equals sign */ ||
+        char === 0xFF5E /* fullwidth tilde */) {
+        return true;
+    }
+    if (char === 0xFFE3 /* fullwidth macron */) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * Returns true if the given Unicode codepoint identifies a character with
  * rotated orientation.
  *

@@ -1,5 +1,4 @@
-import assert from 'assert';
-
+import assert from '../../util/assert';
 import {checkSubtype, ValueType} from '../types';
 import ResolvedImage from '../types/resolved_image';
 
@@ -19,15 +18,15 @@ class Coalesce implements Expression {
 
     static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Coalesce | null | undefined {
         if (args.length < 2) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Coalesce'.
-            return context.error("Expectected at least one argument.");
+            context.error("Expectected at least one argument.");
+            return null;
         }
-        let outputType: Type = (null as any);
+        let outputType: Type | null = null;
         const expectedType = context.expectedType;
         if (expectedType && expectedType.kind !== 'value') {
             outputType = expectedType;
         }
-        const parsedArgs = [];
+        const parsedArgs: Expression[] = [];
 
         for (const arg of args.slice(1)) {
             const parsed = context.parse(arg, 1 + parsedArgs.length, outputType, undefined, {typeAnnotation: 'omit'});
@@ -47,15 +46,17 @@ class Coalesce implements Expression {
 
         return needsAnnotation ?
             new Coalesce(ValueType, parsedArgs) :
-            new Coalesce((outputType as any), parsedArgs);
+            new Coalesce(outputType, parsedArgs);
     }
 
-    evaluate(ctx: EvaluationContext): any | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    evaluate(ctx: EvaluationContext): any {
         let result = null;
         let argCount = 0;
-        let firstImage;
+        let firstImage: ResolvedImage | undefined;
         for (const arg of this.args) {
             argCount++;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             result = arg.evaluate(ctx);
             // we need to keep track of the first requested image in a coalesce statement
             // if coalesce can't find a valid image, we return the first image so styleimagemissing can fire
@@ -85,8 +86,7 @@ class Coalesce implements Expression {
     }
 
     serialize(): SerializedExpression {
-        const serialized = ["coalesce"];
-        // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
+        const serialized: Array<SerializedExpression> = ["coalesce"];
         this.eachChild(child => { serialized.push(child.serialize()); });
         return serialized;
     }

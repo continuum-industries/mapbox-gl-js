@@ -1,22 +1,22 @@
-import FillExtrusionBucket from '../data/bucket/fill_extrusion_bucket';
-import StyleLayer from '../style/style_layer';
 import EXTENT from '../style-spec/data/extent';
-import SymbolBucket from '../data/bucket/symbol_bucket';
-import FillExtrusionStyleLayer from '../style/style_layer/fill_extrusion_style_layer';
-import {OverscaledTileID} from './tile_id';
 
+import type FillExtrusionBucket from '../data/bucket/fill_extrusion_bucket';
+import type {TypedStyleLayer} from '../style/style_layer/typed_style_layer';
+import type SymbolBucket from '../data/bucket/symbol_bucket';
+import type {OverscaledTileID} from './tile_id';
 import type Style from '../style/style';
 import type Tiled3dModelBucket from '../../3d-style/data/bucket/tiled_3d_model_bucket';
 import type {Bucket} from '../data/bucket';
-import ModelStyleLayer from '../../3d-style/style/style_layer/model_style_layer';
+import type BuildingBucket from '../../3d-style/data/bucket/building_bucket';
 
 class BuildingIndex {
     style: Style;
     layers: Array<{
-        layer: StyleLayer;
+        layer: TypedStyleLayer;
         visible: boolean;
+        visibilityChanged: boolean;
     }>;
-    currentBuildingBuckets: Array<{
+    currentBuildingBuckets!: Array<{
         bucket: Bucket | null | undefined;
         tileID: OverscaledTileID;
         verticalScale: number;
@@ -34,13 +34,11 @@ class BuildingIndex {
         const visible = false, visibilityChanged = false;
         for (const layerId in this.style._mergedLayers) {
             const layer = this.style._mergedLayers[layerId];
-            if (layer.type === 'fill-extrusion') {
-                // @ts-expect-error - TS2353 - Object literal may only specify known properties, and 'visibilityChanged' does not exist in type '{ layer: StyleLayer; visible: boolean; }'.
+            if (layer.type === 'fill-extrusion' || layer.type === 'building') {
                 this.layers.push({layer, visible, visibilityChanged});
             } else if (layer.type === 'model') {
                 const source = this.style.getLayerSource(layer);
                 if (source && source.type === 'batched-model') {
-                    // @ts-expect-error - TS2353 - Object literal may only specify known properties, and 'visibilityChanged' does not exist in type '{ layer: StyleLayer; visible: boolean; }'.
                     this.layers.push({layer, visible, visibilityChanged});
                 }
             }
@@ -54,11 +52,11 @@ class BuildingIndex {
             const layer = l.layer;
             let visible = false;
             if (layer.type === 'fill-extrusion') {
-
-                visible = !layer.isHidden(zoom) && (layer as FillExtrusionStyleLayer).paint.get('fill-extrusion-opacity') > 0.0;
+                visible = !layer.isHidden(zoom) && layer.paint.get('fill-extrusion-opacity') > 0.0;
+            } else if (layer.type === 'building') {
+                visible = !layer.isHidden(zoom) && layer.paint.get('building-opacity') > 0.0;
             } else if (layer.type === 'model') {
-
-                visible = !layer.isHidden(zoom) && (layer as ModelStyleLayer).paint.get('model-opacity') > 0.0;
+                visible = !layer.isHidden(zoom) && layer.paint.get('model-opacity').constantOr(1.0) > 0.0;
             }
             this.layersGotHidden = this.layersGotHidden || (!visible && l.visible);
             l.visible = visible;
@@ -74,18 +72,20 @@ class BuildingIndex {
 
             let verticalScale = 1;
             if (layer.type === 'fill-extrusion') {
-
-                verticalScale = l.visible ? (layer as FillExtrusionStyleLayer).paint.get('fill-extrusion-vertical-scale') : 0;
+                verticalScale = l.visible ? layer.paint.get('fill-extrusion-vertical-scale') : 0;
+            } else if (layer.type === 'building') {
+                verticalScale = l.visible ? layer.paint.get('building-vertical-scale') : 0;
             }
 
             let tile = sourceCache ? sourceCache.getTile(tileID) : null;
 
-            if (!tile && sourceCache && tileID.canonical.z > sourceCache.getSource().minzoom) {
-                let id = tileID.scaledTo(Math.min(sourceCache.getSource().maxzoom, tileID.overscaledZ - 1));
-                while (id.overscaledZ >= sourceCache.getSource().minzoom) {
-                    tile = sourceCache.getTile(id);
-                    if (tile || id.overscaledZ === 0) break;
-                    id = id.scaledTo(id.overscaledZ - 1);
+            if (!tile && sourceCache) {
+                for (const cachedTileKey in sourceCache._tiles) {
+                    const cachedTile = sourceCache._tiles[cachedTileKey];
+                    if (tileID.canonical.isChildOf(cachedTile.tileID.canonical)) {
+                        tile = cachedTile;
+                        break;
+                    }
                 }
             }
             this.currentBuildingBuckets.push({bucket: tile ? tile.getBucket(layer) : null, tileID: tile ? tile.tileID : tileID, verticalScale});
@@ -114,6 +114,28 @@ class BuildingIndex {
         }
     }
 
+    /**
+     * Returns true if any building layer tracked by this index is backed by
+     * the source cache with the given `sourceCacheId`.  Used to detect when a
+     * fill-extrusion tile has finished loading so that a full label-placement
+     * pass can be requested: symbol z-offsets depend on building heights, so
+     * placement must re-run whenever new building data arrives.
+     *
+     * @param {string} sourceCacheId - The FQID of the source cache to check.
+     * @returns {boolean} `true` if a tracked building layer uses this cache.
+     * @example
+     * if (buildingIndex.hasLayerForSourceCache(event.sourceCacheId)) { ... }
+     */
+    hasLayerForSourceCache(sourceCacheId: string): boolean {
+        for (const {layer} of this.layers) {
+            const sourceCache = this.style.getLayerSourceCache(layer);
+            if (sourceCache && sourceCache.id === sourceCacheId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     _mapCoordToOverlappingTile(
         tid: OverscaledTileID,
         x: number,
@@ -127,7 +149,7 @@ class BuildingIndex {
         let tileY = y;
         const tileID = targetTileID;
         if (tid.canonical.z !== tileID.canonical.z) {
-            const id =  tileID.canonical;
+            const id = tileID.canonical;
             const zDiff = 1. / (1 << (tid.canonical.z - id.z));
             tileX = ((x + tid.canonical.x * EXTENT) * zDiff - id.x * EXTENT) | 0;
             tileY = ((y + tid.canonical.y * EXTENT) * zDiff - id.y * EXTENT) | 0;
@@ -136,20 +158,20 @@ class BuildingIndex {
     }
 
     _getHeightAtTileOffset(tid: OverscaledTileID, x: number, y: number): number {
-        let availableHeight;
-        let maxFillExtrusionHeight;
+        let availableHeight: number | undefined;
+        let maxFillExtrusionHeight: number | undefined;
         // use FE data when landmark height is not available. Instead of assuming order, process
         // fill extrusions before landmarks
         for (let i = 0; i < this.layers.length; ++i) {
             const l = this.layers[i];
             const layer = l.layer;
-            if (layer.type !== 'fill-extrusion') continue;
+            if (layer.type !== 'fill-extrusion' && layer.type !== 'building') continue;
             const {bucket, tileID, verticalScale} = this.currentBuildingBuckets[i];
             if (!bucket) continue;
 
             const {tileX, tileY} = this._mapCoordToOverlappingTile(tid, x, y, tileID);
 
-            const b: FillExtrusionBucket = (bucket as any);
+            const b = bucket as FillExtrusionBucket | BuildingBucket;
             const heightData = b.getHeightAtTileCoord(tileX, tileY);
             if (!heightData || heightData.height === undefined) continue;
             if (heightData.hidden) { // read height, even if fill extrusion is hidden, until it is used for tiled 3D models.
@@ -171,7 +193,7 @@ class BuildingIndex {
 
             const {tileX, tileY} = this._mapCoordToOverlappingTile(tid, x, y, tileID);
 
-            const b: Tiled3dModelBucket = (bucket as any);
+            const b = bucket as Tiled3dModelBucket;
             const heightData = b.getHeightAtTileCoord(tileX, tileY);
             if (!heightData || heightData.hidden) continue;
             if (heightData.height === undefined && availableHeight !== undefined) return Math.min(heightData.maxHeight, availableHeight) * heightData.verticalScale;

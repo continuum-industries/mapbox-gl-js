@@ -5,10 +5,19 @@
       "collisionDebug": true,
       "width": 512,
       "height": 512,
-      "allowed": 0.005,
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-linux", "reason": "Antialiasing"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky"},
+        {"platform-tag-contains": "native-android", "reason": "Flaky"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.005}
       ]
     }
   },

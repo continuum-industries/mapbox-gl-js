@@ -1,6 +1,6 @@
 import {isExpressionFilter} from './index';
 
-import type {FilterSpecification} from '../types';
+import type {FilterSpecification, ExpressionSpecification} from '../types';
 
 type ExpectedTypes = {
     [_: string]: 'string' | 'number' | 'boolean';
@@ -70,7 +70,7 @@ function _convertFilter(filter: FilterSpecification, expectedTypes: ExpectedType
     const op = filter[0];
     if (filter.length <= 1) return (op !== 'any');
 
-    let converted;
+    let converted: unknown;
 
     if (
         op === '==' ||
@@ -80,29 +80,39 @@ function _convertFilter(filter: FilterSpecification, expectedTypes: ExpectedType
         op === '<=' ||
         op === '>='
     ) {
-        const [, property, value] = (filter as any);
+        const [, property, value] = filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         converted = convertComparisonOp(property, value, op, expectedTypes);
     } else if (op === 'any') {
-        const children = (filter as any).slice(1).map(f => {
+        const children = filter.slice(1).map(f => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const types: Record<string, any> = {};
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             const child = _convertFilter(f, types);
+
             const typechecks = runtimeTypeChecks(types);
             return typechecks === true ? child : ['case', typechecks, child, false];
-        });
+        }) as ExpressionSpecification;
         return ['any'].concat(children);
     } else if (op === 'all') {
-        const children = (filter as any).slice(1).map(f => _convertFilter(f, expectedTypes));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-argument
+        const children: any[] = (filter).slice(1).map(f => _convertFilter(f, expectedTypes));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return children.length > 1 ? ['all'].concat(children) : [].concat(...children);
     } else if (op === 'none') {
-        return ['!', _convertFilter(['any'].concat((filter as any).slice(1)), {})];
+        return ['!', _convertFilter(['any'].concat((filter).slice(1)), {})];
     } else if (op === 'in') {
-        converted = convertInOp((filter[1] as any), filter.slice(2));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        converted = convertInOp((filter[1]), filter.slice(2));
     } else if (op === '!in') {
-        converted = convertInOp((filter[1] as any), filter.slice(2), true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        converted = convertInOp((filter[1]), filter.slice(2), true);
     } else if (op === 'has') {
-        converted = convertHasOp((filter[1] as any));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        converted = convertHasOp((filter[1]));
     } else if (op === '!has') {
-        converted = ['!', convertHasOp((filter[1] as any))];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        converted = ['!', convertHasOp((filter[1]))];
     } else {
         converted = true;
     }
@@ -118,19 +128,20 @@ function _convertFilter(filter: FilterSpecification, expectedTypes: ExpectedType
 //   ['==', ['typeof', ['get', 'name'], 'string']],
 //   ['==', ['typeof', ['get', 'population'], 'number]]
 // ]
-function runtimeTypeChecks(expectedTypes: ExpectedTypes) {
-    const conditions = [];
+function runtimeTypeChecks(expectedTypes: ExpectedTypes): true | unknown[] {
+    const conditions: unknown[] = [];
     for (const property in expectedTypes) {
         const get = property === '$id' ? ['id'] : ['get', property];
         conditions.push(['==', ['typeof', get], expectedTypes[property]]);
     }
     if (conditions.length === 0) return true;
-    if (conditions.length === 1) return conditions[0];
-    return ['all'].concat(conditions);
+    if (conditions.length === 1) return conditions[0] as unknown[];
+    return (['all'] as unknown[]).concat(conditions);
 }
 
-function convertComparisonOp(property: string, value: any, op: string, expectedTypes?: ExpectedTypes | null) {
-    let get;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function convertComparisonOp(property: string, value: any, op: string, expectedTypes?: ExpectedTypes | null): unknown {
+    let get: unknown[];
     if (property === '$type') {
         return [op, ['geometry-type'], value];
     } else if (property === '$id') {
@@ -140,7 +151,7 @@ function convertComparisonOp(property: string, value: any, op: string, expectedT
     }
 
     if (expectedTypes && value !== null) {
-        const type = ((typeof value) as any);
+        const type = typeof value as 'string' | 'number' | 'boolean';
         expectedTypes[property] = type;
     }
 
@@ -161,10 +172,10 @@ function convertComparisonOp(property: string, value: any, op: string, expectedT
     return [op, get, value];
 }
 
-function convertInOp(property: string, values: Array<any>, negate: boolean = false) {
+function convertInOp(property: string, values: Array<unknown>, negate: boolean = false) {
     if (values.length === 0) return negate;
 
-    let get;
+    let get: string[];
     if (property === '$type') {
         get = ['geometry-type'];
     } else if (property === '$id') {
@@ -192,9 +203,9 @@ function convertInOp(property: string, values: Array<any>, negate: boolean = fal
         return ['match', get, uniqueValues, !negate, negate];
     }
 
-    return [ negate ? 'all' : 'any' ].concat(
-        // @ts-expect-error - TS2769 - No overload matches this call.
-        values.map(v => [negate ? '!=' : '==', get, v])
+    return [negate ? 'all' : 'any'].concat(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        values.map(v => [negate ? '!=' : '==', get, v]) as any[]
     );
 }
 

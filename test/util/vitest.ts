@@ -1,17 +1,18 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
-import {describe, test, expect, beforeEach, beforeAll, afterEach, afterAll, vi} from 'vitest';
+import {describe, test, expect, assert, beforeEach, beforeAll, afterEach, afterAll, vi} from 'vitest';
 import {Map} from '../../src/ui/map';
-import {extend} from '../../src/util/util';
 
 export function waitFor(evented, event) {
     return new Promise(resolve => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         evented.once(event, resolve);
     });
 }
 
-export function createStyleJSON(options) {
+export function createStyleJSON(options = {}) {
     return {
-        version: 8,
+        version: 8 as const,
         sources: {},
         layers: [],
         ...options
@@ -30,10 +31,12 @@ export function doneAsync() {
     });
 
     const withAsync = (fn) => {
-        return async (...args) => {
+        return (...args) => {
             try {
-                await fn(...args, doneRef);
-            } catch (err: any) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+                return fn(...args, doneRef);
+            } catch (err) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 doneRef.reject(err);
             }
         };
@@ -46,13 +49,39 @@ export function doneAsync() {
     };
 }
 
-export function createMap(options, callback) {
+const _createdMaps: Map[] = [];
+let _testBaseline = 0;
+
+// Called from `beforeEach` in test/unit/setup.ts to snapshot the map-registry
+// length before each test. Any maps created during the test are above this
+// baseline; `beforeAll`-owned shared maps sit below it and are preserved.
+export function markTestBaseline() {
+    _testBaseline = _createdMaps.length;
+}
+
+// Called from `afterEach` to remove maps created during the just-finished test.
+// Triggers `loseContext()` via `Map.remove()` so the GPU-side WebGL context
+// releases promptly instead of waiting on iframe GC. `prewarm()` in setup.ts
+// keeps the shared worker pool alive across tests, so `release()` here is
+// cheap (it only decrements the active-map set, doesn't terminate workers).
+export function cleanupTestMaps() {
+    for (let i = _createdMaps.length - 1; i >= _testBaseline; i--) {
+        _createdMaps[i].remove();
+    }
+    _createdMaps.length = _testBaseline;
+}
+
+export function createMap(options?, callback?: (err: any, map: Map) => void) {
     const container = window.document.createElement('div');
     const defaultOptions = {
         container,
         interactive: false,
         attributionControl: false,
         performanceMetricsCollection: false,
+        // Unit tests render single frames or none at all — precompile's idle-scheduled work and
+        // sweeps interact poorly with fake timers and don't exercise behavior these tests cover.
+        // Tests that specifically target the precompiler opt in by passing `precompilePrograms: true`.
+        precompilePrograms: false,
         trackResize: true,
         testMode: true,
         style: {
@@ -65,10 +94,13 @@ export function createMap(options, callback) {
     Object.defineProperty(container, 'getBoundingClientRect',
         {value: () => ({height: 200, width: 200}), configurable: true});
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (!options || !options.skipCSSStub) vi.spyOn(Map.prototype, '_detectMissingCSS').mockImplementation(() => {});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     if (options && options.deleteStyle) delete defaultOptions.style;
 
-    const map = new Map(extend(defaultOptions, options));
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    const map = new Map(Object.assign(defaultOptions, options));
     if (callback) {
         map.on('load', () => {
             callback(null, map);
@@ -76,6 +108,7 @@ export function createMap(options, callback) {
     }
 
     map._authenticate = () => {};
+    _createdMaps.push(map);
 
     return map;
 }
@@ -87,4 +120,4 @@ export function equalWithPrecision(expected, actual, multiplier) {
     return expect(expectedRounded).toEqual(actualRounded);
 }
 
-export {describe, test, beforeEach, beforeAll, afterEach, afterAll, expect, vi};
+export {describe, test, beforeEach, beforeAll, afterEach, afterAll, expect, assert, vi};

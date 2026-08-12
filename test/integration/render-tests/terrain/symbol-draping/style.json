@@ -3,6 +3,7 @@
   "sprite": "local://sprites/sprite",
   "metadata": {
     "test": {
+      "spriteFormat": "raster",
       "height": 256,
       "operations": [
         ["wait"],
@@ -12,6 +13,9 @@
         }],
         ["wait"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web", "reason": "Needs port from Native https://github.com/mapbox/mapbox-gl-js/issues/10365"}
       ]
     }
   },

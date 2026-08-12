@@ -2,10 +2,8 @@
   "version": 8,
   "metadata": {
     "test": {
-      "standardDerivatives": true,
       "height": 512,
       "width": 512,
-      "allowed": 0.0009,
       "operations": [
         ["wait"],
         [
@@ -16,6 +14,9 @@
           "Expect reduced vertex count due to precise frustum culling. ~2/4 * 112399"
         ],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0009}
       ]
     }
   },

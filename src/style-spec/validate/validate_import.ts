@@ -1,13 +1,27 @@
-import extend from '../util/extend';
 import validateStyle from './validate_style';
 import validateObject from './validate_object';
 import ValidationError from '../error/validation_error';
 import {unbundle} from '../util/unbundle_jsonlint';
+import {isObject} from '../util/get_type';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
 
-export default function validateImport(options: ValidationOptions): ValidationError[] {
+type ImportValidatorOptions = {
+    key: string;
+    value: unknown;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
+};
+
+export default function validateImport(options: ImportValidatorOptions): ValidationError[] {
+    const key = options.key;
     const {value, styleSpec} = options;
+
+    if (!isObject(value)) {
+        return [new ValidationError(key, value, `import must be an object`)];
+    }
+
     const {data, ...importSpec} = value;
 
     // Preserve __line__ from the value
@@ -16,15 +30,24 @@ export default function validateImport(options: ValidationOptions): ValidationEr
         enumerable: false
     });
 
-    let errors = validateObject(extend({}, options, {
+    let errors = validateObject({
+        ...options,
         value: importSpec,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         valueSpec: styleSpec.import
-    }));
+    });
 
     // Empty string is reserved for the root style id
     if (unbundle(importSpec.id) === '') {
         const key = `${options.key}.id`;
         errors.push(new ValidationError(key, importSpec, `import id can't be an empty string`));
+    }
+
+    // Reject reserved prototype-pollution keys
+    const importId = unbundle(importSpec.id);
+    if (importId === '__proto__' || importId === 'constructor' || importId === 'prototype') {
+        const key = `${options.key}.id`;
+        errors.push(new ValidationError(key, importSpec, `import id can't be "${String(importId)}"`));
     }
 
     if (data) {

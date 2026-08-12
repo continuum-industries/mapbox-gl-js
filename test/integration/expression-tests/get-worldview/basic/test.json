@@ -1,0 +1,18 @@
+{
+    "expression": ["worldview"],
+    "inputs": [
+      [{"worldview": "AD"}, {}],
+      [{}, {}]
+    ],
+    "expected": {
+      "compiled": {
+        "result": "success",
+        "isFeatureConstant": true,
+        "isZoomConstant": true,
+        "type": "string"
+      },
+      "outputs": ["AD", ""],
+      "serialized": ["worldview"]
+    }
+  }
+  

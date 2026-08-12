@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../../util/vitest';
 import Transform from '../../../../src/geo/transform';
@@ -70,6 +71,7 @@ describe('Globe', () => {
                 },
                 getForTilePoints(tileID, points) {
                     for (const p of points) {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                         p[2] = elevation;
                     }
                     return true;
@@ -91,6 +93,7 @@ describe('Globe', () => {
             tileSize: 512,
         };
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         const byKey = (a, b) => a.key - b.key;
 
         test('tessellate fewer tiles near pole', () => {

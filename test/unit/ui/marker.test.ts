@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {
     describe,
@@ -29,6 +30,16 @@ test('Marker uses a default marker element with an appropriate offset', () => {
     expect(marker.getOffset().equals(new Point(0, -14))).toBeTruthy();
 });
 
+test('Marker retain default options for passed undefined', () => {
+    const marker = new Marker({
+        rotation: undefined,
+        altitude: undefined,
+    });
+
+    expect(marker.getRotation()).toEqual(0);
+    expect(marker.getAltitude()).toEqual(0);
+});
+
 test('Marker uses a default marker element with custom color', () => {
     const marker = new Marker({color: '#123456'});
     expect(marker.getElement().innerHTML.includes('#123456')).toBeTruthy();
@@ -50,20 +61,26 @@ test('Marker uses a default marker element with custom scale', () => {
 
     // initial dimensions of svg element
     expect(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         defaultMarker.getElement().firstChild.getAttribute('height').includes('41')
     ).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     expect(defaultMarker.getElement().firstChild.getAttribute('width').includes('27')).toBeTruthy();
 
     // (41 * 0.8) = 32.8, (27 * 0.8) = 21.6
     expect(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         smallerMarker.getElement().firstChild.getAttribute('height').includes(`32.8`)
     ).toBeTruthy();
     expect(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         smallerMarker.getElement().firstChild.getAttribute('width').includes(`21.6`)
     ).toBeTruthy();
 
     // (41 * 2) = 82, (27 * 2) = 54
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     expect(largerMarker.getElement().firstChild.getAttribute('height').includes('82')).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     expect(largerMarker.getElement().firstChild.getAttribute('width').includes('54')).toBeTruthy();
 });
 
@@ -276,6 +293,7 @@ test('Enter key on Marker opens a popup that was closed', () => {
     // popup not initially open
     expect(marker.getPopup().isOpen()).toBeFalsy();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.keypress(marker.getElement(), {code: 'Enter'});
 
     // popup open after Enter keypress
@@ -308,6 +326,7 @@ test('Space key on Marker opens a popup that was closed', () => {
     // popup not initially open
     expect(marker.getPopup().isOpen()).toBeFalsy();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.keypress(marker.getElement(), {code: 'Space'});
 
     // popup open after Enter keypress
@@ -410,14 +429,22 @@ test('Popup offsets around default Marker', () => {
         .addTo(map);
     map._domRenderTaskQueue.run();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset.bottom[1] < 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset.top[1] === 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset.left[0] > 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset.right[0] < 0).toBeTruthy();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset['bottom-left'][0] > 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset['bottom-left'][1] < 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset['bottom-right'][0] < 0).toBeTruthy();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(marker.getPopup().options.offset['bottom-right'][1] < 0).toBeTruthy();
 
     expect(marker.getPopup().options.offset['top-left']).toEqual([0, 0]);
@@ -436,7 +463,9 @@ test('Popup anchors around default Marker', () => {
     marker.togglePopup();
 
     const mapHeight = map._containerHeight;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const markerTop = -marker.getPopup().options.offset.bottom[1]; // vertical distance from tip of marker to the top in pixels
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const markerRight = -marker.getPopup().options.offset.right[0]; // horizontal distance from the tip of the marker to the right in pixels
 
     // give the popup some height
@@ -565,12 +594,14 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el, {clientX: 0, clientY: 0});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 2.9, clientY: 0});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -578,18 +609,21 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     expect(el.style.pointerEvents).toEqual('');
 
     // above map's click tolerance
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 3.1, clientY: 0});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(1);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 0, clientY: 0});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
@@ -614,12 +648,14 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el, {clientX: 0, clientY: 0});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 3.9, clientY: 0});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -627,18 +663,21 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     expect(el.style.pointerEvents).toEqual('');
 
     // above map's click tolerance
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 4.1, clientY: 0});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(1);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 0, clientY: 0});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
@@ -663,16 +702,19 @@ test('Marker with draggable:false does not fire dragstart, drag, and dragend eve
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el, {clientX: 0, clientY: 0});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 3, clientY: 1});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -696,12 +738,14 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchstart(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 2.9, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -709,18 +753,21 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     expect(el.style.pointerEvents).toEqual('');
 
     // above map's click tolerance
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 3.1, clientY: 0})]});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(1);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchend(el);
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
@@ -745,12 +792,14 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchstart(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 3.9, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -758,18 +807,21 @@ test('Marker with draggable:true fires dragstart, drag, and dragend events at ap
     expect(el.style.pointerEvents).toEqual('');
 
     // above map's click tolerance
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 4.1, clientY: 0})]});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(1);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
     expect(dragend).not.toHaveBeenCalled();
     expect(el.style.pointerEvents).toEqual('none');
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchend(el);
     expect(dragstart).toHaveBeenCalledTimes(1);
     expect(drag).toHaveBeenCalledTimes(2);
@@ -794,16 +846,19 @@ test('Marker with draggable:false does not fire dragstart, drag, and dragend eve
     marker.on('drag',      drag);
     marker.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchstart(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchmove(el, {touches: [constructTouch(el, {clientX: 0, clientY: 0})]});
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
     expect(dragend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.touchend(el);
     expect(dragstart).not.toHaveBeenCalled();
     expect(drag).not.toHaveBeenCalled();
@@ -819,8 +874,11 @@ test('Marker with draggable:true moves to new position in response to a mouse-tr
         .addTo(map);
     const el = marker.getElement();
     const startPos = map.project(marker.getLngLat());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 10, clientY: 10});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
 
     const endPos = map.project(marker.getLngLat());
@@ -838,8 +896,11 @@ test('Marker with draggable:false does not move to new position in response to a
     const el = marker.getElement();
     const startPos = map.project(marker.getLngLat());
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
 
     const endPos = map.project(marker.getLngLat());
@@ -856,7 +917,9 @@ test('Marker with draggable:true does not error if removed on mousedown', () => 
         .setLngLat([0, 0])
         .addTo(map);
     const el = marker.getElement();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 10, clientY: 10});
 
     marker.remove();
@@ -887,6 +950,66 @@ test('Marker can set and update rotation', () => {
     expect(marker.getRotation()).toEqual(90);
 
     map.remove();
+});
+
+test('Marker can set and update altitude', () => {
+    const map = createMap({zoom: 16, pitch: 45});
+    const marker = new Marker({altitude: 100})
+        .setLngLat([0, 0])
+        .addTo(map);
+    map._domRenderTaskQueue.run();
+
+    expect(marker.getAltitude()).toEqual(100);
+    expect(marker.getElement().style.transform).toMatch("translate(256px, 192px");
+
+    marker.setAltitude(0);
+    map._domRenderTaskQueue.run();
+
+    expect(marker.getAltitude()).toEqual(0);
+    expect(marker.getElement().style.transform).toMatch("translate(256px, 256px");
+
+    map.remove();
+});
+
+test('Marker setAltitude restores shadow without changing element reference', () => {
+    const marker = new Marker({altitude: 100});
+    const element = marker.getElement();
+
+    marker.setAltitude(0);
+
+    expect(marker.getElement()).toBe(element);
+    const svg = marker.getElement().firstElementChild;
+    expect(svg.firstElementChild.tagName.toLowerCase()).toEqual('ellipse');
+});
+
+test('Marker setAltitude preserves popup element state across zero-crossing', () => {
+    const map = createMap();
+    const marker = new Marker()
+        .setLngLat([0, 0])
+        .addTo(map)
+        .setPopup(new Popup());
+
+    expect(marker.getElement().getAttribute('role')).toEqual('button');
+    expect(marker.getElement().getAttribute('tabindex')).toEqual('0');
+    expect(marker.getElement().getAttribute('aria-expanded')).toEqual('false');
+
+    marker.setAltitude(100);
+
+    expect(marker.getElement().getAttribute('role')).toEqual('button');
+    expect(marker.getElement().getAttribute('tabindex')).toEqual('0');
+    expect(marker.getElement().getAttribute('aria-expanded')).toEqual('false');
+
+    map.remove();
+});
+
+test('Marker setAltitude with custom element does not touch shadow logic', () => {
+    const customElement = document.createElement('div');
+    const marker = new Marker({element: customElement});
+
+    marker.setAltitude(100);
+    marker.setAltitude(0);
+
+    expect(marker.getElement()).toBe(customElement);
 });
 
 test('Marker transforms rotation with the map', () => {
@@ -985,8 +1108,11 @@ test('Drag above horizon clamps', () => {
     const atHorizon = map.project(map.unproject([map.transform.width / 2, map.transform.horizonLineFromTop()]));
     expect(atHorizon.y < startPos.y + 5).toBeTruthy();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 0, clientY: -40});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
 
     const endPos = map.project(marker.getLngLat());
@@ -1005,8 +1131,11 @@ test('Drag below / behind camera', () => {
     const el = marker.getElement();
     const startPos = map.project(marker.getLngLat());
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(el);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(el, {clientX: 0, clientY: 40});
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(el);
 
     const endPos = map.project(marker.getLngLat());
@@ -1061,24 +1190,31 @@ describe('Marker and fog', () => {
         map = createMap();
         marker = new Marker({draggable: true})
             .setLngLat([0, 0])
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             .addTo(map)
             .setPopup(new Popup().setHTML(`a popup content`))
             .togglePopup();
         await waitFor(map, 'load');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setFog({
             "range": [0.5, 10.5]
         });
         await waitFor(map, 'render');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setZoom(10);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setCenter([0, 0]);
     });
 
     test('not occluded', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(map.getFog()).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([0, 0]);
 
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(marker.getElement().style.opacity).toEqual("1");
                 resolve();
             }, 100);
@@ -1086,12 +1222,16 @@ describe('Marker and fog', () => {
     });
 
     test('occluded high', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setBearing(90);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setPitch(70);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([1.0, 0]);
 
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(marker.getElement().style.opacity).toEqual('0.59002');
                 resolve();
             }, 100);
@@ -1099,12 +1239,16 @@ describe('Marker and fog', () => {
     });
 
     test('occluded mid', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setBearing(90);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setPitch(70);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([1.2, 0]);
 
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(marker.getElement().style.opacity).toEqual('0.458001');
                 resolve();
             }, 100);
@@ -1112,12 +1256,16 @@ describe('Marker and fog', () => {
     });
 
     test('occluded low', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setBearing(90);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setPitch(70);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([2.5, 0]);
 
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(marker.getElement().style.opacity).toEqual('0.0534554');
                 resolve();
             }, 100);
@@ -1125,12 +1273,16 @@ describe('Marker and fog', () => {
     });
 
     test('occluded', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setBearing(90);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.setPitch(70);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([4, 0]);
 
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(marker.getElement().style.opacity).toEqual('0');
                 resolve();
             }, 100);
@@ -1197,11 +1349,34 @@ describe('Globe', () => {
         });
     });
 
+    test('does not override a user-set pointerEvents on a visible marker (#13701)', async () => {
+        const map = createMap();
+        const marker = new Marker()
+            .setLngLat([82, 0])
+            .addTo(map);
+        map._domRenderTaskQueue.run();
+
+        marker.getElement().style.pointerEvents = 'none';
+        map.setProjection('globe');
+
+        await new Promise(resolve => {
+            map.once('render', () => {
+                expect(marker.getElement().style.opacity).toBe('1');
+                expect(marker.getElement().style.pointerEvents).toBe('none');
+                map.remove();
+                resolve();
+            });
+        });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     function transform(marker) { return marker.getElement().style.transform; }
 
     function rotation(marker, dimension) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const transform = marker.getElement().style.transform;
         const reg = new RegExp(`rotate${dimension}\\(([-.e0-9]+)deg\\)`);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         return +Number.parseFloat(transform.match(reg)[1]).toFixed();
     }
 
@@ -1534,42 +1709,57 @@ describe('Snap To Pixel', () => {
         map = createMap();
         marker = new Marker({draggable: true})
             .setLngLat([1, 2])
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             .addTo(map);
     });
     test("Snap To Pixel immediately after initializing marker", () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
         expect(marker._pos).toStrictEqual(marker._pos.round());
     });
     test("Not Immediately Snap To Pixel After setLngLat", async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([2, 1]);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         const pos = marker._pos;
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(marker._pos).not.toStrictEqual(pos);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
                 expect(marker._pos).toStrictEqual(pos.round());
                 resolve();
             }, 100);
         });
     });
     test("Immediately Snap To Pixel on moveend", () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.fire(new Event("moveend"));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
         expect(marker._pos).toStrictEqual(marker._pos.round());
     });
     test("Not Immediately Snap To Pixel when Map move", async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.fire(new Event("move"));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
         expect(marker._pos).not.toBe(marker._pos.round());
         await new Promise(resolve => {
             window.requestAnimationFrame(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
                 expect(marker._pos).toStrictEqual(marker._pos.round());
                 resolve();
             });
         });
     });
     test("Not Immediately Snap To Pixel when Map move and setLngLat", async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         marker.setLngLat([1, 2]);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.fire(new Event("move"));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
         expect(marker._pos).not.toBe(marker._pos.round());
         await new Promise(resolve => {
             setTimeout(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
                 expect(marker._pos).toStrictEqual(marker._pos.round());
                 resolve();
             }, 100);
@@ -1577,6 +1767,7 @@ describe('Snap To Pixel', () => {
     });
 
     afterAll(() => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         map.remove();
     });
 });

@@ -4,9 +4,12 @@
     "test": {
       "width": 128,
       "height": 64,
-      "allowed": 0.002
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.002}
+      ]
     }
   },
+  "camera": {"camera-projection": "orthographic"},
   "sources": {
     "geojson": {
       "type": "geojson",

@@ -2,10 +2,10 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta http-equiv="Content-Security-Policy" content="worker-src blob: ; img-src data: blob: ; script-src http: 'nonce-dummy'; connect-src https://*.tiles.mapbox.com https://api.mapbox.com">
-    <meta charset='utf-8'>
+    <meta http-equiv="Content-Security-Policy" content="worker-src http://localhost:9966; img-src data: blob: ; script-src http: 'nonce-dummy' 'wasm-unsafe-eval' ; connect-src https://api.mapbox.com https://events.mapbox.com">
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body { margin: 0; padding: 0; }
         html, body, #map { height: 100%; }
@@ -13,13 +13,14 @@
 </head>
 
 <body>
-<div id='map'></div>
+<div id="map"></div>
 
-<script src='../dist/mapbox-gl-dev.js'></script>
-<script src='../debug/access_token_generated.js'></script>
-<script nonce="dummy">
+<script type="module" nonce="dummy">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
 
 var map = window.map = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'map',
     devtools: true,
     zoom: 12.5,
@@ -28,7 +29,7 @@ var map = window.map = new mapboxgl.Map({
     hash: true
 });
 
-mapboxgl.setRTLTextPlugin('https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.2.0/mapbox-gl-rtl-text.js');
+mapboxgl.setRTLTextPlugin('https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.4.0/mapbox-gl-rtl-text.js');
 
 </script>
 </body>

@@ -1,13 +1,13 @@
-import type Color from '../../style-spec/util/color';
-
 import {
     UniformMatrix3f,
     Uniform1f,
     Uniform3f,
     Uniform4f,
 } from '../uniform_binding';
+
 import type {UniformValues} from '../uniform_binding';
 import type Context from '../../gl/context';
+import type {PremultipliedRenderColor} from '../../style-spec/util/color';
 
 export type SkyboxCaptureUniformsType = {
     ['u_matrix_3f']: UniformMatrix3f;
@@ -31,8 +31,8 @@ const skyboxCaptureUniformValues = (
     matrix: Float32Array,
     sunDirection: [number, number, number],
     sunIntensity: number,
-    atmosphereColor: Color,
-    atmosphereHaloColor: Color,
+    atmosphereColor: PremultipliedRenderColor,
+    atmosphereHaloColor: PremultipliedRenderColor,
 ): UniformValues<SkyboxCaptureUniformsType> => ({
     'u_matrix_3f': matrix,
     'u_sun_direction': sunDirection,

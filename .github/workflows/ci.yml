@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - 'debug/**'
+      - '**.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: '.nvmrc'
+        cache: npm
+        cache-dependency-path: 'package-lock.json'
+    - run: npm ci --no-audit --no-fund
+    - run: |
+        npm run codegen
+        git add -A && git diff --staged --exit-code
+    - run: npm run tsc
+    - run: npm run test-style-spec
+    - run: npm run test-expressions
+    - run: npm run lint
+    - run: npm run lint-css
+
+  test-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: '.nvmrc'
+        cache: npm
+        cache-dependency-path: 'package-lock.json'
+    - run: npm ci --no-audit --no-fund
+    - run: npx playwright install chromium --with-deps --no-shell
+    - run: npm run build-token
+    - run: npm run build-all
+    - run: npm run build-style-spec
+    - run: npm run build-css
+    - run: npm run build-dts
+    - run: npm run test-build
+    - run: xvfb-run -a npm run test-esm
+    - run: xvfb-run -a npm run test-csp
+    - run: xvfb-run -a npm run test-bundlers
+    - run: npm run test -w typescript-build-test
+    - run: npm run build -w @mapbox/mapbox-gl-pmtiles-provider
+    - run: npm run size
+    - run: npm run prepare-release-pages
+      if: ${{ always() }}
+
+  test-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: '.nvmrc'
+        cache: npm
+        cache-dependency-path: 'package-lock.json'
+    - run: npm ci --no-audit --no-fund
+    - run: npx playwright install chromium --with-deps --no-shell
+    - run: npm run test-unit
+
+  report:
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
+    permissions:
+      pull-requests: write
+    needs: [
+      check,
+      test-build,
+      test-unit
+    ]
+    steps:
+    - id: report
+      run: |
+        status_emoji() {
+          case "$1" in
+            success) echo "✅" ;;
+            failure) echo "❌" ;;
+            cancelled) echo "🚫" ;;
+            skipped) echo "⏭️" ;;
+            *) echo "❓" ;;
+          esac
+        }
+
+        overall_status="✅ All Passed"
+        if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+          overall_status="❌ Some Failed"
+        elif [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+          overall_status="🚫 Some Cancelled"
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## $overall_status
+
+        | Job | Status |
+        |-----|--------|
+        | check | $(status_emoji "${{ needs.check.result }}") |
+        | test-build | $(status_emoji "${{ needs.test-build.result }}") |
+        | test-unit | $(status_emoji "${{ needs.test-unit.result }}") |
+        EOF

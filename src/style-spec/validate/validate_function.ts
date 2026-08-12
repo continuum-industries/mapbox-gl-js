@@ -1,5 +1,5 @@
 import ValidationError from '../error/validation_error';
-import getType from '../util/get_type';
+import {getType, isObject} from '../util/get_type';
 import validate from './validate';
 import validateObject from './validate_object';
 import validateArray from './validate_array';
@@ -12,26 +12,49 @@ import {
     supportsInterpolation
 } from '../util/properties';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
+import type {StylePropertySpecification} from '../style-spec';
+import type {ArraySpec} from './validate_array';
 
-export default function validateFunction(options: ValidationOptions): any {
-    const functionValueSpec = options.valueSpec;
-    const functionType = unbundle(options.value.type);
-    let stopKeyType;
+function hasObjectStops(value: Record<PropertyKey, unknown>): value is {stops: Array<Record<PropertyKey, unknown>>} {
+    const stops = value['stops'];
+    return Array.isArray(stops) && Array.isArray(stops[0]) && isObject(stops[0][0]);
+}
+
+export type FunctionValidatorOptions = {
+    key: string;
+    value: unknown;
+    valueSpec?: unknown;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
+};
+
+type FunctionValidator = (options: FunctionValidatorOptions) => ValidationError[];
+
+export default function validateFunction(options: FunctionValidatorOptions): ValidationError[] {
+    const key = options.key;
+    const value = options.value;
+
+    if (!isObject(value)) {
+        return [new ValidationError(key, value, `object expected, ${getType(value)} found`)];
+    }
+
+    const functionValueSpec = options.valueSpec as StylePropertySpecification;
+    const functionType = unbundle(value.type);
+    let stopKeyType: string | undefined;
     let stopDomainValues: Partial<Record<string | number, boolean>> = {};
-    let previousStopDomainValue: unknown | null | undefined;
-    let previousStopDomainZoom;
+    let previousStopDomainValue: unknown;
+    let previousStopDomainZoom: number | undefined;
 
-    const isZoomFunction = functionType !== 'categorical' && options.value.property === undefined;
+    const isZoomFunction = functionType !== 'categorical' && value.property === undefined;
     const isPropertyFunction = !isZoomFunction;
-    const isZoomAndPropertyFunction =
-        getType(options.value.stops) === 'array' &&
-        getType(options.value.stops[0]) === 'array' &&
-        getType(options.value.stops[0][0]) === 'object';
+    const isZoomAndPropertyFunction = hasObjectStops(value);
 
     const errors = validateObject({
         key: options.key,
         value: options.value,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         valueSpec: options.styleSpec.function,
         style: options.style,
         styleSpec: options.styleSpec,
@@ -45,58 +68,58 @@ export default function validateFunction(options: ValidationOptions): any {
         errors.push(new ValidationError(options.key, options.value, 'missing required property "property"'));
     }
 
-    if (functionType !== 'identity' && !options.value.stops) {
+    if (functionType !== 'identity' && !value.stops) {
         errors.push(new ValidationError(options.key, options.value, 'missing required property "stops"'));
     }
 
-    if (functionType === 'exponential' && options.valueSpec.expression && !supportsInterpolation(options.valueSpec)) {
+    if (functionType === 'exponential' && functionValueSpec.expression && !supportsInterpolation(functionValueSpec)) {
         errors.push(new ValidationError(options.key, options.value, 'exponential functions not supported'));
     }
 
     if (options.styleSpec.$version >= 8) {
-        if (isPropertyFunction && !supportsPropertyExpression(options.valueSpec)) {
+        if (isPropertyFunction && !supportsPropertyExpression(functionValueSpec)) {
             errors.push(new ValidationError(options.key, options.value, 'property functions not supported'));
-        } else if (isZoomFunction && !supportsZoomExpression(options.valueSpec)) {
+        } else if (isZoomFunction && !supportsZoomExpression(functionValueSpec)) {
             errors.push(new ValidationError(options.key, options.value, 'zoom functions not supported'));
         }
     }
 
-    if ((functionType === 'categorical' || isZoomAndPropertyFunction) && options.value.property === undefined) {
+    if ((functionType === 'categorical' || isZoomAndPropertyFunction) && (value as {property?: string}).property === undefined) {
         errors.push(new ValidationError(options.key, options.value, '"property" property is required'));
     }
 
     return errors;
 
-    function validateFunctionStops(options: ValidationOptions) {
+    function validateFunctionStops(options: FunctionValidatorOptions): ValidationError[] {
         if (functionType === 'identity') {
             return [new ValidationError(options.key, options.value, 'identity function may not have a "stops" property')];
         }
 
-        let errors = [];
+        let errors: ValidationError[] = [];
         const value = options.value;
 
         errors = errors.concat(validateArray({
             key: options.key,
             value,
-            valueSpec: options.valueSpec,
+            valueSpec: options.valueSpec as ArraySpec,
             style: options.style,
             styleSpec: options.styleSpec,
-            arrayElementValidator: validateFunctionStop
+            arrayElementValidator: validateFunctionStop as (...args: unknown[]) => ValidationError[]
         }));
 
-        if (getType(value) === 'array' && value.length === 0) {
+        if (Array.isArray(value) && value.length === 0) {
             errors.push(new ValidationError(options.key, value, 'array must have at least one stop'));
         }
 
         return errors;
     }
 
-    function validateFunctionStop(options: ValidationOptions) {
-        let errors = [];
+    function validateFunctionStop(options: FunctionValidatorOptions): ValidationError[] {
+        let errors: ValidationError[] = [];
         const value = options.value;
         const key = options.key;
 
-        if (getType(value) !== 'array') {
+        if (!Array.isArray(value)) {
             return [new ValidationError(key, value, `array expected, ${getType(value)} found`)];
         }
 
@@ -105,23 +128,25 @@ export default function validateFunction(options: ValidationOptions): any {
         }
 
         if (isZoomAndPropertyFunction) {
-            if (getType(value[0]) !== 'object') {
+            if (!isObject(value[0])) {
                 return [new ValidationError(key, value, `object expected, ${getType(value[0])} found`)];
             }
-            if (value[0].zoom === undefined) {
+
+            const stopKey = value[0];
+            if (stopKey.zoom === undefined) {
                 return [new ValidationError(key, value, 'object stop key must have zoom')];
             }
-            if (value[0].value === undefined) {
+            if (stopKey.value === undefined) {
                 return [new ValidationError(key, value, 'object stop key must have value')];
             }
 
-            const nextStopDomainZoom = unbundle(value[0].zoom);
+            const nextStopDomainZoom = unbundle(stopKey.zoom);
             if (typeof nextStopDomainZoom !== 'number') {
-                return [new ValidationError(key, value[0].zoom, 'stop zoom values must be numbers')];
+                return [new ValidationError(key, stopKey.zoom, 'stop zoom values must be numbers')];
             }
 
             if (previousStopDomainZoom && previousStopDomainZoom > nextStopDomainZoom) {
-                return [new ValidationError(key, value[0].zoom, 'stop zoom values must appear in ascending order')];
+                return [new ValidationError(key, stopKey.zoom, 'stop zoom values must appear in ascending order')];
             }
             if (nextStopDomainZoom !== previousStopDomainZoom) {
                 previousStopDomainZoom = nextStopDomainZoom;
@@ -134,7 +159,7 @@ export default function validateFunction(options: ValidationOptions): any {
                 valueSpec: {zoom: {}},
                 style: options.style,
                 styleSpec: options.styleSpec,
-                objectElementValidators: {zoom: validateNumber, value: validateStopDomainValue}
+                objectElementValidators: {zoom: validateNumber as FunctionValidator, value: validateStopDomainValue}
             }));
         } else {
             errors = errors.concat(validateStopDomainValue({
@@ -159,7 +184,7 @@ export default function validateFunction(options: ValidationOptions): any {
         }));
     }
 
-    function validateStopDomainValue(options: ValidationOptions, stop: any) {
+    function validateStopDomainValue(options: FunctionValidatorOptions, stop?: object): ValidationError[] {
         const type = getType(options.value);
         const value = unbundle(options.value);
 
@@ -193,16 +218,16 @@ export default function validateFunction(options: ValidationOptions): any {
             previousStopDomainValue = value;
         }
 
-        if (functionType === 'categorical' && (value as any) in stopDomainValues) {
+        if (functionType === 'categorical' && (value as string) in stopDomainValues) {
             return [new ValidationError(options.key, reportValue, 'stop domain values must be unique')];
         } else {
-            stopDomainValues[(value as any)] = true;
+            stopDomainValues[(value as string)] = true;
         }
 
         return [];
     }
 
-    function validateFunctionDefault(options: ValidationOptions) {
+    function validateFunctionDefault(options: FunctionValidatorOptions) {
         return validate({
             key: options.key,
             value: options.value,

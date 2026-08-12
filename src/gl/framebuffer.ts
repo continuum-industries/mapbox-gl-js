@@ -1,26 +1,37 @@
 import {ColorAttachment, DepthRenderbufferAttachment, DepthTextureAttachment} from './value';
+import Texture from '../render/texture';
+import assert from '../style-spec/util/assert';
 
 import type Context from './context';
 import type {DepthBufferType} from './types';
+import type {TextureFormat} from '../render/texture';
 
 class Framebuffer {
     context: Context;
     width: number;
     height: number;
+    format!: TextureFormat;
     framebuffer: WebGLFramebuffer;
-    colorAttachment: ColorAttachment;
-    depthAttachment: DepthRenderbufferAttachment | DepthTextureAttachment;
+    colorAttachment0!: ColorAttachment;
+    colorAttachment1!: ColorAttachment;
+    depthAttachment!: DepthRenderbufferAttachment | DepthTextureAttachment;
     depthAttachmentType: DepthBufferType | null | undefined;
+    _stencilRbo: WebGLRenderbuffer | null | undefined;
 
-    constructor(context: Context, width: number, height: number, hasColor: boolean, depthType?: DepthBufferType | null) {
+    constructor(context: Context, width: number, height: number, numColorAttachments: number, depthType?: DepthBufferType | null) {
         this.context = context;
         this.width = width;
         this.height = height;
         const gl = context.gl;
         const fbo = this.framebuffer = (gl.createFramebuffer());
 
-        if (hasColor) {
-            this.colorAttachment = new ColorAttachment(context, fbo);
+        assert(numColorAttachments <= 2);
+
+        if (numColorAttachments > 0) {
+            this.colorAttachment0 = new ColorAttachment(context, fbo, 0);
+        }
+        if (numColorAttachments > 1) {
+            this.colorAttachment1 = new ColorAttachment(context, fbo, 1);
         }
         if (depthType) {
             this.depthAttachmentType = depthType;
@@ -33,11 +44,78 @@ class Framebuffer {
         }
     }
 
+    static createWithTexture(
+        context: Context,
+        existingFbo: Framebuffer | null,
+        width: number,
+        height: number,
+        attachStencil?: boolean
+    ): Framebuffer {
+        const gl = context.gl;
+
+        context.activeTexture.set(gl.TEXTURE1);
+        context.viewport.set([0, 0, width, height]);
+
+        if (existingFbo && existingFbo.width === width && existingFbo.height === height) {
+            gl.bindTexture(gl.TEXTURE_2D, existingFbo.colorAttachment0.get());
+            context.bindFramebuffer.set(existingFbo.framebuffer);
+            return existingFbo;
+        }
+
+        if (existingFbo) {
+            existingFbo.destroy();
+        }
+
+        const format: TextureFormat = (context.extRenderToTextureHalfFloat || context.extColorBufferFloat) ? context.gl.RGBA16F : context.gl.RGBA8;
+        const texture = new Texture(context, {width, height, data: null}, format);
+        texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+
+        const fbo = context.createFramebuffer(width, height, 1, null);
+        fbo.format = format;
+        fbo.colorAttachment0.set(texture.texture);
+
+        if (attachStencil) {
+            const stencilRbo = context.createRenderbuffer(gl.DEPTH24_STENCIL8, width, height);
+            context.bindFramebuffer.set(fbo.framebuffer);
+            gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, stencilRbo);
+            fbo._stencilRbo = stencilRbo;
+        }
+
+        return fbo;
+    }
+
+    createColorAttachment(context: Context, idx: number) {
+        if (idx === 0) {
+            this.colorAttachment0 = new ColorAttachment(context, this.framebuffer, 0);
+        } else if (idx === 1) {
+            this.colorAttachment1 = new ColorAttachment(context, this.framebuffer, 1);
+        }
+    }
+
+    removeColorAttachment(context: Context, idx: number) {
+        const gl = this.context.gl;
+
+        let texture: WebGLTexture;
+        if (idx === 0) {
+            texture = this.colorAttachment0.get();
+            this.colorAttachment0 = undefined;
+        } else if (idx === 1) {
+            texture = this.colorAttachment1.get();
+            this.colorAttachment1 = undefined;
+        }
+        if (texture) gl.deleteTexture(texture);
+    }
+
     destroy() {
         const gl = this.context.gl;
 
-        if (this.colorAttachment) {
-            const texture = this.colorAttachment.get();
+        if (this.colorAttachment0) {
+            const texture = this.colorAttachment0.get();
+            if (texture) gl.deleteTexture(texture);
+        }
+
+        if (this.colorAttachment1) {
+            const texture = this.colorAttachment1.get();
             if (texture) gl.deleteTexture(texture);
         }
 
@@ -49,6 +127,11 @@ class Framebuffer {
                 const texture = this.depthAttachment.get();
                 if (texture) gl.deleteTexture(texture);
             }
+        }
+
+        if (this._stencilRbo) {
+            gl.deleteRenderbuffer(this._stencilRbo);
+            this._stencilRbo = null;
         }
 
         gl.deleteFramebuffer(this.framebuffer);

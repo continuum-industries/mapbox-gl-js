@@ -31,8 +31,8 @@ class Slice implements Expression {
 
     static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Slice | null | undefined {
         if (args.length <= 2 ||  args.length >= 5) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Slice'.
-            return context.error(`Expected 3 or 4 arguments, but found ${args.length - 1} instead.`);
+            context.error(`Expected 3 or 4 arguments, but found ${args.length - 1} instead.`);
+            return null;
         }
 
         const input = context.parse(args[1], 1, ValueType);
@@ -41,8 +41,8 @@ class Slice implements Expression {
         if (!input || !beginIndex) return null;
 
         if (!isValidType(input.type, [array(ValueType), StringType, ValueType])) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Slice'.
-            return context.error(`Expected first argument to be of type array or string, but found ${toString(input.type)} instead`);
+            context.error(`Expected first argument to be of type array or string, but found ${toString(input.type)} instead`);
+            return null;
         }
 
         if (args.length === 4) {
@@ -54,19 +54,24 @@ class Slice implements Expression {
         }
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     evaluate(ctx: EvaluationContext): any {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const input = (this.input.evaluate(ctx));
         const beginIndex = (this.beginIndex.evaluate(ctx) as number);
 
         if (!isValidNativeType(input, ['string', 'array'])) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             throw new RuntimeError(`Expected first argument to be of type array or string, but found ${toString(typeOf(input))} instead.`);
         }
 
         if (this.endIndex) {
             const endIndex = (this.endIndex.evaluate(ctx) as number);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             return input.slice(beginIndex, endIndex);
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         return input.slice(beginIndex);
     }
 

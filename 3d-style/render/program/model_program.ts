@@ -6,16 +6,14 @@ import {
     Uniform4f,
     UniformMatrix4f
 } from '../../../src/render/uniform_binding';
-
 import Color from '../../../src/style-spec/util/color';
-import ModelStyleLayer from '../../style/style_layer/model_style_layer';
 import TextureSlots from '../texture_slots';
 
+import type ModelStyleLayer from '../../style/style_layer/model_style_layer';
 import type {UniformValues} from '../../../src/render/uniform_binding';
 import type Context from '../../../src/gl/context';
 import type Painter from '../../../src/render/painter';
-import type {Material} from '../../data/model';
-import type {RenderColor} from "../../../src/style-spec/util/color";
+import type {Material, MaterialOverride} from '../../data/model';
 
 export type ModelUniformsType = {
     ['u_matrix']: UniformMatrix4f;
@@ -44,7 +42,10 @@ export type ModelUniformsType = {
     ['u_aoIntensity']: Uniform1f;
     ['u_emissive_strength']: Uniform1f;
     ['u_occlusionTextureTransform']: Uniform4f;
+    ['u_dithered_discard_threshold']: Uniform1f;
 };
+
+export type ModelDefinesType = 'DIFFUSE_SHADED' | 'SHADOWS_SINGLE_CASCADE' | 'OCCLUSION_TEXTURE_TRANSFORM' | 'DITHERED_DISCARD';
 
 const modelUniforms = (context: Context): ModelUniformsType => ({
     'u_matrix': new UniformMatrix4f(context),
@@ -71,22 +72,24 @@ const modelUniforms = (context: Context): ModelUniformsType => ({
     'u_lutTexture': new Uniform1i(context),
     'u_color_mix': new Uniform4f(context),
     'u_aoIntensity': new Uniform1f(context),
-    'u_emissive_strength' : new Uniform1f(context),
-    'u_occlusionTextureTransform': new Uniform4f(context)
-
+    'u_emissive_strength': new Uniform1f(context),
+    'u_occlusionTextureTransform': new Uniform4f(context),
+    'u_dithered_discard_threshold': new Uniform1f(context)
 });
 
-const emptyMat4 = new Float32Array(mat4.identity([] as any));
+const emptyMat4 = new Float32Array(mat4.identity([]));
+
+const zeroVec3: [number, number, number] = [0, 0, 0];
 
 const modelUniformValues = (
-    matrix: Float32Array,
-    lightingMatrix: Float32Array,
-    normalMatrix: Float32Array,
-    nodeMatrix: Float32Array,
+    matrix: mat4,
+    lightingMatrix: mat4,
+    normalMatrix: mat4,
+    nodeMatrix: mat4,
     painter: Painter,
     opacity: number,
-    baseColorFactor: RenderColor,
-    emissiveFactor: [number, number, number],
+    baseColorFactor: Color,
+    emissiveFactor: Color,
     metallicFactor: number,
     roughnessFactor: number,
     material: Material,
@@ -94,43 +97,69 @@ const modelUniformValues = (
     layer: ModelStyleLayer,
     cameraPos: [number, number, number] = [0, 0, 0],
     occlusionTextureTransform?: [number, number, number, number] | null,
+    materialOverride?: MaterialOverride | null,
+    modelColorMix?: [number, number, number, number],
+    ditheredDiscardThreshold: number = 1.0,
+    lighting3DMode: boolean = false,
 ): UniformValues<ModelUniformsType> => {
 
-    const light = painter.style.light;
-    const _lp = light.properties.get('position');
-    const lightPos: [number, number, number] = [-_lp.x, -_lp.y, _lp.z];
-    const lightMat = mat3.create();
-    const anchor = light.properties.get('anchor');
-    if (anchor === 'viewport') {
-        mat3.fromRotation(lightMat, -painter.transform.angle);
-        vec3.transformMat3(lightPos, lightPos, lightMat);
+    let lightPos: [number, number, number] = zeroVec3;
+    let lightIntensity = 0;
+    let lightColorArr: [number, number, number] = zeroVec3;
+
+    if (!lighting3DMode) {
+        const light = painter.style.light;
+        const _lp = light.properties.get('position');
+        lightPos = [-_lp.x, -_lp.y, _lp.z];
+        const anchor = light.properties.get('anchor');
+        if (anchor === 'viewport') {
+            const lightMat = mat3.create();
+            mat3.fromRotation(lightMat, -painter.transform.angle);
+            vec3.transformMat3(lightPos, lightPos, lightMat);
+        }
+        const lightColor = light.properties.get('color').toNonPremultipliedRenderColor(null);
+        lightIntensity = light.properties.get('intensity');
+        lightColorArr = [lightColor.r, lightColor.g, lightColor.b];
     }
 
     const alphaMask = material.alphaMode === 'MASK';
 
-    const lightColor = light.properties.get('color').toRenderColor(null);
-
     const aoIntensity = layer.paint.get('model-ambient-occlusion-intensity');
 
-    const colorMix = layer.paint.get('model-color').constantOr(Color.white).toRenderColor(null);
+    const colorMix = layer.paint.get('model-color').constantOr(Color.white).toNonPremultipliedRenderColor(null);
+    colorMix.a = layer.paint.get('model-color-mix-intensity').constantOr(0.0);
 
-    const colorMixIntensity = layer.paint.get('model-color-mix-intensity').constantOr(0.0);
+    if (modelColorMix) {
+        colorMix.r = modelColorMix[0];
+        colorMix.g = modelColorMix[1];
+        colorMix.b = modelColorMix[2];
+        colorMix.a = modelColorMix[3];
+    }
+
+    if (materialOverride) {
+        colorMix.r = materialOverride.color.r;
+        colorMix.g = materialOverride.color.g;
+        colorMix.b = materialOverride.color.b;
+        colorMix.a = materialOverride.colorMix;
+        emissiveStrength = materialOverride.emissionStrength;
+        opacity = materialOverride.opacity * opacity;
+    }
 
     const uniformValues = {
-        'u_matrix': matrix,
-        'u_lighting_matrix': lightingMatrix,
-        'u_normal_matrix': normalMatrix,
-        'u_node_matrix': nodeMatrix ? nodeMatrix : emptyMat4,
+        'u_matrix': matrix as Float32Array,
+        'u_lighting_matrix': lightingMatrix as Float32Array,
+        'u_normal_matrix': normalMatrix as Float32Array,
+        'u_node_matrix': (nodeMatrix ? nodeMatrix : emptyMat4) as Float32Array,
         'u_lightpos': lightPos,
-        'u_lightintensity': light.properties.get('intensity'),
-        'u_lightcolor': [lightColor.r, lightColor.g, lightColor.b] as [number, number, number],
+        'u_lightintensity': lightIntensity,
+        'u_lightcolor': lightColorArr,
         'u_camera_pos': cameraPos,
         'u_opacity': opacity,
         'u_baseTextureIsAlpha': 0,
         'u_alphaMask': +alphaMask,
         'u_alphaCutoff': material.alphaCutoff,
-        'u_baseColorFactor': [baseColorFactor.r, baseColorFactor.g, baseColorFactor.b, baseColorFactor.a] as [number, number, number, number],
-        'u_emissiveFactor': [emissiveFactor[0], emissiveFactor[1], emissiveFactor[2], 1.0] as [number, number, number, number],
+        'u_baseColorFactor': baseColorFactor.toNonPremultipliedRenderColor(null).toArray01(),
+        'u_emissiveFactor': emissiveFactor.toNonPremultipliedRenderColor(null).toArray01(),
         'u_metallicFactor': metallicFactor,
         'u_roughnessFactor': roughnessFactor,
         'u_baseColorTexture': TextureSlots.BaseColor,
@@ -139,10 +168,11 @@ const modelUniformValues = (
         'u_occlusionTexture': TextureSlots.Occlusion,
         'u_emissionTexture': TextureSlots.Emission,
         'u_lutTexture': TextureSlots.LUT,
-        'u_color_mix': [colorMix.r, colorMix.g, colorMix.b, colorMixIntensity] as [number, number, number, number],
+        'u_color_mix': colorMix.toArray01(),
         'u_aoIntensity': aoIntensity,
         'u_emissive_strength': emissiveStrength,
-        'u_occlusionTextureTransform': occlusionTextureTransform ? occlusionTextureTransform : [0, 0, 0, 0] as [number, number, number, number]
+        'u_occlusionTextureTransform': occlusionTextureTransform ? occlusionTextureTransform : [0, 0, 0, 0] as [number, number, number, number],
+        'u_dithered_discard_threshold': ditheredDiscardThreshold
     };
 
     return uniformValues;
@@ -161,9 +191,9 @@ const modelDepthUniforms = (context: Context): ModelDepthUniformsType => ({
 });
 
 const modelDepthUniformValues = (
-    matrix: Float32Array,
-    instance: Float32Array = emptyMat4,
-    nodeMatrix: Float32Array = emptyMat4,
+    matrix: mat4,
+    instance: mat4 = emptyMat4,
+    nodeMatrix: mat4 = emptyMat4,
 ): UniformValues<ModelDepthUniformsType> => {
     return {
         'u_matrix': matrix,

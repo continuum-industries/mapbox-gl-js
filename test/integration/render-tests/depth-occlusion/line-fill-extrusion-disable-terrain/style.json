@@ -9,6 +9,9 @@
         ["wait"],
         ["setTerrain", null],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0002}
       ]
     }
   },

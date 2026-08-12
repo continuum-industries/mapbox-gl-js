@@ -4,10 +4,12 @@
     "test": {
       "width": 200,
       "height": 200,
-      "allowed": 0.003,
       "operations": [
         ["setPaintProperty", "line", "line-trim-offset", [0.7, 1.0]],
         ["wait"]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.003}
       ]
     }
   },
@@ -59,7 +61,7 @@
       "lineMetrics": true
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "line",
@@ -67,7 +69,7 @@
       "source": "geojson",
       "paint": {
         "line-width": 20,
-        "line-pattern": "generic_icon",
+        "line-pattern": "information",
         "line-trim-offset": [0.0, 0.0]
       },
       "layout": {

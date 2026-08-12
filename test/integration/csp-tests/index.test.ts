@@ -1,3 +1,4 @@
+// eslint-disable-next-line import-x/extensions
 import {vi, describe, test, beforeAll, afterAll, doneAsync} from '../../util/vitest.ts';
 
 const rules = `
@@ -5,7 +6,7 @@ default-src 'none';
 img-src data: blob:;
 worker-src blob:;
 style-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline';
-script-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline';
+script-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline' 'wasm-unsafe-eval';
 connect-src
     https://api.mapbox.com/v4/
     https://api.mapbox.com/raster/v1/
@@ -13,6 +14,7 @@ connect-src
     https://api.mapbox.com/styles/v1/mapbox/
     https://api.mapbox.com/fonts/v1/mapbox/
     https://api.mapbox.com/models/v1/mapbox/
+    https://api.mapbox.com/mapbox-gl-js/
     https://api.mapbox.com/map-sessions/v1
     https://events.mapbox.com/
 `;
@@ -22,7 +24,7 @@ default-src 'none';
 img-src data: blob:;
 worker-src ${href}dist/mapbox-gl-csp-worker.js;
 style-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline';
-script-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline';
+script-src https://api.mapbox.com/mapbox-gl-js/ 'unsafe-inline' 'wasm-unsafe-eval';
 connect-src
     https://api.mapbox.com/v4/
     https://api.mapbox.com/raster/v1/
@@ -30,6 +32,7 @@ connect-src
     https://api.mapbox.com/styles/v1/mapbox/
     https://api.mapbox.com/fonts/v1/mapbox/
     https://api.mapbox.com/models/v1/mapbox/
+    https://api.mapbox.com/mapbox-gl-js/
     https://api.mapbox.com/map-sessions/v1
     https://events.mapbox.com/
 `;

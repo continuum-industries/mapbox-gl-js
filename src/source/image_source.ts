@@ -8,19 +8,18 @@ import boundsAttributes from '../data/bounds_attributes';
 import SegmentVector from '../data/segment';
 import Texture, {UserManagedTexture} from '../render/texture';
 import MercatorCoordinate, {MAX_MERCATOR_LATITUDE} from '../geo/mercator_coordinate';
-import browser from '../util/browser';
 import tileTransform, {getTilePoint} from '../geo/projection/tile_transform';
 import {GLOBE_VERTEX_GRID_SIZE} from '../geo/projection/globe_constants';
 import {mat3, vec3} from 'gl-matrix';
-import LngLat from '../geo/lng_lat';
+import assert from '../style-spec/util/assert';
 
-import type {ISource} from './source';
+import type LngLat from '../geo/lng_lat';
+import type {ISource, SourceEvents} from './source';
 import type {CanvasSourceSpecification} from './canvas_source';
 import type {Map} from '../ui/map';
 import type Dispatcher from '../util/dispatcher';
 import type Tile from './tile';
 import type {Callback} from '../types/callback';
-import type {Cancelable} from '../types/cancelable';
 import type VertexBuffer from '../gl/vertex_buffer';
 import type IndexBuffer from '../gl/index_buffer';
 import type {ProjectedPoint} from '../geo/projection/projection';
@@ -29,7 +28,6 @@ import type {
     VideoSourceSpecification
 } from '../style-spec/types';
 import type Context from '../gl/context';
-import assert from "assert";
 
 type Coordinates = [[number, number], [number, number], [number, number], [number, number]];
 type ImageSourceTexture = {
@@ -46,28 +44,28 @@ type ImageSourceTexture = {
 // (0, 0, 1) -> (c * x3, c * y3, c)
 // (1, 1, 1) -> (x4, y4, 1)
 function basisToPoints(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number) {
-    const m = [x1, y1, 1, x2, y2, 1, x3, y3, 1];
-    const s = [x4, y4, 1];
-    const ma = mat3.adjoint([] as any, m as [number, number, number, number, number, number, number, number, number]);
-    const [sx, sy, sz] = vec3.transformMat3(s as [number, number, number], s as [number, number, number], ma);
-    return mat3.multiply(m as [number, number, number, number, number, number, number, number, number], m as [number, number, number, number, number, number, number, number, number], [sx, 0, 0, 0, sy, 0, 0, 0, sz]);
+    const m: mat3 = [x1, y1, 1, x2, y2, 1, x3, y3, 1];
+    const s: vec3 = [x4, y4, 1];
+    const ma = mat3.adjoint([], m);
+    const [sx, sy, sz] = vec3.transformMat3(s, s, ma);
+    return mat3.multiply(m, m, [sx, 0, 0, 0, sy, 0, 0, 0, sz]);
 }
 
 function getTileToTextureTransformMatrix(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number) {
     const a = basisToPoints(0, 0, 1, 0, 1, 1, 0, 1);
     const b = basisToPoints(x1, y1, x2, y2, x3, y3, x4, y4);
-    const adjB = mat3.adjoint([] as any, b);
+    const adjB = mat3.adjoint([], b);
     return mat3.multiply(a, a, adjB);
 }
 
 function getTextureToTileTransformMatrix(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number) {
     const a = basisToPoints(0, 0, 1, 0, 1, 1, 0, 1);
     const b = basisToPoints(x1, y1, x2, y2, x3, y3, x4, y4);
-    const adjA = mat3.adjoint([] as any, a);
+    const adjA = mat3.adjoint([], a);
     return mat3.multiply(b, b, adjA);
 }
 
-function getPerspectiveTransform(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number) {
+function getPerspectiveTransform(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number): [number, number] {
     const m = getTextureToTileTransformMatrix(x1, y1, x2, y2, x3, y3, x4, y4);
     return [
         m[2] / m[8] / EXTENT,
@@ -94,11 +92,11 @@ function isConvex(coords: [ProjectedPoint, ProjectedPoint, ProjectedPoint, Proje
         (crossProduct1 < 0 && crossProduct2 < 0 && crossProduct3 < 0 && crossProduct4 < 0);
 }
 
-function constrainCoordinates(coords: [number, number]) {
+function constrainCoordinates(coords: [number, number]): [number, number] {
     return [coords[0], Math.min(Math.max(coords[1], -MAX_MERCATOR_LATITUDE), MAX_MERCATOR_LATITUDE)];
 }
 
-function constrain(coords: Coordinates) {
+function constrain(coords: Coordinates): Coordinates {
     return [
         constrainCoordinates(coords[0]),
         constrainCoordinates(coords[1]),
@@ -159,7 +157,7 @@ function sortTriangles(centerLatitudes: number[], indices: TriangleIndexArray): 
         return centerLatitudes[idx1] - centerLatitudes[idx2];
     });
 
-    const sortedCenterLatitudes = [];
+    const sortedCenterLatitudes: number[] = [];
     const sortedIndices = new TriangleIndexArray();
 
     for (let i = 0; i < triangleIndexes.length; i++) {
@@ -215,37 +213,42 @@ function sortTriangles(centerLatitudes: number[], indices: TriangleIndexArray): 
  * @see [Example: Add an image](https://www.mapbox.com/mapbox-gl-js/example/image-on-a-map/)
  * @see [Example: Animate a series of images](https://www.mapbox.com/mapbox-gl-js/example/animate-images/)
  */
-class ImageSource extends Evented implements ISource {
-    type: string;
+class ImageSource<T = 'image'> extends Evented<SourceEvents> implements ISource<T> {
+    type: T;
     id: string;
-    scope: string;
+    scope!: string;
     minzoom: number;
     maxzoom: number;
     tileSize: number;
     url: string | null | undefined;
-    width: number;
-    height: number;
-    minTileCacheSize: number | null | undefined;
-    maxTileCacheSize: number | null | undefined;
+    width!: number;
+    height!: number;
+    minTileCacheSize?: number;
+    maxTileCacheSize?: number;
     roundZoom: boolean | undefined;
     reparseOverscaled: boolean | undefined;
     attribution: string | undefined;
     // eslint-disable-next-line camelcase
     mapbox_logo: boolean | undefined;
+    vectorLayers?: never;
+    vectorLayerIds?: never;
+    rasterLayers?: never;
+    rasterLayerIds?: never;
 
     coordinates: Coordinates;
     tiles: {
         [_: string]: Tile;
     };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     options: any;
     dispatcher: Dispatcher;
-    map: Map;
-    texture: Texture | UserManagedTexture | null;
-    image: HTMLImageElement | ImageBitmap | ImageData;
-    tileID: CanonicalTileID | null | undefined;
+    map!: Map;
+    texture!: Texture | UserManagedTexture | null;
+    image!: ImageBitmap | ImageData;
+    tileID?: CanonicalTileID;
     onNorthPole: boolean;
     onSouthPole: boolean;
-    _unsupportedCoords: boolean;
+    _unsupportedCoords!: boolean;
     _boundsArray: RasterBoundsArray | null | undefined;
     boundsBuffer: VertexBuffer | null | undefined;
     boundsSegments: SegmentVector | null | undefined;
@@ -253,13 +256,13 @@ class ImageSource extends Evented implements ISource {
     elevatedGlobeIndexBuffer: IndexBuffer | null | undefined;
     elevatedGlobeSegments: SegmentVector | null | undefined;
     elevatedGlobeTrianglesCenterLongitudes: number[] | null | undefined;
-    maxLongitudeTriangleSize: number;
+    maxLongitudeTriangleSize!: number;
     elevatedGlobeGridMatrix: Float32Array | null | undefined;
     _loaded: boolean;
     _dirty: boolean;
-    _imageRequest: Cancelable | null | undefined;
-    perspectiveTransform: [number, number];
-    elevatedGlobePerspectiveTransform: [number, number];
+    _imageRequest: AbortController | null | undefined;
+    perspectiveTransform!: [number, number];
+    elevatedGlobePerspectiveTransform!: [number, number];
 
     reload: undefined;
     abortTile: undefined;
@@ -276,7 +279,7 @@ class ImageSource extends Evented implements ISource {
         this.dispatcher = dispatcher;
         this.coordinates = options.coordinates;
 
-        this.type = 'image';
+        this.type = 'image' as T;
         this.minzoom = 0;
         this.maxzoom = 22;
         this.tileSize = 512;
@@ -291,10 +294,11 @@ class ImageSource extends Evented implements ISource {
         this._dirty = false;
     }
 
-    load(newCoordinates?: Coordinates, loaded?: boolean) {
+    async load(newCoordinates?: Coordinates, loaded?: boolean) {
         this._loaded = loaded || false;
         this.fire(new Event('dataloading', {dataType: 'source'}));
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         this.url = this.options.url;
         if (!this.url) {
             if (newCoordinates) {
@@ -305,27 +309,29 @@ class ImageSource extends Evented implements ISource {
             return;
         }
 
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        this._imageRequest = getImage(this.map._requestManager.transformRequest(this.url, ResourceType.Image), (err, image) => {
+        const controller = new AbortController();
+        this._imageRequest = controller;
+        try {
+            const request = await this.map._requestManager.transformRequest(this.url, ResourceType.Image, controller.signal);
+            const {data} = await getImage(request, controller.signal);
             this._imageRequest = null;
             this._loaded = true;
-            if (err) {
-                this.fire(new ErrorEvent(err));
-            } else if (image) {
-                if (image instanceof HTMLImageElement) {
-                    this.image = browser.getImageData(image);
-                } else {
-                    this.image = image;
-                }
-                this._dirty = true;
-                this.width = this.image.width;
-                this.height = this.image.height;
-                if (newCoordinates) {
-                    this.coordinates = newCoordinates;
-                }
-                this._finishLoading();
+            this.image = data;
+            this._dirty = true;
+            this.width = this.image.width;
+            this.height = this.image.height;
+            if (newCoordinates) {
+                this.coordinates = newCoordinates;
             }
-        });
+            this._finishLoading();
+        } catch (err) {
+            // Swallow only our own cancellation; a late settle must not resurrect state after
+            // updateImage/onRemove moved on. Other errors must surface.
+            if (controller.signal.aborted) return;
+            this._imageRequest = null;
+            this._loaded = true;
+            this.fire(new ErrorEvent(err as Error));
+        }
     }
 
     loaded(): boolean {
@@ -375,11 +381,14 @@ class ImageSource extends Evented implements ISource {
         if (!options.url) {
             return this;
         }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         if (this._imageRequest && options.url !== this.options.url) {
-            this._imageRequest.cancel();
+            this._imageRequest.abort();
             this._imageRequest = null;
         }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         this.options.url = options.url;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         this.load(options.coordinates, this._loaded);
         return this;
     }
@@ -407,12 +416,13 @@ class ImageSource extends Evented implements ISource {
 
     onAdd(map: Map) {
         this.map = map;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         this.load();
     }
 
     onRemove(_: Map) {
         if (this._imageRequest) {
-            this._imageRequest.cancel();
+            this._imageRequest.abort();
             this._imageRequest = null;
         }
         if (this.texture && !(this.texture instanceof UserManagedTexture)) this.texture.destroy();
@@ -501,11 +511,16 @@ class ImageSource extends Evented implements ISource {
             this.minzoom = this.maxzoom = this.tileID.z;
         }
 
-        this.fire(new Event('data', {dataType:'source', sourceDataType: 'content'}));
+        this.fire(new Event('data', {dataType: 'source', sourceDataType: 'content'}));
         return this;
     }
 
     _clear() {
+        if (this.texture && !(this.texture instanceof UserManagedTexture)) {
+            this.texture.destroy();
+            this._dirty = true;
+        }
+        this.texture = null;
         this._boundsArray = undefined;
         this._unsupportedCoords = false;
     }
@@ -523,14 +538,13 @@ class ImageSource extends Evented implements ISource {
 
         const globalTileTr = tileTransform(new CanonicalTileID(0, 0, 0), this.map.transform.projection);
 
-        const globalTileCoords = [
+        const globalTileCoords: [ProjectedPoint, ProjectedPoint, ProjectedPoint, ProjectedPoint] = [
             globalTileTr.projection.project(this.coordinates[0][0], this.coordinates[0][1]),
             globalTileTr.projection.project(this.coordinates[1][0], this.coordinates[1][1]),
             globalTileTr.projection.project(this.coordinates[2][0], this.coordinates[2][1]),
             globalTileTr.projection.project(this.coordinates[3][0], this.coordinates[3][1])
         ];
 
-        // @ts-expect-error - TS2345 - Argument of type 'ProjectedPoint[]' is not assignable to parameter of type '[ProjectedPoint, ProjectedPoint, ProjectedPoint, ProjectedPoint]'.
         if (!isConvex(globalTileCoords)) {
             console.warn('Image source coordinates are defining non-convex area in the Mercator projection');
             this._unsupportedCoords = true;
@@ -545,7 +559,6 @@ class ImageSource extends Evented implements ISource {
             return getTilePoint(tileTr, projectedCoord)._round();
         });
 
-        // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type '[number, number]'.
         this.perspectiveTransform = getPerspectiveTransform(tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y);
 
         const boundsArray = this._boundsArray = new RasterBoundsArray();
@@ -593,7 +606,6 @@ class ImageSource extends Evented implements ISource {
         const triangleCount = cellCount * cellCount * 2;
         const verticesLongitudes = [];
         const constrainedCoordinates = constrain(this.coordinates);
-        // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'Coordinates'.
         const [minLng, minLat, lngDiff, latDiff] = calculateMinAndSize(constrainedCoordinates);
 
         // Vertices
@@ -607,7 +619,6 @@ class ImageSource extends Evented implements ISource {
             };
             const [p0, p1, p2, p3] = globalTileCoords.map(transformToImagePoint);
             const toUV = getTileToTextureTransformMatrix(p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]);
-            // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type '[number, number]'.
             this.elevatedGlobePerspectiveTransform = getPerspectiveTransform(p0[0], p0[1], p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]);
 
             const addVertex = (point: LngLat, tilePoint: ProjectedPoint) => {
@@ -615,7 +626,7 @@ class ImageSource extends Evented implements ISource {
                 const x = Math.round((point.lng - minLng) / lngDiff * EXTENT);
                 const y = Math.round((point.lat - minLat) / latDiff * EXTENT);
                 const imagePoint = transformToImagePoint(tilePoint);
-                const uv = vec3.transformMat3([] as any, [imagePoint[0], imagePoint[1], 1], toUV);
+                const uv = vec3.transformMat3([], [imagePoint[0], imagePoint[1], 1], toUV);
                 const u = Math.round(uv[0] / uv[2] * EXTENT);
                 const v = Math.round(uv[1] / uv[2] * EXTENT);
                 elevatedGlobeVertexArray.emplaceBack(x, y, u, v);
@@ -646,17 +657,22 @@ class ImageSource extends Evented implements ISource {
         // Indices
         {
             this.maxLongitudeTriangleSize = 0;
-            let elevatedGlobeTrianglesCenterLongitudes = [];
+            let elevatedGlobeTrianglesCenterLongitudes: number[] | null | undefined = [];
 
             let indices = new TriangleIndexArray();
 
             const processTriangle = (i0: number, i1: number, i2: number) => {
                 indices.emplaceBack(i0, i1, i2);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const l0 = verticesLongitudes[i0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const l1 = verticesLongitudes[i1];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const l2 = verticesLongitudes[i2];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                 const minLongitude = Math.min(Math.min(l0, l1), l2);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                 const maxLongitude = Math.max(Math.max(l0, l1), l2);
                 const diff = maxLongitude - minLongitude;
                 if (diff > this.maxLongitudeTriangleSize) {
@@ -702,7 +718,7 @@ class ImageSource extends Evented implements ISource {
 
         if (this._dirty && !(this.texture instanceof UserManagedTexture)) {
             if (!this.texture) {
-                this.texture = new Texture(context, this.image, gl.RGBA);
+                this.texture = new Texture(context, this.image, gl.RGBA8);
                 this.texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
             } else {
                 this.texture.update(this.image);
@@ -731,9 +747,11 @@ class ImageSource extends Evented implements ISource {
         }
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     serialize(): any {
         return {
             type: 'image',
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             url: this.options.url,
             coordinates: this.coordinates
         };
@@ -753,11 +771,11 @@ class ImageSource extends Evented implements ISource {
 
         // Normalizing longitude so that abs(normalizedLongitude - desiredLongitude) <= 180
         const normalizeLongitudeTo = (longitude: number, desiredLongitude: number) => {
-            const diff = Math.round((desiredLongitude - longitude) / 360.);
-            return longitude + diff * 360.;
+            const diff = Math.round((desiredLongitude - longitude) / 360.0);
+            return longitude + diff * 360.0;
         };
 
-        let gapLongitude = normalizeLongitudeTo(longitude + 180., longitudes[0]);
+        let gapLongitude = normalizeLongitudeTo(longitude + 180.0, longitudes[0]);
         const ret = new SegmentVector();
 
         const addTriangleRange = (triangleOffset: number, triangleCount: number) => {
@@ -775,7 +793,7 @@ class ImageSource extends Evented implements ISource {
         // +0.01 - just to be sure that we don't draw "bad" triangles because of calculation errors
         const distanceToDrop = 0.51 * this.maxLongitudeTriangleSize;
         assert(distanceToDrop > 0);
-        assert(distanceToDrop < 180.);
+        assert(distanceToDrop < 180.0);
 
         if (Math.abs(longitudes[0] - gapLongitude) <= distanceToDrop) {
             const minIdx = upperBound(longitudes, 0, longitudes.length, gapLongitude + distanceToDrop);
@@ -783,14 +801,14 @@ class ImageSource extends Evented implements ISource {
                 // Rotated 90 degrees, and one side is almost zero?
                 return ret;
             }
-            const maxIdx = lowerBound(longitudes, minIdx + 1, longitudes.length, gapLongitude + 360. - distanceToDrop);
+            const maxIdx = lowerBound(longitudes, minIdx + 1, longitudes.length, gapLongitude + 360.0 - distanceToDrop);
             const count = maxIdx - minIdx;
             addTriangleRange(minIdx, count);
             return ret;
         }
 
         if (gapLongitude < longitudes[0]) {
-            gapLongitude += 360.;
+            gapLongitude += 360.0;
         }
 
         // Looking for the range inside or in the end of our triangles array to skip
@@ -834,7 +852,7 @@ export function getCoordinatesCenterTileID(coords: Array<MercatorCoordinate>): C
     const dx = maxX - minX;
     const dy = maxY - minY;
     const dMax = Math.max(dx, dy);
-    const zoom = Math.max(0, Math.floor(-Math.log(dMax) / Math.LN2));
+    const zoom = Math.max(0, Math.floor(-Math.log2(dMax)));
     const tilesAtZoom = Math.pow(2, zoom);
 
     let x = Math.floor((minX + maxX) / 2 * tilesAtZoom);

@@ -1,6 +1,7 @@
-import {getTileBBox} from '@mapbox/whoots-js';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {register} from '../util/web_worker_transfer';
+
+import type {mat4} from 'gl-matrix';
 
 export class CanonicalTileID {
     z: number;
@@ -20,6 +21,15 @@ export class CanonicalTileID {
 
     equals(id: CanonicalTileID): boolean {
         return this.z === id.z && this.x === id.x && this.y === id.y;
+    }
+
+    isChildOf(parent: CanonicalTileID): boolean {
+        const zDifference = this.z - parent.z;
+        // We're first testing for z == 0, to avoid a 32 bit shift, which is undefined.
+        return parent.z === 0 || (
+            parent.z < this.z &&
+                parent.x === (this.x >> zDifference) &&
+                parent.y === (this.y >> zDifference));
     }
 
     // given a list of urls, choose a url template and return a tile URL
@@ -58,8 +68,9 @@ export class OverscaledTileID {
     wrap: number;
     canonical: CanonicalTileID;
     key: number;
-    projMatrix: Float32Array;
-    expandedProjMatrix: Float32Array;
+    projMatrix!: mat4;
+    expandedProjMatrix!: mat4;
+    visibleQuadrants?: number;
 
     constructor(overscaledZ: number, wrap: number, z: number, x: number, y: number) {
         assert(overscaledZ >= z);
@@ -164,7 +175,10 @@ export class OverscaledTileID {
     }
 }
 
-function calculateKey(wrap: number, overscaledZ: number, z: number, x: number, y: number): number {
+/**
+ * @private
+ */
+export function calculateKey(wrap: number, overscaledZ: number, z: number, x: number, y: number): number {
     // only use 22 bits for x & y so that the key fits into MAX_SAFE_INTEGER
     const dim = 1 << Math.min(z, 22);
     let xy = dim * (y % dim) + (x % dim);
@@ -189,6 +203,16 @@ function getQuadkey(z: number, x: number, y: number) {
         quadkey += ((x & mask ? 1 : 0) + (y & mask ? 2 : 0));
     }
     return quadkey;
+}
+
+function getTileBBox(x: number, y: number, z: number) {
+    const z2 = 2 ** z;
+    const worldSize = 2 * Math.PI * 6378137;
+    const minX = worldSize * (x / z2 - 0.5);
+    const minY = worldSize * (0.5 - (y + 1) / z2);
+    const maxX = minX + worldSize / z2;
+    const maxY = minY + worldSize / z2;
+    return `${minX},${minY},${maxX},${maxY}`;
 }
 
 // For all four borders: 0 - left, 1, right, 2 - top, 3 - bottom

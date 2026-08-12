@@ -1,51 +1,58 @@
+import browser from '../../src/util/browser';
 import {Evented, ErrorEvent, Event} from '../../src/util/evented';
-import {ResourceType} from '../../src/util/ajax';
+import {ResourceType, isHttpNotFound} from '../../src/util/ajax';
+import {parseExpiryData} from '../../src/util/util';
 import loadTileJSON from '../../src/source/load_tilejson';
 import TileBounds from '../../src/source/tile_bounds';
-import {extend} from '../../src/util/util';
 import {postTurnstileEvent} from '../../src/util/mapbox';
+import {makeFQID} from '../../src/util/fqid';
 
 // Import Tiled3dModelBucket as a module with side effects to ensure
 // it's registered as a serializable class on the main thread
 import '../data/bucket/tiled_3d_model_bucket';
 
-import type Tiled3dModelBucket from '../data/bucket/tiled_3d_model_bucket';
-import type {ISource} from '../../src/source/source';
 import type Tile from '../../src/source/tile';
+import type Dispatcher from '../../src/util/dispatcher';
+import type Tiled3dModelBucket from '../data/bucket/tiled_3d_model_bucket';
+import type {Map} from '../../src/ui/map';
 import type {Callback} from '../../src/types/callback';
 import type {Cancelable} from '../../src/types/cancelable';
-import type Dispatcher from '../../src/util/dispatcher';
-import type {ModelSourceSpecification} from '../../src/style-spec/types';
-import type {Map} from '../../src/ui/map';
 import type {OverscaledTileID} from '../../src/source/tile_id';
+import type {ISource, SourceEvents} from '../../src/source/source';
+import type {ModelSourceSpecification, PromoteIdSpecification} from '../../src/style-spec/types';
+import type {WorkerSourceTiled3dModelRequest, WorkerSourceVectorTileResult} from '../../src/source/worker_source';
+import type {AJAXError} from '../../src/util/ajax';
 
-class Tiled3DModelSource extends Evented implements ISource {
+class Tiled3DModelSource extends Evented<SourceEvents> implements ISource {
     type: 'batched-model';
     id: string;
-    scope: string;
+    scope!: string;
     minzoom: number;
     maxzoom: number;
-    tileBounds: TileBounds;
+    tileBounds!: TileBounds;
     roundZoom: boolean | undefined;
     reparseOverscaled: boolean | undefined;
     usedInConflation: boolean;
     tileSize: number;
-    minTileCacheSize: number | null | undefined;
-    maxTileCacheSize: number | null | undefined;
+    minTileCacheSize?: number;
+    maxTileCacheSize?: number;
     attribution: string | undefined;
     // eslint-disable-next-line camelcase
     mapbox_logo: boolean | undefined;
+    promoteId?: PromoteIdSpecification | null;
+    vectorLayers?: never;
+    vectorLayerIds?: never;
+    rasterLayers?: never;
+    rasterLayerIds?: never;
     tiles: Array<string>;
     dispatcher: Dispatcher;
     scheme: string;
     _loaded: boolean;
     _options: ModelSourceSpecification;
     _tileJSONRequest: Cancelable | null | undefined;
-    map: Map;
+    map!: Map;
 
     onRemove: undefined;
-    reload: undefined;
-    abortTile: undefined;
     unloadTile: undefined;
     prepare: undefined;
     afterUpdate: undefined;
@@ -61,7 +68,7 @@ class Tiled3DModelSource extends Evented implements ISource {
         this.tileSize = 512;
 
         this._options = options;
-        this.tiles = (this._options.tiles as any);
+        this.tiles = this._options.tiles;
         this.maxzoom = options.maxzoom || 19;
         this.minzoom = options.minzoom || 0;
         this.roundZoom = true;
@@ -77,11 +84,23 @@ class Tiled3DModelSource extends Evented implements ISource {
         this.load();
     }
 
+    reload() {
+        this.cancelTileJSONRequest();
+        const fqid = makeFQID(this.id, this.scope);
+        this.load(() => this.map.style.clearSource(fqid));
+    }
+
+    cancelTileJSONRequest() {
+        if (!this._tileJSONRequest) return;
+        this._tileJSONRequest.cancel();
+        this._tileJSONRequest = null;
+    }
+
     load(callback?: Callback<undefined>) {
         this._loaded = false;
         this.fire(new Event('dataloading', {dataType: 'source'}));
         const language = Array.isArray(this.map._language) ? this.map._language.join() : this.map._language;
-        const worldview = this.map._worldview;
+        const worldview = this.map.getWorldview();
         this._tileJSONRequest = loadTileJSON(this._options, this.map._requestManager, language, worldview, (err, tileJSON) => {
             this._tileJSONRequest = null;
             this._loaded = true;
@@ -91,7 +110,7 @@ class Tiled3DModelSource extends Evented implements ISource {
 
                 this.fire(new ErrorEvent(err));
             } else if (tileJSON) {
-                extend(this, tileJSON);
+                Object.assign(this, tileJSON);
                 if (tileJSON.bounds) this.tileBounds = new TileBounds(tileJSON.bounds, this.minzoom, this.maxzoom);
                 postTurnstileEvent(tileJSON.tiles, this.map._requestManager._customAccessToken);
 
@@ -118,68 +137,93 @@ class Tiled3DModelSource extends Evented implements ISource {
         return this._loaded;
     }
 
-    loadTile(tile: Tile, callback: Callback<undefined>) {
-        const url = this.map._requestManager.normalizeTileURL(tile.tileID.canonical.url((this.tiles as any), this.scheme));
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        const request = this.map._requestManager.transformRequest(url, ResourceType.Tile);
-        const params = {
-            request,
-            data: undefined,
-            uid: tile.uid,
-            tileID: tile.tileID,
-            tileZoom: tile.tileZoom,
-            zoom: tile.tileID.overscaledZ,
-            tileSize: this.tileSize * tile.tileID.overscaleFactor(),
-            type: this.type,
-            source: this.id,
-            scope: this.scope,
-            showCollisionBoxes: this.map.showCollisionBoxes,
-            isSymbolTile: tile.isSymbolTile,
-            brightness: this.map.style ? (this.map.style.getBrightness() || 0.0) : 0.0
-        };
-        if (!tile.actor || tile.state === 'expired') {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    async loadTile(tile: Tile, callback: Callback<undefined>): Promise<void> {
+        const url = this.map._requestManager.normalizeTileURL(tile.tileID.canonical.url(this.tiles, this.scheme));
+
+        // The actor/state branch stays synchronous so a re-entrant loadTile dedupes correctly.
+        const isFresh = !tile.actor || tile.state === 'expired';
+        if (isFresh) {
             tile.actor = this.dispatcher.getActor();
-            tile.request = tile.actor.send('loadTile', params, done.bind(this), undefined, true);
-        } else if (tile.state === 'loading') {
-            // schedule tile reloading after it has been loaded
-            tile.reloadCallback = callback;
         } else {
+            if (tile.state === 'loading') {
+                // schedule tile reloading after it has been loaded
+                tile.reloadCallback = callback;
+                return;
+            }
+
             // If the tile has already been parsed we may just need to reevaluate
             if (tile.buckets) {
-                const buckets: Tiled3dModelBucket[] = (Object.values(tile.buckets) as any[]);
+                const buckets = Object.values(tile.buckets) as Tiled3dModelBucket[];
                 for (const bucket of buckets) {
                     bucket.dirty = true;
                 }
                 tile.state = 'loaded';
                 return;
             }
-            tile.request = tile.actor.send('reloadTile', params, done.bind(this));
         }
 
-        function done(err: Error | null | undefined, data: any) {
+        const messageType = isFresh ? 'loadTile' : 'reloadTile';
+        const controller = new AbortController();
+        tile.request = controller;
+
+        const done = (err?: AJAXError | null, data?: WorkerSourceVectorTileResult | null) => {
+            delete tile.request;
             if (tile.aborted) return callback(null);
-
-            // @ts-expect-error - TS2339 - Property 'status' does not exist on type 'Error'.
-            if (err && err.status !== 404) {
-                return callback(err);
-            }
-
-            if (data) {
-                if (data.resourceTiming) tile.resourceTiming = data.resourceTiming;
-                if (this.map._refreshExpiredTiles) tile.setExpiryData(data);
-                tile.buckets = {...tile.buckets, ...data.buckets};
-                if (data.featureIndex) {
-                    tile.latestFeatureIndex = data.featureIndex;
-                }
-            }
-
+            if (err && !isHttpNotFound(err)) return callback(err);
+            if (this.map._refreshExpiredTiles && data) tile.setExpiryData(parseExpiryData(data.headers));
+            tile.loadModelData(data, this.map.painter);
             tile.state = 'loaded';
             callback(null);
+
+            if (tile.reloadCallback) {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                this.loadTile(tile, tile.reloadCallback);
+                tile.reloadCallback = null;
+            }
+        };
+
+        try {
+            const request = await this.map._requestManager.transformRequest(url, ResourceType.Tile, controller.signal);
+            if (controller.signal.aborted) return callback(null);
+
+            const params: WorkerSourceTiled3dModelRequest = {
+                request,
+                data: undefined,
+                uid: tile.uid,
+                tileID: tile.tileID,
+                tileZoom: tile.tileZoom,
+                zoom: tile.tileID.overscaledZ,
+                tileSize: this.tileSize * tile.tileID.overscaleFactor(),
+                type: this.type,
+                source: this.id,
+                scope: this.scope,
+                showCollisionBoxes: this.map.showCollisionBoxes,
+                renderSourceType: tile.renderSourceType,
+                brightness: this.map.style ? (this.map.style.getBrightness() || 0.0) : 0.0,
+                pixelRatio: browser.devicePixelRatio,
+                promoteId: this.promoteId,
+            };
+
+            tile.request = tile.actor.sendCancelable(messageType, params, {}, done);
+        } catch (err) {
+            if (controller.signal.aborted) return callback(null);
+            callback(err as Error);
+        }
+    }
+
+    abortTile(tile: Tile) {
+        if (tile.request) {
+            tile.request.abort();
+            delete tile.request;
+        }
+        if (tile.actor) {
+            tile.actor.notify('abortTile', {uid: tile.uid, type: this.type, source: this.id, scope: this.scope});
         }
     }
 
     serialize(): ModelSourceSpecification {
-        return extend({}, this._options);
+        return {...this._options};
     }
 }
 

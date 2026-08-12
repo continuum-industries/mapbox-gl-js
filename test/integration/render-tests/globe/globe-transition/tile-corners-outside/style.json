@@ -4,7 +4,12 @@
     "test": {
       "width": 512,
       "height": 512,
-      "allowed": 0.05
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "skip - https://github.com/mapbox/mapbox-gl-js/pull/12075"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.05}
+      ]
     }
   },
   "center": [22, 78.9],
@@ -14,7 +19,8 @@
       "type": "vector",
       "tiles": [
         "local://tiles/{z}-{x}-{y}.mvt"
-      ]
+      ],
+      "maxzoom": 3
     }
   },
   "projection": {
