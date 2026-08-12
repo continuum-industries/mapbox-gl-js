@@ -3,7 +3,10 @@
   "metadata": {
     "test": {
       "height": 160,
-      "width": 100
+      "width": 100,
+      "skip-test": [
+        {"platform-tag-contains": "native-ios", "reason": "Needs to be investigated and fixed."}
+      ]
     }
   },
   "center": [ -0.0055, 0.0065 ],
@@ -49,7 +52,7 @@
     }
   },
   "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "line",
@@ -61,8 +64,8 @@
         "text-field": ["format", "London",
                                 ["image", "london-overground"],
                                 ["image", "london-underground"],
-                                ["image", "national-rail"],
-                                ["image", "dlr"]
+                                ["image", "gb-national-rail"],
+                                ["image", "london-dlr"]
                               ],
         "text-font": [
           "Open Sans Semibold",

@@ -1,373 +1,409 @@
-type GridItem = {
-    key: any;
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-};
+import type {Transferable} from '../types/transferable';
+
+type GridItem<K> = {key: K; x1: number; y1: number; x2: number; y2: number};
+
+type IntArray = Array<number> | Int32Array;
+type CellArray = Array<IntArray | null>;
+type KeyArray<K> = Array<K> | Int32Array;
+type KeyPredicate<K> = (key: K) => boolean;
+
+const HEADER_LEN = 6;
 
 /**
- * GridIndex is a data structure for testing the intersection of
- * circles and rectangles in a 2d plane.
- * It is optimized for rapid insertion and querying.
- * GridIndex splits the plane into a set of "cells" and keeps track
- * of which geometries intersect with each cell. At query time,
- * full geometry comparisons are only done for items that share
- * at least one cell. As long as the geometries are relatively
- * uniformly distributed across the plane, this greatly reduces
- * the number of comparisons necessary.
+ * 2D spatial index for axis-aligned boxes and circles. Splits the plane into
+ * cells; full geometry checks happen only on items that share a cell with the
+ * query, so as long as items are reasonably uniformly distributed, queries are
+ * fast. Supports `toArrayBuffer` / `ArrayBuffer` constructor for transfer
+ * across worker boundaries; once deserialized, the grid is read-only.
  *
  * @private
  */
-class GridIndex {
-    circleKeys: Array<any>;
-    boxKeys: Array<any>;
-    boxCells: Array<Array<number>>;
-    circleCells: Array<Array<number>>;
-    bboxes: Array<number>;
-    circles: Array<number>;
-    xCellCount: number;
-    yCellCount: number;
+class GridIndex<K = number> {
     width: number;
     height: number;
+    xCellCount: number;
+    yCellCount: number;
     xScale: number;
     yScale: number;
+
+    boxKeys: KeyArray<K>;
+    circleKeys: KeyArray<K>;
+    boxCells: CellArray;
+    circleCells: CellArray;
+    bboxes: IntArray;
+    circles: IntArray;
     boxUid: number;
     circleUid: number;
 
-    constructor (width: number, height: number, cellSize: number) {
-        const boxCells = this.boxCells = [];
-        const circleCells = this.circleCells = [];
+    // Per-uid "seen this query" tracking via a rolling generation counter
+    // (avoids allocating a fresh dedup map for every query).
+    boxSeen: Uint32Array;
+    circleSeen: Uint32Array;
+    generation: number;
 
-        // More cells -> fewer geometries to check per cell, but items tend
-        // to be split across more cells.
-        // Sweet spot allows most small items to fit in one cell
-        this.xCellCount = Math.ceil(width / cellSize);
-        this.yCellCount = Math.ceil(height / cellSize);
+    constructor(width: number | ArrayBuffer, height?: number, cellSize?: number) {
+        this.boxSeen = new Uint32Array(0);
+        this.circleSeen = new Uint32Array(0);
+        this.generation = 0;
 
-        for (let i = 0; i < this.xCellCount * this.yCellCount; i++) {
-            boxCells.push([]);
-            circleCells.push([]);
+        if (width instanceof ArrayBuffer) {
+            const a = new Int32Array(width);
+            this.width = a[0]!;
+            this.height = a[1]!;
+            this.xCellCount = a[2]!;
+            this.yCellCount = a[3]!;
+            this.boxUid = a[4]!;
+            this.circleUid = a[5]!;
+
+            const nCells = this.xCellCount * this.yCellCount;
+            const boxCells: CellArray = [];
+            for (let i = 0; i < nCells; i++) {
+                const start = a[HEADER_LEN + i]!;
+                const end = a[HEADER_LEN + i + 1]!;
+                boxCells.push(start === end ? null : a.subarray(start, end));
+            }
+            const circleTable = a[HEADER_LEN + nCells]!;
+            const circleCells: CellArray = [];
+            for (let i = 0; i < nCells; i++) {
+                const start = a[circleTable + i]!;
+                const end = a[circleTable + i + 1]!;
+                circleCells.push(start === end ? null : a.subarray(start, end));
+            }
+            let offset = a[circleTable + nCells]!;
+            this.boxCells = boxCells;
+            this.circleCells = circleCells;
+            this.boxKeys = a.subarray(offset, offset + this.boxUid);
+            offset += this.boxUid;
+            this.circleKeys = a.subarray(offset, offset + this.circleUid);
+            offset += this.circleUid;
+            this.bboxes = a.subarray(offset, offset + this.boxUid * 4);
+            offset += this.boxUid * 4;
+            this.circles = a.subarray(offset, offset + this.circleUid * 3);
+        } else {
+            this.width = width;
+            this.height = height!;
+            this.xCellCount = Math.ceil(width / cellSize!);
+            this.yCellCount = Math.ceil(height! / cellSize!);
+
+            const nCells = this.xCellCount * this.yCellCount;
+            const boxCells: CellArray = [];
+            const circleCells: CellArray = [];
+            for (let i = 0; i < nCells; i++) {
+                boxCells.push([]);
+                circleCells.push([]);
+            }
+            this.boxCells = boxCells;
+            this.circleCells = circleCells;
+            this.boxKeys = [];
+            this.circleKeys = [];
+            this.bboxes = [];
+            this.circles = [];
+            this.boxUid = 0;
+            this.circleUid = 0;
         }
-        this.circleKeys = [];
-        this.boxKeys = [];
-        this.bboxes = [];
-        this.circles = [];
-
-        this.width = width;
-        this.height = height;
-        this.xScale = this.xCellCount / width;
-        this.yScale = this.yCellCount / height;
-        this.boxUid = 0;
-        this.circleUid = 0;
+        this.xScale = this.xCellCount / this.width;
+        this.yScale = this.yCellCount / this.height;
     }
 
     keysLength(): number {
         return this.boxKeys.length + this.circleKeys.length;
     }
 
-    insert(key: any, x1: number, y1: number, x2: number, y2: number) {
-        this._forEachCell(x1, y1, x2, y2, this._insertBoxCell, this.boxUid++);
-        this.boxKeys.push(key);
-        this.bboxes.push(x1);
-        this.bboxes.push(y1);
-        this.bboxes.push(x2);
-        this.bboxes.push(y2);
+    clear() {
+        for (const cell of this.boxCells) if (cell) (cell as Array<number>).length = 0;
+        for (const cell of this.circleCells) if (cell) (cell as Array<number>).length = 0;
+        (this.circleKeys as Array<K>).length = 0;
+        (this.boxKeys as Array<K>).length = 0;
+        (this.bboxes as Array<number>).length = 0;
+        (this.circles as Array<number>).length = 0;
+        this.boxUid = 0;
+        this.circleUid = 0;
     }
 
-    insertCircle(key: any, x: number, y: number, radius: number) {
-        // Insert circle into grid for all cells in the circumscribing square
-        // It's more than necessary (by a factor of 4/PI), but fast to insert
-        this._forEachCell(x - radius, y - radius, x + radius, y + radius, this._insertCircleCell, this.circleUid++);
-        this.circleKeys.push(key);
-        this.circles.push(x);
-        this.circles.push(y);
-        this.circles.push(radius);
-    }
-
-    _insertBoxCell(x1: number, y1: number, x2: number, y2: number, cellIndex: number, uid: number) {
-        this.boxCells[cellIndex].push(uid);
-    }
-
-    _insertCircleCell(x1: number, y1: number, x2: number, y2: number, cellIndex: number, uid: number)  {
-        this.circleCells[cellIndex].push(uid);
-    }
-
-    _query(
-        x1: number,
-        y1: number,
-        x2: number,
-        y2: number,
-        hitTest: boolean,
-        predicate?: any,
-    ): boolean | Array<GridItem> {
-        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) {
-            return hitTest ? false : [];
-        }
-        const result = [];
-        if (x1 <= 0 && y1 <= 0 && this.width <= x2 && this.height <= y2) {
-            if (hitTest) {
-                return true;
+    insert(key: K, x1: number, y1: number, x2: number, y2: number) {
+        const uid = this.boxUid++;
+        const cx1 = this._xCell(x1), cy1 = this._yCell(y1);
+        const cx2 = this._xCell(x2), cy2 = this._yCell(y2);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                (this.boxCells[this.xCellCount * cy + cx] as Array<number>).push(uid);
             }
-            for (let boxUid = 0; boxUid < this.boxKeys.length; boxUid++) {
-                result.push({
-                    key: this.boxKeys[boxUid],
-                    x1: this.bboxes[boxUid * 4],
-                    y1: this.bboxes[boxUid * 4 + 1],
-                    x2: this.bboxes[boxUid * 4 + 2],
-                    y2: this.bboxes[boxUid * 4 + 3]
-                });
-            }
-            for (let circleUid = 0; circleUid < this.circleKeys.length; circleUid++) {
-                const x = this.circles[circleUid * 3];
-                const y = this.circles[circleUid * 3 + 1];
-                const radius = this.circles[circleUid * 3 + 2];
-                result.push({
-                    key: this.circleKeys[circleUid],
-                    x1: x - radius,
-                    y1: y - radius,
-                    x2: x + radius,
-                    y2: y + radius
-                });
-            }
-            return predicate ? result.filter(predicate) : result;
-        } else {
-            const queryArgs = {
-                hitTest,
-                seenUids: {box: {}, circle: {}}
-            };
-            this._forEachCell(x1, y1, x2, y2, this._queryCell, result, queryArgs, predicate);
-            return hitTest ? result.length > 0 : result;
         }
+        (this.boxKeys as Array<K>).push(key);
+        (this.bboxes as Array<number>).push(x1, y1, x2, y2);
     }
 
-    _queryCircle(x: number, y: number, radius: number, hitTest: boolean, predicate?: any): boolean | Array<GridItem> {
-        // Insert circle into grid for all cells in the circumscribing square
-        // It's more than necessary (by a factor of 4/PI), but fast to insert
-        const x1 = x - radius;
-        const x2 = x + radius;
-        const y1 = y - radius;
-        const y2 = y + radius;
-        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) {
-            return hitTest ? false : [];
+    insertCircle(key: K, x: number, y: number, radius: number) {
+        // Insert into all cells in the circumscribing square. More than
+        // necessary (by 4/PI) but fast.
+        const uid = this.circleUid++;
+        const cx1 = this._xCell(x - radius), cy1 = this._yCell(y - radius);
+        const cx2 = this._xCell(x + radius), cy2 = this._yCell(y + radius);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                (this.circleCells[this.xCellCount * cy + cx] as Array<number>).push(uid);
+            }
         }
-
-        // Box query early exits if the bounding box is larger than the grid, but we don't do
-        // the equivalent calculation for circle queries because early exit is less likely
-        // and the calculation is more expensive
-        const result = [];
-        const queryArgs = {
-            hitTest,
-            circle: {x, y, radius},
-            seenUids: {box: {}, circle: {}}
-        };
-        this._forEachCell(x1, y1, x2, y2, this._queryCellCircle, result, queryArgs, predicate);
-        return hitTest ? result.length > 0 : result;
+        (this.circleKeys as Array<K>).push(key);
+        (this.circles as Array<number>).push(x, y, radius);
     }
 
-    query(x1: number, y1: number, x2: number, y2: number, predicate?: any): Array<GridItem> {
-        return this._query(x1, y1, x2, y2, false, predicate) as any;
-    }
+    query(x1: number, y1: number, x2: number, y2: number, predicate?: KeyPredicate<K>): Array<GridItem<K>> {
+        const result: Array<GridItem<K>> = [];
+        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) return result;
+        const gen = this._nextGen();
+        const {boxCells, circleCells, boxKeys, circleKeys, bboxes, circles, boxSeen, circleSeen, xCellCount} = this;
 
-    hitTest(x1: number, y1: number, x2: number, y2: number, predicate?: any): boolean {
-        return this._query(x1, y1, x2, y2, true, predicate) as any;
-    }
-
-    hitTestCircle(x: number, y: number, radius: number, predicate?: any): boolean {
-        return this._queryCircle(x, y, radius, true, predicate) as any;
-    }
-
-    _queryCell(
-        x1: number,
-        y1: number,
-        x2: number,
-        y2: number,
-        cellIndex: number,
-        result: any,
-        queryArgs: any,
-        predicate?: any,
-    ): void | boolean {
-        const seenUids = queryArgs.seenUids;
-        const boxCell = this.boxCells[cellIndex];
-        if (boxCell !== null) {
-            const bboxes = this.bboxes;
-            for (const boxUid of boxCell) {
-                if (!seenUids.box[boxUid]) {
-                    seenUids.box[boxUid] = true;
-                    const offset = boxUid * 4;
-                    if ((x1 <= bboxes[offset + 2]) &&
-                        (y1 <= bboxes[offset + 3]) &&
-                        (x2 >= bboxes[offset + 0]) &&
-                        (y2 >= bboxes[offset + 1]) &&
-                        (!predicate || predicate(this.boxKeys[boxUid]))) {
-                        if (queryArgs.hitTest) {
-                            result.push(true);
-                            return true;
-                        } else {
-                            result.push({
-                                key: this.boxKeys[boxUid],
-                                x1: bboxes[offset],
-                                y1: bboxes[offset + 1],
-                                x2: bboxes[offset + 2],
-                                y2: bboxes[offset + 3]
-                            });
+        const cx1 = this._xCell(x1), cy1 = this._yCell(y1);
+        const cx2 = this._xCell(x2), cy2 = this._yCell(y2);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                const ci = xCellCount * cy + cx;
+                const bc = boxCells[ci];
+                if (bc) {
+                    for (let i = 0; i < bc.length; i++) {
+                        const uid = bc[i]!;
+                        if (boxSeen[uid] === gen) continue;
+                        boxSeen[uid] = gen;
+                        const o = uid * 4;
+                        const bx1 = bboxes[o]!, by1 = bboxes[o + 1]!, bx2 = bboxes[o + 2]!, by2 = bboxes[o + 3]!;
+                        if (x1 <= bx2 && y1 <= by2 && x2 >= bx1 && y2 >= by1 &&
+                            (!predicate || predicate(boxKeys[uid] as K))) {
+                            result.push({key: boxKeys[uid] as K, x1: bx1, y1: by1, x2: bx2, y2: by2});
+                        }
+                    }
+                }
+                const cc = circleCells[ci];
+                if (cc) {
+                    for (let i = 0; i < cc.length; i++) {
+                        const uid = cc[i]!;
+                        if (circleSeen[uid] === gen) continue;
+                        circleSeen[uid] = gen;
+                        const o = uid * 3;
+                        const x = circles[o]!, y = circles[o + 1]!, r = circles[o + 2]!;
+                        if (this._circleAndRectCollide(x, y, r, x1, y1, x2, y2) &&
+                            (!predicate || predicate(circleKeys[uid] as K))) {
+                            result.push({key: circleKeys[uid] as K, x1: x - r, y1: y - r, x2: x + r, y2: y + r});
                         }
                     }
                 }
             }
         }
-        const circleCell = this.circleCells[cellIndex];
-        if (circleCell !== null) {
-            const circles = this.circles;
-            for (const circleUid of circleCell) {
-                if (!seenUids.circle[circleUid]) {
-                    seenUids.circle[circleUid] = true;
-                    const offset = circleUid * 3;
-                    if (this._circleAndRectCollide(
-                        circles[offset],
-                        circles[offset + 1],
-                        circles[offset + 2],
-                        x1,
-                        y1,
-                        x2,
-                        y2) &&
-                        (!predicate || predicate(this.circleKeys[circleUid]))) {
-                        if (queryArgs.hitTest) {
-                            result.push(true);
-                            return true;
-                        } else {
-                            const x = circles[offset];
-                            const y = circles[offset + 1];
-                            const radius = circles[offset + 2];
-                            result.push({
-                                key: this.circleKeys[circleUid],
-                                x1: x - radius,
-                                y1: y - radius,
-                                x2: x + radius,
-                                y2: y + radius
-                            });
-                        }
+        return result;
+    }
+
+    // Box-only query returning a flat array of keys. The optional
+    // bbox-predicate is used to skip whole cells whose bounds don't intersect
+    // the query shape, then re-applied to each candidate's stored bbox in
+    // place of the simple AABB overlap test.
+    queryKeys(x1: number, y1: number, x2: number, y2: number, predicate?: (x1: number, y1: number, x2: number, y2: number) => boolean): Array<number> {
+        const result: Array<number> = [];
+        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) return result;
+        const gen = this._nextGen();
+        const {boxCells, boxKeys, bboxes, boxSeen, xCellCount, xScale, yScale} = this;
+
+        const cx1 = this._xCell(x1), cy1 = this._yCell(y1);
+        const cx2 = this._xCell(x2), cy2 = this._yCell(y2);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                if (predicate && !predicate(cx / xScale, cy / yScale, (cx + 1) / xScale, (cy + 1) / yScale)) continue;
+                const bc = boxCells[xCellCount * cy + cx];
+                if (!bc) continue;
+                for (let i = 0; i < bc.length; i++) {
+                    const uid = bc[i]!;
+                    if (boxSeen[uid] === gen) continue;
+                    boxSeen[uid] = gen;
+                    const o = uid * 4;
+                    const bx1 = bboxes[o]!, by1 = bboxes[o + 1]!, bx2 = bboxes[o + 2]!, by2 = bboxes[o + 3]!;
+                    if (predicate ? predicate(bx1, by1, bx2, by2) :
+                        (x1 <= bx2 && y1 <= by2 && x2 >= bx1 && y2 >= by1)) {
+                        result.push(boxKeys[uid] as number);
                     }
                 }
             }
         }
+        return result;
     }
 
-    _queryCellCircle(
-        x1: number,
-        y1: number,
-        x2: number,
-        y2: number,
-        cellIndex: number,
-        result: any,
-        queryArgs: any,
-        predicate?: any,
-    ): void | boolean {
-        const circle = queryArgs.circle;
-        const seenUids = queryArgs.seenUids;
-        const boxCell = this.boxCells[cellIndex];
-        if (boxCell !== null) {
-            const bboxes = this.bboxes;
-            for (const boxUid of boxCell) {
-                if (!seenUids.box[boxUid]) {
-                    seenUids.box[boxUid] = true;
-                    const offset = boxUid * 4;
-                    if (this._circleAndRectCollide(
-                        circle.x,
-                        circle.y,
-                        circle.radius,
-                        bboxes[offset + 0],
-                        bboxes[offset + 1],
-                        bboxes[offset + 2],
-                        bboxes[offset + 3]) &&
-                        (!predicate || predicate(this.boxKeys[boxUid]))) {
-                        result.push(true);
-                        return true;
+    hitTest(x1: number, y1: number, x2: number, y2: number, predicate?: KeyPredicate<K>): boolean {
+        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) return false;
+        const gen = this._nextGen();
+        const {boxCells, circleCells, boxKeys, circleKeys, bboxes, circles, boxSeen, circleSeen, xCellCount} = this;
+
+        const cx1 = this._xCell(x1), cy1 = this._yCell(y1);
+        const cx2 = this._xCell(x2), cy2 = this._yCell(y2);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                const ci = xCellCount * cy + cx;
+                const bc = boxCells[ci];
+                if (bc) {
+                    for (let i = 0; i < bc.length; i++) {
+                        const uid = bc[i]!;
+                        if (boxSeen[uid] === gen) continue;
+                        boxSeen[uid] = gen;
+                        const o = uid * 4;
+                        if (x1 <= bboxes[o + 2]! && y1 <= bboxes[o + 3]! && x2 >= bboxes[o]! && y2 >= bboxes[o + 1]! &&
+                            (!predicate || predicate(boxKeys[uid] as K))) return true;
+                    }
+                }
+                const cc = circleCells[ci];
+                if (cc) {
+                    for (let i = 0; i < cc.length; i++) {
+                        const uid = cc[i]!;
+                        if (circleSeen[uid] === gen) continue;
+                        circleSeen[uid] = gen;
+                        const o = uid * 3;
+                        if (this._circleAndRectCollide(circles[o]!, circles[o + 1]!, circles[o + 2]!, x1, y1, x2, y2) &&
+                            (!predicate || predicate(circleKeys[uid] as K))) return true;
                     }
                 }
             }
         }
+        return false;
+    }
 
-        const circleCell = this.circleCells[cellIndex];
-        if (circleCell !== null) {
-            const circles = this.circles;
-            for (const circleUid of circleCell) {
-                if (!seenUids.circle[circleUid]) {
-                    seenUids.circle[circleUid] = true;
-                    const offset = circleUid * 3;
-                    if (this._circlesCollide(
-                        circles[offset],
-                        circles[offset + 1],
-                        circles[offset + 2],
-                        circle.x,
-                        circle.y,
-                        circle.radius) &&
-                        (!predicate || predicate(this.circleKeys[circleUid]))) {
-                        result.push(true);
-                        return true;
+    hitTestCircle(x: number, y: number, radius: number, predicate?: KeyPredicate<K>): boolean {
+        const x1 = x - radius, y1 = y - radius;
+        const x2 = x + radius, y2 = y + radius;
+        if (x2 < 0 || x1 > this.width || y2 < 0 || y1 > this.height) return false;
+        const gen = this._nextGen();
+        const {boxCells, circleCells, boxKeys, circleKeys, bboxes, circles, boxSeen, circleSeen, xCellCount} = this;
+
+        const cx1 = this._xCell(x1), cy1 = this._yCell(y1);
+        const cx2 = this._xCell(x2), cy2 = this._yCell(y2);
+        for (let cx = cx1; cx <= cx2; cx++) {
+            for (let cy = cy1; cy <= cy2; cy++) {
+                const ci = xCellCount * cy + cx;
+                const bc = boxCells[ci];
+                if (bc) {
+                    for (let i = 0; i < bc.length; i++) {
+                        const uid = bc[i]!;
+                        if (boxSeen[uid] === gen) continue;
+                        boxSeen[uid] = gen;
+                        const o = uid * 4;
+                        if (this._circleAndRectCollide(x, y, radius, bboxes[o]!, bboxes[o + 1]!, bboxes[o + 2]!, bboxes[o + 3]!) &&
+                            (!predicate || predicate(boxKeys[uid] as K))) return true;
+                    }
+                }
+                const cc = circleCells[ci];
+                if (cc) {
+                    for (let i = 0; i < cc.length; i++) {
+                        const uid = cc[i]!;
+                        if (circleSeen[uid] === gen) continue;
+                        circleSeen[uid] = gen;
+                        const o = uid * 3;
+                        if (this._circlesCollide(circles[o]!, circles[o + 1]!, circles[o + 2]!, x, y, radius) &&
+                            (!predicate || predicate(circleKeys[uid] as K))) return true;
                     }
                 }
             }
         }
+        return false;
     }
 
-    _forEachCell(x1: number, y1: number, x2: number, y2: number, fn: any, arg1: any, arg2?: any, predicate?: any) {
-        const cx1 = this._convertToXCellCoord(x1);
-        const cy1 = this._convertToYCellCoord(y1);
-        const cx2 = this._convertToXCellCoord(x2);
-        const cy2 = this._convertToYCellCoord(y2);
+    static serialize(grid: GridIndex<number>, transferables?: Set<Transferable>): {buffer: ArrayBuffer} {
+        const buffer = grid.toArrayBuffer();
+        if (transferables) transferables.add(buffer);
+        return {buffer};
+    }
 
-        for (let x = cx1; x <= cx2; x++) {
-            for (let y = cy1; y <= cy2; y++) {
-                const cellIndex = this.xCellCount * y + x;
-                if (fn.call(this, x1, y1, x2, y2, cellIndex, arg1, arg2, predicate)) return;
-            }
+    static deserialize(serialized: {buffer: ArrayBuffer}): GridIndex<number> {
+        return new GridIndex<number>(serialized.buffer);
+    }
+
+    toArrayBuffer(): ArrayBuffer {
+        const nCells = this.xCellCount * this.yCellCount;
+        let totalBox = 0, totalCircle = 0;
+        for (let i = 0; i < nCells; i++) {
+            totalBox += this.boxCells[i]!.length;
+            totalCircle += this.circleCells[i]!.length;
         }
+        const totalLen =
+            HEADER_LEN +
+            (nCells + 1) + totalBox +
+            (nCells + 1) + totalCircle +
+            this.boxUid + this.circleUid +
+            this.boxUid * 4 + this.circleUid * 3;
+
+        const a = new Int32Array(totalLen);
+        a[0] = this.width;
+        a[1] = this.height;
+        a[2] = this.xCellCount;
+        a[3] = this.yCellCount;
+        a[4] = this.boxUid;
+        a[5] = this.circleUid;
+
+        let offset = HEADER_LEN + (nCells + 1);
+        for (let i = 0; i < nCells; i++) {
+            a[HEADER_LEN + i] = offset;
+            const cell = this.boxCells[i] as Array<number>;
+            a.set(cell, offset);
+            offset += cell.length;
+        }
+        a[HEADER_LEN + nCells] = offset;
+
+        const circleTable = offset;
+        offset += nCells + 1;
+        for (let i = 0; i < nCells; i++) {
+            a[circleTable + i] = offset;
+            const cell = this.circleCells[i] as Array<number>;
+            a.set(cell, offset);
+            offset += cell.length;
+        }
+        a[circleTable + nCells] = offset;
+
+        a.set(this.boxKeys as KeyArray<K> & ArrayLike<number>, offset);
+        offset += this.boxUid;
+        a.set(this.circleKeys as KeyArray<K> & ArrayLike<number>, offset);
+        offset += this.circleUid;
+        a.set(this.bboxes, offset);
+        offset += this.boxUid * 4;
+        a.set(this.circles, offset);
+
+        return a.buffer;
     }
 
-    _convertToXCellCoord(x: number): number {
+    _xCell(x: number): number {
         return Math.max(0, Math.min(this.xCellCount - 1, Math.floor(x * this.xScale)));
     }
 
-    _convertToYCellCoord(y: number): number {
+    _yCell(y: number): number {
         return Math.max(0, Math.min(this.yCellCount - 1, Math.floor(y * this.yScale)));
+    }
+
+    _nextGen(): number {
+        if (this.boxSeen.length < this.boxUid) this.boxSeen = new Uint32Array(this.boxUid);
+        if (this.circleSeen.length < this.circleUid) this.circleSeen = new Uint32Array(this.circleUid);
+        this.generation = (this.generation + 1) >>> 0;
+        if (this.generation === 0) {
+            this.boxSeen.fill(0);
+            this.circleSeen.fill(0);
+            this.generation = 1;
+        }
+        return this.generation;
     }
 
     _circlesCollide(x1: number, y1: number, r1: number, x2: number, y2: number, r2: number): boolean {
         const dx = x2 - x1;
         const dy = y2 - y1;
-        const bothRadii = r1 + r2;
-        return (bothRadii * bothRadii) > (dx * dx + dy * dy);
+        const r = r1 + r2;
+        return r * r > dx * dx + dy * dy;
     }
 
-    _circleAndRectCollide(
-        circleX: number,
-        circleY: number,
-        radius: number,
-        x1: number,
-        y1: number,
-        x2: number,
-        y2: number,
-    ): boolean {
-        const halfRectWidth = (x2 - x1) / 2;
-        const distX = Math.abs(circleX - (x1 + halfRectWidth));
-        if (distX > (halfRectWidth + radius)) {
-            return false;
-        }
+    _circleAndRectCollide(cx: number, cy: number, r: number, x1: number, y1: number, x2: number, y2: number): boolean {
+        const halfW = (x2 - x1) / 2;
+        const distX = Math.abs(cx - (x1 + halfW));
+        if (distX > halfW + r) return false;
 
-        const halfRectHeight = (y2 - y1) / 2;
-        const distY = Math.abs(circleY - (y1 + halfRectHeight));
-        if (distY > (halfRectHeight + radius)) {
-            return false;
-        }
+        const halfH = (y2 - y1) / 2;
+        const distY = Math.abs(cy - (y1 + halfH));
+        if (distY > halfH + r) return false;
 
-        if (distX <= halfRectWidth || distY <= halfRectHeight) {
-            return true;
-        }
+        if (distX <= halfW || distY <= halfH) return true;
 
-        const dx = distX - halfRectWidth;
-        const dy = distY - halfRectHeight;
-        return (dx * dx + dy * dy <= (radius * radius));
+        const dx = distX - halfW;
+        const dy = distY - halfH;
+        return dx * dx + dy * dy <= r * r;
     }
 }
 

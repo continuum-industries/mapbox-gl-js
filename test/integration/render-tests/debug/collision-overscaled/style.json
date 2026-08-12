@@ -2,8 +2,12 @@
   "version": 8,
   "metadata": {
     "test": {
+      "pixelRatio": 2,
       "collisionDebug": true,
-      "height": 256
+      "height": 256,
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "https://github.com/mapbox/mapbox-gl-native/issues/3841"}
+      ]
     }
   },
   "center": [
@@ -11,6 +15,7 @@
     52.499167
   ],
   "zoom": 17,
+  "camera": {"camera-projection": "orthographic"},
   "sources": {
     "mapbox": {
       "type": "vector",

@@ -3,7 +3,11 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00025},
+        {"platform-tag-contains": "native", "threshold": 0.0015}
+      ]
     }
   },
   "sources": {
@@ -21,7 +25,7 @@
             "geometry": {
               "type": "Point",
               "coordinates": [
-                -10,
+                -10.1,
                 0
               ]
             }
@@ -35,7 +39,7 @@
             "geometry": {
               "type": "Point",
               "coordinates": [
-                10,
+                10.1,
                 0
               ]
             }

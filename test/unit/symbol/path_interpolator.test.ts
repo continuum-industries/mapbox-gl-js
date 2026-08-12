@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import Point from '@mapbox/point-geometry';
@@ -6,6 +7,7 @@ import PathInterpolator from '../../../src/symbol/path_interpolator';
 describe('PathInterpolator', () => {
     const pointEquals = (p0, p1) => {
         const e = 0.000001;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         return Math.abs(p0.x - p1.x) < e && Math.abs(p0.y - p1.y) < e;
     };
 

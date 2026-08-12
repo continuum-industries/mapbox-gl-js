@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {expect, test, describe} from '../../util/vitest';
 import {ClearColor, ClearDepth, ClearStencil, ColorMask, DepthMask, StencilMask, StencilFunc, StencilOp, StencilTest, DepthRange, DepthTest, DepthFunc, Blend, BlendFunc, BlendColor, Program, ActiveTextureUnit, Viewport, BindFramebuffer, BindRenderbuffer, BindTexture, BindVertexBuffer, BindElementBuffer, BindVertexArrayOES, PixelStoreUnpack, PixelStoreUnpackPremultiplyAlpha} from '../../../src/gl/value';
@@ -11,16 +12,22 @@ const context = new Context(gl);
 
 function ValueTest(Constructor, options) {
     test('#constructor', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
         const v = new Constructor(context);
         expect(v).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const currentV = v.get();
         expect(typeof currentV).not.toBe('undefined');  // instantiates with a default value
     });
 
     test('#set', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
         const v = new Constructor(context);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         v.set(options.setValue);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         const equality = (options.equality) || ((a, b) => (deepEqual(a, b)));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(equality(v.get(), options.setValue)).toBeTruthy();
     });
 }
@@ -129,6 +136,7 @@ describe('BindElementBuffer', ValueTest.bind(ValueTest, BindElementBuffer, {
 
 describe('BindVertexArrayOES', ValueTest.bind(ValueTest, BindVertexArrayOES, {
     equality: (a, b) => a === b,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     setValue: context.extVertexArrayObject
 }));
 

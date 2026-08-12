@@ -4,11 +4,17 @@
     "test": {
       "height": 64,
       "width": 64,
-      "allowed": 0.055
+      "skip-test": [
+        {"platform-tag-contains": "native-ios", "reason": "Needs to be investigated and fixed."}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "native", "threshold": 0.056}
+      ]
     }
   },
   "center": [ 0, 0 ],
   "zoom": 0,
+  "camera": {"camera-projection": "orthographic"},
   "sources": {
     "point": {
       "type": "geojson",
@@ -36,17 +42,17 @@
     }
   },
   "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
-  "sprite": "local://sprites/emerald@2x",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "text",
       "type": "symbol",
       "source": "point",
       "layout": {
-        "text-field": ["format", "Test", ["image", 
+        "text-field": ["format", "Test", ["image",
             ["case", ["==", ["get", "scalerank"], ["literal", 2]],
             "",
-            "zoo_icon"
+            "zoo"
             ]
           ]
         ],

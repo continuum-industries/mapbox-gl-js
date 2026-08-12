@@ -4,7 +4,18 @@
       "test": {
         "width": 512,
         "height": 512,
-        "allowed": 0.0006
+        "skip-test": [
+          {"platform-tag-contains": "native-android", "reason": "https://mapbox.atlassian.net/browse/MAPS3D-915"},
+          {"platform-tag-contains": "native-linux", "reason": "skip - https://mapbox.atlassian.net/browse/MAPS3D-822"},
+          {"platform-tag-contains": "native-macos", "reason": "skip - https://mapbox.atlassian.net/browse/MAPS3D-822"}
+        ],
+        "ignore-metrics": [
+          {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+        ],
+        "image-threshold": [
+          {"platform-tag-contains": "", "threshold": 0.0006},
+          {"platform-tag-contains": "native-ios", "threshold": 0.00096}
+        ]
       }
     },
     "lights": [

@@ -3,7 +3,10 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "skip-test": [
+        {"platform-tag-contains": "native-linux", "reason": "Flaky on Linux: https://github.com/mapbox/mapbox-gl-native/issues/14768"}
+      ]
     }
   },
   "zoom": 0.5,
@@ -39,7 +42,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "fill",
@@ -47,7 +50,7 @@
       "source": "geojson",
       "paint": {
         "fill-antialias": false,
-        "fill-pattern": "generic_icon"
+        "fill-pattern": "information"
       }
     }
   ]

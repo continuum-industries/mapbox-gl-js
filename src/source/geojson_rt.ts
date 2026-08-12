@@ -10,16 +10,18 @@ type BBox = {
     minY: number,
     maxX: number,
     maxY: number
-}
+};
 
 type InternalFeature = BBox & {
     id: string | number,
     tags: {[_: string]: string | number | boolean},
     type: 1 | 2 | 3,
     geometry: number[] | number[][]
+    properties?: object
 };
 
 const PAD = 64 / 4096; // geojson-vt default tile buffer
+const PAD_PX = 128; // the same buffer relative to EXTENT
 
 /*
  * A GeoJSON index tailored to "small data, updated frequently" use cases
@@ -182,10 +184,14 @@ function outputFeature(feature: InternalFeature, z2: number, tx: number, ty: num
     const tileGeom = [];
 
     if (type === 1) {
-        transformLine(geometry as number[], z2, tx, ty, tileGeom);
-    } else {
+        transformPoints(geometry as number[], z2, tx, ty, tileGeom as [number, number][]);
+    } else if (type === 2) {
         for (const ring of geometry) {
-            tileGeom.push(transformLine(ring as number[], z2, tx, ty));
+            transformAndClipLine(ring as number[], z2, tx, ty, tileGeom as [number, number][][]);
+        }
+    } else if (type === 3) {
+        for (const ring of geometry) {
+            transformAndClipPolygon(ring as number[], z2, tx, ty, tileGeom as [number, number][][]);
         }
     }
 
@@ -197,18 +203,134 @@ function outputFeature(feature: InternalFeature, z2: number, tx: number, ty: num
     };
 }
 
-function transformLine(line: number[], z2: number, tx: number, ty: number, out: [number, number][] = []) {
+function transformPoints(line: number[], z2: number, tx: number, ty: number, out: [number, number][]) {
     for (let i = 0; i < line.length; i += 2) {
-        out.push(transformPoint(line[i], line[i + 1], z2, tx, ty));
+        const ox = Math.round(EXTENT * (line[i + 0] * z2 - tx));
+        const oy = Math.round(EXTENT * (line[i + 1] * z2 - ty));
+        out.push([ox, oy]);
     }
-    return out;
 }
 
-function transformPoint(x: number, y: number, z2: number, tx: number, ty: number): [number, number] {
-    return [
-        Math.round(EXTENT * (x * z2 - tx)),
-        Math.round(EXTENT * (y * z2 - ty))
-    ];
+function transformAndClipLine(line: number[], z2: number, tx: number, ty: number, out: [number, number][][]) {
+    const min = -PAD_PX;
+    const max = EXTENT + PAD_PX;
+    let part: [[number, number]];
+
+    for (let i = 0; i < line.length - 2; i += 2) {
+        let x0 = Math.round(EXTENT * (line[i + 0] * z2 - tx));
+        let y0 = Math.round(EXTENT * (line[i + 1] * z2 - ty));
+        let x1 = Math.round(EXTENT * (line[i + 2] * z2 - tx));
+        let y1 = Math.round(EXTENT * (line[i + 3] * z2 - ty));
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+
+        if (x0 < min && x1 < min) {
+            continue;
+        } else if (x0 < min) {
+            y0 = y0 + Math.round(dy * ((min - x0) / dx));
+            x0 = min;
+        } else if (x1 < min) {
+            y1 = y0 + Math.round(dy * ((min - x0) / dx));
+            x1 = min;
+        }
+
+        if (y0 < min && y1 < min) {
+            continue;
+        } else if (y0 < min) {
+            x0 = x0 + Math.round(dx * ((min - y0) / dy));
+            y0 = min;
+        } else if (y1 < min) {
+            x1 = x0 + Math.round(dx * ((min - y0) / dy));
+            y1 = min;
+        }
+
+        if (x0 >= max && x1 >= max) {
+            continue;
+        } else if (x0 >= max) {
+            y0 = y0 + Math.round(dy * ((max - x0) / dx));
+            x0 = max;
+        } else if (x1 >= max) {
+            y1 = y0 + Math.round(dy * ((max - x0) / dx));
+            x1 = max;
+        }
+
+        if (y0 >= max && y1 >= max) {
+            continue;
+        } else if (y0 >= max) {
+            x0 = x0 + Math.round(dx * ((max - y0) / dy));
+            y0 = max;
+        } else if (y1 >= max) {
+            x1 = x0 + Math.round(dx * ((max - y0) / dy));
+            y1 = max;
+        }
+
+        if (!part || x0 !== part.at(-1)[0] || y0 !== part.at(-1)[1]) {
+            part = [[x0, y0]];
+            out.push(part);
+        }
+
+        part.push([x1, y1]);
+    }
+}
+
+function transformAndClipPolygon(input: number[], z2: number, tx: number, ty: number, out: [number, number][][]) {
+    const minX = (tx - PAD) / z2;
+    const minY = (ty - PAD) / z2;
+    const maxX = (tx + 1 + PAD) / z2;
+    const maxY = (ty + 1 + PAD) / z2;
+
+    function bitCode(x, y) {
+        let code = 0;
+
+        if (x < minX) code |= 1; // left
+        else if (x > maxX) code |= 2; // right
+
+        if (y < minY) code |= 4; // top
+        else if (y > maxY) code |= 8; // bottom
+
+        return code;
+    }
+
+    let clipped: number[] = [];
+
+    // clip against each side of the clip rectangle
+    for (let edge = 1; edge <= 8; edge *= 2) {
+        let x0 = input[input.length - 2];
+        let y0 = input.at(-1);
+        let prevInside = !(bitCode(x0, y0) & edge);
+
+        for (let i = 0; i < input.length; i += 2) {
+            const x1 = input[i];
+            const y1 = input[i + 1];
+            const inside = !(bitCode(x1, y1) & edge);
+
+            // if segment goes through the clip window, add an intersection
+            if (inside !== prevInside) {
+                if (edge & 8) clipped.push(x0 + (x1 - x0) * (maxY - y0) / (y1 - y0), maxY); // bottom
+                else if (edge & 4) clipped.push(x0 + (x1 - x0) * (minY - y0) / (y1 - y0), minY); // top
+                else if (edge & 2) clipped.push(maxX, y0 + (y1 - y0) * (maxX - x0) / (x1 - x0)); // right
+                else if (edge & 1) clipped.push(minX, y0 + (y1 - y0) * (minX - x0) / (x1 - x0)); // left
+            }
+
+            if (inside) clipped.push(x1, y1); // add a point if it's inside
+
+            x0 = x1;
+            y0 = y1;
+            prevInside = inside;
+        }
+
+        input = clipped;
+
+        if (!input.length || edge === 8) break;
+        clipped = [];
+    }
+
+    const ring: [number, number][] = [];
+    for (let i = 0; i < clipped.length; i += 2) ring.push([
+        Math.round(EXTENT * (clipped[i] * z2 - tx)),
+        Math.round(EXTENT * (clipped[i + 1] * z2 - ty))
+    ]);
+    if (ring.length) out.push(ring);
 }
 
 // rewind a polygon ring to a given winding order (clockwise or anti-clockwise)

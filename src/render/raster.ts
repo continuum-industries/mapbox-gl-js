@@ -1,7 +1,7 @@
 function computeRasterColorMix(
     colorRampRes: number,
-    [mixR, mixG, mixB, mixA]: [any, any, any, any],
-    [min, max]: [any, any],
+    [mixR, mixG, mixB, mixA]: [number, number, number, number],
+    [min, max]: [number, number],
 ): [number, number, number, number] {
     if (min === max) return [0, 0, 0, 0];
 
@@ -30,7 +30,7 @@ function computeRasterColorMix(
     ];
 }
 
-function computeRasterColorOffset(colorRampRes: number, offset: number, [min, max]: [any, any]): number {
+function computeRasterColorOffset(colorRampRes: number, offset: number, [min, max]: [number, number]): number {
     if (min === max) return 0;
 
     // See above for an explanation.

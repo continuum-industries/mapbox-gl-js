@@ -4,7 +4,7 @@
 uniform mat4 u_matrix;
 uniform float u_skirt_height;
 
-in vec2 a_pos;
+in ivec2 a_pos;
 
 out vec2 v_pos0;
 
@@ -17,7 +17,6 @@ uniform mat4 u_light_matrix_0;
 uniform mat4 u_light_matrix_1;
 out vec4 v_pos_light_view_0;
 out vec4 v_pos_light_view_1;
-out float v_depth;
 #endif
 
 void main() {
@@ -26,6 +25,9 @@ void main() {
     vec2 decodedPos = decomposedPosAndSkirt.xy;
     float elevation = elevation(decodedPos) - skirt * u_skirt_height;
     v_pos0 = decodedPos / 8192.0;
+#ifdef VIEWPORT_ORIGIN_TOP_LEFT
+    v_pos0.y = 1.0 - v_pos0.y;
+#endif
     gl_Position = u_matrix * vec4(decodedPos, elevation, 1.0);
 
 #ifdef FOG

@@ -2,8 +2,12 @@
   "version": 8,
   "metadata": {
     "test": {
+      "pixelRatio": 2,
       "width": 100,
-      "height": 100
+      "height": 100,
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0004}
+      ]
     }
   },
   "sources": {

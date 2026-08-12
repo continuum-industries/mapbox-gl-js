@@ -17,9 +17,9 @@ export class SingleTapRecognizer {
 
     numTouches: number;
     centroid: Point | null | undefined;
-    startTime: number;
-    aborted: boolean;
-    touches: Partial<Record<number | string, Point>>;
+    startTime!: number;
+    aborted!: boolean;
+    touches!: Partial<Record<number | string, Point>>;
 
     constructor(options: {
         numTouches: number;
@@ -59,7 +59,7 @@ export class SingleTapRecognizer {
 
         const newTouches = indexTouches(mapTouches, points);
         for (const id in this.touches) {
-            const prevPos = this.touches[id];
+            const prevPos = this.touches[id]!;
             const pos = newTouches[id];
             if (!pos || pos.dist(prevPos) > MAX_DIST) {
                 this.aborted = true;
@@ -85,9 +85,9 @@ export class TapRecognizer {
 
     singleTap: SingleTapRecognizer;
     numTaps: number;
-    lastTime: number;
+    lastTime!: number;
     lastTap: Point | null | undefined;
-    count: number;
+    count!: number;
 
     constructor(options: {
         numTaps: number;

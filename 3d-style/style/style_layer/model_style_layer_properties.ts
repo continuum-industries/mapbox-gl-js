@@ -19,15 +19,17 @@ import type {StylePropertySpecification} from '../../../src/style-spec/style-spe
 export type LayoutProps = {
     "visibility": DataConstantProperty<"visible" | "none">;
     "model-id": DataDrivenProperty<string>;
+    "model-allow-density-reduction": DataConstantProperty<boolean>;
 };
-
-const layout: Properties<LayoutProps> = new Properties({
+let layout: Properties<LayoutProps>;
+export const getLayoutProperties = (): Properties<LayoutProps> => layout || (layout = new Properties({
     "visibility": new DataConstantProperty(styleSpec["layout_model"]["visibility"]),
     "model-id": new DataDrivenProperty(styleSpec["layout_model"]["model-id"]),
-});
+    "model-allow-density-reduction": new DataConstantProperty(styleSpec["layout_model"]["model-allow-density-reduction"]),
+}));
 
 export type PaintProps = {
-    "model-opacity": DataConstantProperty<number>;
+    "model-opacity": DataDrivenProperty<number>;
     "model-rotation": DataDrivenProperty<[number, number, number]>;
     "model-scale": DataDrivenProperty<[number, number, number]>;
     "model-translation": DataDrivenProperty<[number, number, number]>;
@@ -42,10 +44,14 @@ export type PaintProps = {
     "model-height-based-emissive-strength-multiplier": DataDrivenProperty<[number, number, number, number, number]>;
     "model-cutoff-fade-range": DataConstantProperty<number>;
     "model-front-cutoff": DataConstantProperty<[number, number, number]>;
+    "model-elevation-reference": DataConstantProperty<"sea" | "ground" | "hd-road-markup">;
+    "model-line-cutout-mode": DataConstantProperty<"enabled" | "disabled" | "enabled-above-cutout">;
+    "model-color-use-theme": DataDrivenProperty<string>;
 };
 
-const paint: Properties<PaintProps> = new Properties({
-    "model-opacity": new DataConstantProperty(styleSpec["paint_model"]["model-opacity"]),
+let paint: Properties<PaintProps>;
+export const getPaintProperties = (): Properties<PaintProps> => paint || (paint = new Properties({
+    "model-opacity": new DataDrivenProperty(styleSpec["paint_model"]["model-opacity"]),
     "model-rotation": new DataDrivenProperty(styleSpec["paint_model"]["model-rotation"]),
     "model-scale": new DataDrivenProperty(styleSpec["paint_model"]["model-scale"]),
     "model-translation": new DataDrivenProperty(styleSpec["paint_model"]["model-translation"]),
@@ -60,6 +66,7 @@ const paint: Properties<PaintProps> = new Properties({
     "model-height-based-emissive-strength-multiplier": new DataDrivenProperty(styleSpec["paint_model"]["model-height-based-emissive-strength-multiplier"]),
     "model-cutoff-fade-range": new DataConstantProperty(styleSpec["paint_model"]["model-cutoff-fade-range"]),
     "model-front-cutoff": new DataConstantProperty(styleSpec["paint_model"]["model-front-cutoff"]),
-});
-
-export default { paint, layout };
+    "model-elevation-reference": new DataConstantProperty(styleSpec["paint_model"]["model-elevation-reference"]),
+    "model-line-cutout-mode": new DataConstantProperty(styleSpec["paint_model"]["model-line-cutout-mode"]),
+    "model-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+}));

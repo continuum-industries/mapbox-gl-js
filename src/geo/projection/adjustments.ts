@@ -6,15 +6,14 @@ import {clamp, smoothstep} from '../../util/util';
 import type Projection from './projection';
 import type Transform from '../transform';
 
-export default function getProjectionAdjustments(transform: Transform, withoutRotation?: boolean): Array<number> {
+export default function getProjectionAdjustments(transform: Transform, withoutRotation?: boolean): number[] {
     const interpT = getProjectionInterpolationT(transform.projection, transform.zoom, transform.width, transform.height);
     const matrix = getShearAdjustment(transform.projection, transform.zoom, transform.center, interpT, withoutRotation);
 
     const scaleAdjustment = getScaleAdjustment(transform);
     mat4.scale(matrix, matrix, [scaleAdjustment, scaleAdjustment, 1]);
 
-    // @ts-expect-error - TS2322 - Type 'mat4' is not assignable to type 'number[]'.
-    return matrix;
+    return matrix as number[];
 }
 
 export function getScaleAdjustment(transform: Transform): number {
@@ -26,12 +25,12 @@ export function getScaleAdjustment(transform: Transform): number {
     return scaleAdjustment;
 }
 
-export function getProjectionAdjustmentInverted(transform: Transform): Array<number> {
+export function getProjectionAdjustmentInverted(transform: Transform): mat2 {
     const m = getProjectionAdjustments(transform, true);
-    // @ts-expect-error - TS2322 - Type 'mat2' is not assignable to type 'number[]'.
-    return mat2.invert([] as any, [
+    return mat2.invert([], [
         m[0], m[1],
-        m[4], m[5]]);
+        m[4], m[5]]
+    );
 }
 
 export function getProjectionInterpolationT(
@@ -48,7 +47,7 @@ export function getProjectionInterpolationT(
     // The interpolation ranges are manually defined based on what makes
     // sense in a 1024px wide map. Adjust the ranges to the current size
     // of the map. The smaller the map, the earlier you can start unskewing.
-    const rangeAdjustment = Math.log(size / 1024) / Math.LN2;
+    const rangeAdjustment = Math.log2(size / 1024);
     const zoomA = range[0] + rangeAdjustment;
     const zoomB = range[1] + rangeAdjustment;
     const t = smoothstep(zoomA, zoomB, zoom);
@@ -61,7 +60,7 @@ const offset = 1 / 40000;
 /*
  * Calculates the scale difference between Mercator and the given projection at a certain location.
  */
-function getZoomAdjustment(projection: Projection, loc: LngLat) {
+export function getZoomAdjustment(projection: Projection, loc: LngLat) {
     // make sure we operate within mercator space for adjustments (they can go over for other projections)
     const lat = clamp(loc.lat, -MAX_MERCATOR_LATITUDE, MAX_MERCATOR_LATITUDE);
 
@@ -81,7 +80,7 @@ function getZoomAdjustment(projection: Projection, loc: LngLat) {
 
     const scale = Math.sqrt((mdx * mdx + mdy * mdy) / (pdx * pdx + pdy * pdy));
 
-    return Math.log(scale) / Math.LN2;
+    return Math.log2(scale);
 }
 
 function getShearAdjustment(projection: Projection, zoom: number, loc: LngLat, interpT: number, withoutRotation?: boolean) {
@@ -131,11 +130,11 @@ function getShearAdjustment(projection: Projection, zoom: number, loc: LngLat, i
 
     const scale = Math.abs(delta3.x) / Math.abs(delta4.y);
 
-    const unrotate = mat4.identity([] as any);
+    const unrotate = mat4.identity([]);
     mat4.rotateZ(unrotate, unrotate, (-angleAdjust) * (1 - (withoutRotation ? 0 : interpT)));
 
     // unskew
-    const shear = mat4.identity([] as any);
+    const shear = mat4.identity([]);
     mat4.scale(shear, shear, [1, 1 - (1 - scale) * interpT, 1]);
     shear[4] = -delta4.x / delta4.y * interpT;
 

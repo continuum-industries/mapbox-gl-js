@@ -1,10 +1,12 @@
 import Point from '@mapbox/point-geometry';
-
 import {VectorTileFeature} from '@mapbox/vector-tile';
 const toGeoJSON = VectorTileFeature.prototype.toGeoJSON;
 import EXTENT from '../style-spec/data/extent';
 
 import type {VectorTile, VectorTileLayer} from '@mapbox/vector-tile';
+
+type VectorTileFeatureLike = Pick<VectorTileFeature, 'properties' | 'extent' | 'type' | 'id' | 'loadGeometry' | 'toGeoJSON'>;
+type VectorTileLayerLike = Pick<VectorTileLayer, 'name' | 'extent' | 'length' | 'feature'>;
 
 // The feature type used by geojson-vt and supercluster. Should be extracted to
 // global type and used in module definitions for those two modules.
@@ -24,12 +26,12 @@ export type Feature = {
     geometry: Array<Array<[number, number]>>;
 };
 
-class FeatureWrapper implements VectorTileFeature {
+class FeatureWrapper implements VectorTileFeatureLike {
     _feature: Feature;
 
     extent: number;
     type: 1 | 2 | 3;
-    id: number;
+    id: number | undefined;
     properties: {
         [_: string]: string | number | boolean;
     };
@@ -47,24 +49,22 @@ class FeatureWrapper implements VectorTileFeature {
         // vector tile spec only supports integer values for feature ids --
         // allowing non-integer values here results in a non-compliant PBF
         // that causes an exception when it is parsed with vector-tile-js
-        // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'number'.
-        if ('id' in feature && !isNaN(feature.id)) {
-            // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'string'.
-            this.id = parseInt(feature.id, 10);
+        if ('id' in feature && !isNaN(feature.id as number)) {
+            this.id = parseInt(feature.id as string, 10);
         }
     }
 
     loadGeometry(): Array<Array<Point>> {
         if (this._feature.type === 1) {
-            const geometry = [];
+            const geometry: Array<Array<Point>> = [];
             for (const point of this._feature.geometry) {
                 geometry.push([new Point(point[0], point[1])]);
             }
             return geometry;
         } else {
-            const geometry = [];
+            const geometry: Array<Array<Point>> = [];
             for (const ring of this._feature.geometry) {
-                const newRing = [];
+                const newRing: Array<Point> = [];
                 for (const point of ring) {
                     newRing.push(new Point(point[0], point[1]));
                 }
@@ -79,25 +79,35 @@ class FeatureWrapper implements VectorTileFeature {
     }
 }
 
-class GeoJSONWrapper implements VectorTile, VectorTileLayer {
-    layers: {
-        [_: string]: VectorTileLayer;
-    };
+class LayerWrapper implements VectorTileLayerLike {
     name: string;
     extent: number;
     length: number;
-    _features: Array<Feature>;
+    _jsonFeatures: Array<Feature>;
 
-    constructor(features: Array<Feature>) {
-        this.layers = {'_geojsonTileLayer': this};
-        this.name = '_geojsonTileLayer';
+    constructor(name: string, features: Array<Feature>) {
+        this.name = name;
         this.extent = EXTENT;
         this.length = features.length;
-        this._features = features;
+        this._jsonFeatures = features;
     }
 
     feature(i: number): VectorTileFeature {
-        return new FeatureWrapper(this._features[i]);
+        return new FeatureWrapper(this._jsonFeatures[i]!) as unknown as VectorTileFeature;
+    }
+}
+
+class GeoJSONWrapper implements VectorTile {
+    layers: Record<string, VectorTileLayer>;
+    extent: number;
+
+    constructor(layers: {[_: string]: Array<Feature>}) {
+        this.layers = {};
+        this.extent = EXTENT;
+
+        for (const name of Object.keys(layers)) {
+            this.layers[name] = new LayerWrapper(name, layers[name]!) as unknown as VectorTileLayer;
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi, createMap} from '../../../util/vitest';
 import FullscreenControl from '../../../../src/ui/control/fullscreen_control';
@@ -34,10 +35,13 @@ test('FullscreenControl makes optional container element full screen', () => {
     const fullscreen = new FullscreenControl({container: window.document.querySelector('body')});
     map.addControl(fullscreen);
     const control = map._controls.find((ctrl) => {
-        return ctrl.hasOwnProperty('_fullscreen');
+        return Object.hasOwn(ctrl, '_fullscreen');
     });
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     control._container.requestFullscreen = () => {};
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     control._onClickFullscreen();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(control._container.tagName).toEqual('BODY');
 });

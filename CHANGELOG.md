@@ -1,3 +1,654 @@
+## 3.28.1
+
+### Bug fixes 🐞
+- Fix `iconsets` icons rendering with ESM bundle.
+
+## 3.28.0
+
+### Breaking changes ⚠️
+- Disable `text-variable-anchor` when appearances are present.
+
+### Features and improvements ✨
+- Introduce _experimental_ `map.getVerticalFieldOfView()`, `map.setVerticalFieldOfView()`, and read-only `map.getHorizontalFieldOfView()` and an animatable `fov` camera option.
+- Expose `line-border-width` and `line-border-color` as public paint properties.
+- Introduce _experimental_ `line-border-gradient` property for rendering gradient borders on lines.
+- Add support for Meshopt v1 compressed models.
+- Support string color values for the `model-color` in a model source.
+- Add `map.resetFeatureStates()` to clear all feature states for a featureset or layer.
+- Expose `map.getSchema()`/`map.setSchema()` for managing the imported style's schema.
+- Extract development and debug code from the ESM bundle into a separate module.
+- Extract more model code from the ESM core bundle.
+- Extract `raster-array` layer as a separate ESM module.
+- Reduce the bundle size by restructuring style, program, symbol, and expression code.
+- Remove experimental flag from layer appearances.
+- Improve symbol layer performance.
+- Reduce redundant repaints and checks during initial load.
+
+### Bug fixes 🐞
+- Fix double rotation of the FF5C character in vertical text rendering.
+- Preserve live gesture when camera setter is called from inside a drag/move handler.
+- Stop overwriting the `pointerEvents` of markers set by the user.
+- Fix models with vertex alpha 0 appearing black.
+- Fix incorrect rendering of fill extrusions with `fill-extrusion-edge-radius` at low zoom levels in some cases.
+
+## 3.27.0
+
+### Features and improvements ✨
+
+- Upgrade to Typescript 7
+- Add cross-source HD roads elevation for symbols
+- Improve character rotation logic for some CJK characters in vertical text rendering mode
+
+### Bug fixes 🐞
+
+- Fix raster-array out of bounds assertion error for non-mecator projections
+- Fix error when object-property strings were used in expressions
+- Fix wrong access token used on multi-map environments
+- Fix `number-format` dropping `min/max-fraction-digits` when they were 0
+- Fix line-aligned label placement during globe-mercator transition
+- Fix crash when using style expressions with prototype-derived keys
+- Fix atlas cache returning another scope images
+- Fix `Style#{get,set,remove}FeatureState` with `{target: {layerId}}` so imported-layer targets resolve against their own fragment's sources instead of the root style's
+- Fix missing building along tile borders
+- Fix dynamic imports in UMD
+- Fix import.meta crash under modern bundlers
+- Fix `setPaintProperty` on symbol properties with a transition duration of 0
+
+## 3.26.0
+
+### Breaking changes ⚠️
+
+- Remove `transition` and `interpolated` flags from the `camera-projection` style property — enum properties cannot be transitioned, so these flags were incorrect.
+
+### Features and improvements ✨
+
+- Make published TypeScript declarations self-contained, fixing consumer builds that failed with `skipLibCheck: false`.
+- Improve terrain raycast accuracy for mouse events, camera fitting, and other pointer interactions.
+- Improve landmark model LOD switching with size-based distance heuristics for better rendering performance.
+
+### Bug fixes 🐞
+
+- Fix `hd-road-markup` elevated lines rendering flat with zero-exaggeration terrain.
+- Fix `viewport-y` symbol sorting causing a `Vertex buffer is not big enough for the draw call` error when a symbol bucket had multiple segments.
+- Fix multilinestrings not displaying labels correctly.
+- Fix parametric colors sometimes loading the wrong cached image.
+
+## 3.25.0
+
+### Breaking changes ⚠️
+
+- Switch the ESM entry point to named exports (`import * as mapboxgl from 'mapbox-gl/esm'`) so that modern bundlers can eliminate small unused parts of the code. Replace `mapboxgl.accessToken` with `Map` `accessToken` option. Most of the bundle still can't be statically eliminated, but this release also improves lazy loading of code at runtime, with more improvements on the way.
+
+## Features and improvements ✨
+
+- Extend `Map` `getLayerProperty` and `setLayerProperty` to support layer-level properties (`minzoom`, `maxzoom`, `filter`, `slot`, `appearances`)
+- Extend `TileProvider` API to accept `ImageBitmap` for `raster` and `raster-dem` providers.
+- Improve model loading and rendering performance.
+- Improve symbol rendering performance.
+- Improve performance of decoding and encoding vector tiles and other protobuf-encoded assets.
+- Improve color parsing performance, slightly improving load time for styles with many color values.
+- Extract indoor and part of the model rendering code to be loaded on demand when using the ESM entry point.
+- Add `GeolocateControl` `ready` event and `setShowAccuracyCircle`, `setShowUserHeading`, `setFitBoundsOptions`, `setShowUserLocation` methods.
+- Add `KeyboardHandler` `disablePan`/`enablePan` methods.
+- Add `DragRotateHandler` `disablePitch`/`enablePitch` methods.
+- Add `TouchZoomRotateHandler` `disableTapDragZoom`/`enableTapDragZoom` methods.
+- Expose `Map` `setLanguage`, `getLanguage`, `setWorldview`, `getWorldview` as stable public methods (previously private).
+- Remove all direct dependencies from `package.json` slightly improving NPM install size and time.
+- Improve anti-aliasing for lines with borders.
+- Implement automatic conflation of regular and HD road data in preparation for future Mapbox Standard updates.
+- Add support for async `transformRequest`: the callback can now return a `Promise` and receives an `AbortSignal`, enabling patterns such as refreshing an auth token before each request.
+- Add `lightOverrides` to model source, allowing per-model light configuration independent of the global style light setup.
+- Expose `setWorkerUrl` for the ESM entry point.
+
+## Bug fixes 🐞
+
+- Fix an issue that sometimes caused black boxes to appear instead of symbol icons.
+- Fix precision issues on tile borders for elevated roads.
+- Fix rendering issues for stacked underground roads.
+- Fix minor vulnerabilities related to Object prototype pollution from an untrusted style or tiles.
+- Fix the `Cutoff is currently disabled on terrain` warning on Standard style.
+- Fix appearance conditions validation to accept compound expressions.
+- Fix issues with model cutout fading via `model-line-cutout-mode` property.
+- Fix an issue with step expression evaluation for symbol layers.
+- Fix an issue with custom layer rendering alongside data-driven `line-emissive-strength`
+
+## 3.24.0
+
+## Features and improvements ✨
+
+- Introduce Level of Detail (LOD) support for landmark models, enabling automatic switching between model versions based on camera distance.
+- Support additive blend mode with clamped density by setting the `line-blend-additive-clamp` property.
+- Improve rendering performance by reducing per-frame matrix allocations.
+- Improve rendering performance via parallel shader compilation on supported devices.
+- Improve rendering performance by advancing shader precompilation.
+- Improve shadow rendering performance.
+- Improve vector icon loading performance.
+- Improve initial load by skipping redundant config-related style layers updates in Web Workers.
+- Improve initial load by rescheduling shader precompilation to occur during browser idle time after the map's `idle` event.
+- Improve model processing performance.
+- Improve performance and memory footprint by streamlining communication between the main thread and Web Workers.
+- Reduce first-interaction jank by optimizing shader compilation pipeline behavior.
+- Optimize expression parsing performance.
+- Improve an error messaging for the `line-trim-offset` property without `lineMetrics`.
+
+## Bug fixes 🐞
+- Fix LUT to properly work with premultiplied color.
+- Fix a potential memory leak and crash occurring when a map was destroyed.
+- Fix an issue where cross-fragments config values were not correctly updated.
+
+## 3.23.1
+
+### Bug fixes 🐞
+
+- Fix a rendering error occurring with `fill-extrusion` layers when terrain is enabled in specific edge cases.
+
+## 3.23.0
+
+### Features and improvements ✨
+
+- Improve the performance of symbol layers on old devices.
+- Add `TileProvider` for raster and raster-dem sources, adding support for PMTiles with raster tiles.
+- Enable client-side fontstack compositing by default. When multiple fonts are requested they are now fetched individually and composited on the client.
+- Promote interactions API to stable.
+- Add a bundler-friendly ESM bundle in the NPM package (`import mapboxgl from 'mapbox-gl/esm'`).
+- Lazy-load procedural buildings and precipitation code when using the ESM entry point.
+
+### Bug fixes 🐞
+
+- Fix values smaller than 1 in `line-dasharray` not working.
+- Fix a render issue where black boxes could appear instead of symbols briefly in some environments.
+- Fix `scale-factor` being applied twice to icons with feature-dependent `icon-size`.
+- Fix redundant WASM requests on map load when using the Standard style.
+- Fix hillshade rendering issue when using Safari in private browsing mode.
+
+## 3.22.0
+
+### Bug fixes 🐞
+
+- Fix a crash on PowerVR devices.
+- Fix nested scopes support in clip layers.
+- Skip sub-pixel line dilution for intentionally thin lines.
+- Skip map-sessions request when `baseApiUrl` is not a Mapbox host.
+
+## 3.21.0
+
+### Features and improvements ✨
+
+- Introduce the `TileProvider` API, a mechanism for extending GL JS with custom vector tile providers.
+- Add first-class support for PMTiles via the new `TileProvider` API and an official plugin (``mapbox-gl-pmtiles-provider.js`) that loads on demand.
+- Add _experimental_ `line-blend-mode` property for rendering lines using `additive` or `multiply` blending.
+- Slightly improve overall map loading times.
+- Improve symbol layer rendering performance (by adopting Uniform Buffer Objects for data-driven properties).
+- Improve indoor maps loading performance.
+
+### Bug fixes 🐞
+
+- Fix dragging gesture not working on the compass control.
+- Various fixes and improvements for the Appearances API.
+- Fix an edge case when combining custom icons with images included in the style's sprite.
+- Fix `setWorldview` not updating layout properties correctly.
+- Fix an issue when rendering stacked underground 3D roads.
+- Fix line dashes with non-integer total array lengths.
+- Fix various rendering issues when using `*-cutoff-fade-range` properties.
+- Fix `clip` layer not clipping `fill-extrusion` ambient occlusion.
+
+## Breaking changes ⚠️
+
+- Removed `mapbox-gl-unminified.js` bundle in the distribution — please switch to either `mapbox-gl.js`, `mapbox-gl-dev.js`, or the new `esm-min/mapbox-gl.js` ESM bundle.
+- Removed `spriteFormat` `Map` option — now Mapbox styles will always use vector icons, while non-Mapbox styles will continue using classic raster sprites.
+
+## 3.20.0
+
+### Features and improvements ✨
+
+- Improve memory efficiency by sharing image resources for symbol layers across map tiles.
+
+### Bug fixes 🐞
+
+- Fix icons disappearing when changing the color theme.
+- Fix display of symbols added via the Appearances runtime API.
+
+## 3.19.1
+
+### Bug fixes 🐞
+
+- Removed the unused `@types/mapbox__point-geometry` package that was causing some Typescript builds to fail.
+
+## 3.19.0
+
+### Features and improvements ✨
+
+- Promote elevated lines properties to stable: `line-z-offset` and `line-elevation-reference`.
+- Add experimental `text-size-scale-range` and `icon-size-scale-range` style properties.
+- Add experimental `Map#setScaleFactor`/`Map#getScaleFactor` methods for controlling symbol layer scaling.
+- Apply global scale factor to images within `text-field`.
+- Fix z-fighting for elevated raster layers.
+- Add `raster-elevation-reference` paint property to elevate raster layers relative to ground instead of sea level.
+- Add `line-elevation-ground-scale` layout property to scale elevated lines with terrain exaggeration.
+- Use native async/await when loading models. **Note**: Please ensure GL JS is excluded from transpilation in your build setup.
+- Explicitly state minimum supported browser versions in `browserslist`.
+- Support `pitch` and `distance` expressions in filters.
+- Support incremental updates when using `setFeatureState`.
+- Add experimental `Map#setNearClipOffset`/`Map#getNearClipOffset` methods to control the near clip offset when ortohographic projections are used.
+
+### Bug fixes 🐞
+
+- Fix `RasterArrayTileSource#reload()` not working correctly.
+- Add request cancellation support to the `ModelSource`.
+- Fix flickering of aliased thin lines.
+- Fix elevated line bevel join artifacts at sharp corners.
+- Fix regressions in `NavigationControl`.
+- Fix namespace conflicts in different featuresets' selectors.
+- Recalculate layers with `visibility: none` in case properties were changed.
+- Fix bug in border update logic of `fill-extrusion` layer, overriding clip layer's behaviour.
+- Fix empty tiles on non-integer maxZoom when terrain was used.
+- Fix prototype pollution via Style JSON.
+
+## 3.18.1
+
+### Features and improvements ✨
+
+- Add support for `visibility` property in clip layers.
+- Improve `raster-color` precision for fine-grained value ranges.
+
+### Bug fixes 🐞
+
+- Fix color interpolation throwing errors in edge cases.
+- Fix appearances with no `icon-size`.
+- Fix disappearing symbols when used with elevated raster layers.
+
+## 3.18.0
+
+### Features and improvements ✨
+
+- Add `scaleFactor` support for images within `text-field`.
+- Add `showButton` option to `GeolocateControl` that allows hiding the control button.
+- Add `followUserLocation` option and `setFollowUserLocation` method to `GeolocateControl` to control whether the map follows the user's location.
+- Improve `GeolocateControl` timeout handling.
+- Add support for `text-rotate`, `text-size`, and `text-offset` properties in appearances.
+- Add `shadow-draw-before-layer` property to directional light, allowing control over shadow draw order in the layer stack.
+- Add `model-allow-density-reduction` property to model layers. (h/t @JoshuaJMoore)
+
+### Bug fixes 🐞
+
+- Fix interaction handlers not working on model layers.
+- Fix stretchable icons without `icon-text-fit` rendering with an incorrect size.
+- Fix `icon-size` not working correctly with `coalesce` expressions.
+- Fix `raster-color` interpolation when using `nearest` `raster-resampling`.
+- Fix render cut off for elevated raster-layer rendering in ortho projection range.
+- Fix symbol placement with optional and missing parts.
+- Expose all error properties for `GeolocateControl` error event (h/t @lucavb).
+- Fix an error when querying multipolygons in `dynamic: true` mode.
+- Fix `AttributionControl` links sanitization.
+- Fix appearances with no `icon-size` using the default value instead of the layout-defined one.
+- Fix updates to model source via `ModelSource.setModels` while models are still loading.
+- Fix polygon clipping precision errors causing rendering artifacts in elevated structures.
+- Preserve featuresets in `map.getStyle()` output.
+- Expose TypeScript types from `@mapbox/mapbox-gl-style-spec` for direct imports.
+
+## 3.17.0
+
+### Features and improvements ✨
+
+- Add experimental ESM support.
+- Make `line-emissive-strength` data-driven.
+- Remove experimental flag from the `extra_bounds` property of raster and vector sources.
+- Remove experimental flag from `model` layer.
+- Remove experimental flag from `building` layer.
+- Improve vector icons rasterization performance.
+- Improve shadow rendering performance.
+- Improve `building` layer performance.
+- Improve shader initialization performance.
+
+### Bug fixes 🐞
+
+- Fix polygon rendering for dynamic GeoJSON sources.
+- Fix `raster-array` layers not working on iOS < 18.4.
+- Fix a performance issue for symbol layers with zero fade duration and static camera.
+- Fix occasional WebGL texture warnings when rendering terrain.
+- Fix features not being localized in dynamic filters when a worldview is set.
+- Fix an issue with clipping models on Standard.
+- Fix an issue with models flashing on `setData`.
+- Fix an issue with incorrect scoping of models added during runtime.
+- Fix line patterns not elevating properly on HD roads.
+- Sanitize attributions in `AttributionControl`.
+- Correctly support filtered features in appearances.
+- Fix an issue occuring when expressions are used in appearances.
+- Fix appearance optimization that resulted in wrong appearances being rendered.
+- Fix appearance icons not changing when feature state changed multiple times.
+- Improve TypeScript types.
+
+## 3.16.0
+
+### Features and improvements ✨
+
+- Introduce experimental Appearances API for managing layer styling based on feature state.
+- Add `Map` `setLayerProperty` that combines `setLayoutProperty` & `setPaintProperty` into one method for convenience.
+- Add support for node/material overrides & other improvements to `model` source and layer.
+- Various improvements & fixes for upcoming 3D features (indoor, procedural buildings & elevated roads).
+- Add response headers to the `sourcedata` event data.
+- Improve TypeScript types for style specification.
+
+### Bug fixes 🐞
+
+- Fix raster particle layer not rendering correctly on styles with emissive light.
+- Fix icons of different sizes rendering incorrectly in appearances.
+- Fix worldview filtering with dynamic expressions.
+- Improve accuracy of `queryRenderedFeatures` for model layers.
+- Fix a bug with heatmap sometimes disappearing after switching projection.
+- Fix rendering of model layer with vector source on globe projection.
+- Fix flickering of fill-extrusion buildings when using clip layers.
+- Fix inaccuracies in 3D model query intersection.
+- Fix the passing of `GeolocationPosition` to `geolocate` event listeners.
+- Fix the placement of line-aligned text with a non-default `scaleFactor`.
+
+## 3.15.0
+
+### Features and improvements ✨
+
+- Add `queryRasterValue` method for querying values in `raster-array` layers.
+- Add `icon-image-use-theme` property.
+- Add support for Mapbox vector tiles with precalculated line metrics (for line gradients).
+- Improve HD Roads loading performance.
+- Optimize applying LUT when updating images at runtime.
+- Improve TypeScript types in Style Spec validation methods.
+- Slightly improve `hsla` expression performance.
+- Optimize applying LUT for patterns.
+- Round `queryRasterValue` results to 12 decimal digits to fix precision issues.
+- Improvements on typing and testing.
+
+### Bug fixes 🐞
+
+- Fix an issue with refreshing expired raster array tiles.
+- Fix an error on GeoJSON with `"Infinity"` and similar ids.
+- Fix `GL_INVALID_VALUE` console warning on Mapbox Satellite Standard and a few other styles.
+- Fix model layer positioning during globe to mercator transition.
+- Fix an issue with incorrect transparency for some icons with LUT applied.
+- Fix an issue where updating `*-occlusion-opacity` properties didn't have any effect.
+- Fix an issue with MRT layers throwing an error when reloading.
+- Fix occlusion layer ordering.
+- Fix an issue where using too many data-driven properties on the symbol layer could break the map.
+- Fix gradients and interpolations with fully-transparent colors.
+- Fix model layer density reduction.
+- Fix performance regression on styles that use feature-state expressions.
+
+## 3.14.0
+
+### Breaking changes ⚠️
+- Imported styles will use the `glyphs` URL template from the root style instead of their own.
+
+### Features and improvements ✨
+- Add a `split` expression to divide a string into an array of substrings based on a specified delimiter.
+- Improve memory usage for GeoJSON sources.
+
+### Bug fixes 🐞
+- Fix an issue with querying rendered features during the globe-to-Mercator transition.
+- Fix resources cleanup when removing a map with a terrain or/and vector icons.
+- Fix an issue where a single primary image was not rendered correctly with `icon-image-cross-fade`.
+- Fix an edge case involving the mixing of vertical and horizontal writing modes.
+- Fix rendering of multiple `raster` layers from a single `raster-array` source.
+- Fix restoration of maps with background patterns, heatmap, image, video, or raster sources after WebGL context loss.
+- Fix memory spike when calling `setData` on large datasets.
+
+## 3.13.0
+
+### Breaking changes ⚠️
+- `interpolate` expression will interpolate between non-alpha-premultiplied colors. The change might affect `raster-particle-color`, `line-gradient`, and `heatmap-color`.
+- `rgb` expression will return non-premultiplied-alpha color.
+
+### Features and improvements ✨
+- Add the `["worldview"]` expression, which returns the current `worldview` of the map.
+- Add `model-translation` support for batched model layers.
+- Improve indoor level interaction.
+- Add support of gradient transforms in the fill style of vector icons.
+
+### Bug fixes 🐞
+- Fix querying and styling issues with multiple model layers referencing the same source.
+- Fix `mapbox-gl-rtl-text` v0.3.0 plugin not loading in certain configurations.
+- Fix icons with `text-variable-anchor` disappearing.
+- Fix minor distortions on vector icons in some cases.
+- Fix zooming over terrain with negative altitude values.
+- Fix interactions to not throw on `mouseleave` without `mouseenter`.
+- Fix shadow rendering issues on underground structures.
+- Fix striping artifacts when rendering shadows on some GPU configurations.
+- Fix errors when viewing a style with filtered model layers.
+- Fix parsing of `color-use-theme` property of 3D lights.
+- Fix feature-dependent `config` expressions (h/t [@brncsk](https://github.com/brncsk)) [#13453](https://github.com/mapbox/mapbox-gl-js/pull/13453).
+- Fix reset of the indoor floorplan selection after moving the camera.
+- Fix excessive rerendering of the map after `setStyle` with the same URL of an import.
+- Fix source reloading during mercator-globe transition with terrain.
+- Fix color of semi-transparent vector icons.
+
+### Workflow 🛠️
+
+- Switched from CircleCI to GitHub Actions for continuous integration tests.
+
+## 3.12.0
+
+### Features and improvements ✨
+
+- Add _experimental_ support for rendering 3D road intersections.
+- Add shadow rendering support for elevated lines.
+- Add `wrapTileId` property to `CustomLayerInterface` to control whether tile IDs are wrapped across world copies during rendering.
+- Add `line-pattern-cross-fade`, `fill-pattern-cross-fade`, and `fill-extrusion-pattern-cross-fade` properties for smooth transitions between pattern images.
+- Add support for `extra_bounds` in TileJSON for more fine-grained control over tile requests, particularly when dealing with sparse data coverage.
+- Improve performance by lazy loading 3D models.
+- Slightly improve JS bundle sizes.
+- Various TypeScript types improvements.
+
+### Bug fixes 🐞
+
+- Fixed an issue where calling `setData` on symbol layers could cause flickering.
+- Expose `CustomSourceInterface` TypeScript type that was missing in the public interface.
+- Fix some edge cases related to rendering of elevated structures.
+- Relax `line-gradient` validation to work not only on GeoJSON, but also on vector tile sources if they have `mapbox_clip_start` and `mapbox_clip_end` properties precomputed.
+- Fix `styleimagemissing` event not firing in certain scenarios.
+
+## 3.11.1
+
+- Improve icon loading performance, in particular for landmark icons.
+- Fix `undefined` passed in `Marker` options not falling back to default values.
+
+## 3.11.0
+
+### Breaking changes ⚠️
+- The `at` expression does not interpolate anymore. Please use `at-interpolated` if you want to keep the old behavior.
+
+### Features and improvements ✨
+- Add landmark icons. Landmark icons are stylized, uniquely designed POI icons that indicate the most popular and recognizable landmarks on the map. At the time of this release, we have landmarks for 5 cities: London, Berlin, New York City, San Francisco, and Tokyo.
+- Add `at-interpolated` expression as the interpolated counterpart to the `at` expression.
+- Add `altitude` marker property to adjust elevation. (h/t [@yangtanyu](https://github.com/yangtanyu)) [#13335](https://github.com/mapbox/mapbox-gl-js/pull/13335).
+- Add `getCooperativeGestures` and `setCooperativeGestures` map methods to control cooperative gestures logic after the map is initialized.
+- Add `getGlyphsUrl` and `setGlyphsUrl` map methods to manage the glyphs endpoint URL.
+- Add `pitchRotateKey` map option to override the modifier key for rotate and pitch handlers.
+- Add filtering support for model layers.
+- Add support for vector icons color parameters with alpha values.
+
+### Bug fixes 🐞
+- Hide labels with unreadable angles.
+- Fix rendering of vector image in text on HiDPI screens.
+- Ensure Katakana and CJK symbols render correctly in vertical writing mode.
+- Fix popup position update on map move. (h/t [@ThugRaven](https://github.com/ThugRaven)) [#13412](https://github.com/mapbox/mapbox-gl-js/pull/13412)
+- Fix rendering of self-intersecting elevated lines.
+- Prevent line pattern from turning black at certain zoom levels when shadows are enabled.
+- Fix missing triangles in variable-width lines.
+- Improve Style-Spec validator types.
+- Fix reloading of tiles in style imports.
+- Fix issue where updated images were never cleared after patching them.
+- Fix rendering performance regression related to use-theme.
+
+## 3.10.0
+
+### Features and improvements ✨
+
+- Add support for data-driven `*-use-theme` properties.
+- Improve rendering of complex SVG clip paths for vector icons.
+
+### Bug fixes 🐞
+- Fix some mouse gestures for Firefox 136 and later on Mac OS.
+- Fix issue where the close popup button was hidden from screen readers.
+- Fix updating of schema config values of imported styles.
+- Fix line placement symbol disappearing issue during transition from globe.
+- Fix `queryRenderedFeatures` not working on duplicated model layers.
+- Fix in-place update for SDF image.
+- Fix LUT not being applied to in-place updated image.
+- Fix various issues with using `mouseenter` and `mouseleave` with Interactions API.
+- Fix error with interactible map elements during interaction with a map that wasn't fully loaded.
+- Fix rendering of elevated and non-elevated lines on the same layer.
+- Fix pixel ratio handling for patterns with vector icons.
+- Fix positioning of vector icons with modified `icon-size`.
+- Fix a blank map issue after WebGL context loss.
+- Fix loss of precision for close to camera models.
+- Fix transparent models not being culled when terrain is enabled.
+
+## 3.9.4
+- Fix vector icons rendering with stretch areas on high DPI devices.
+
+## 3.9.3
+- Fix issues when updating feature state on symbol layers.
+- Fix canvas source not rendering correctly after a canvas resize.
+
+## 3.9.2
+- Fix display of user-rendered images.
+- Fix a broken build issue in specific bundling configurations using Vite or ESBuild.
+- Fix console error issue that sometimes occur during map initialization.
+
+## 3.9.1
+
+- Fix an error when using background patterns on styles with vector icons enabled.
+- Fix `queryRenderedFeatures` not working on styles with custom layers.
+- Fix small rendering artifacts on line corners when using patterns with `line-join: none`.
+- When using `queryRenderedFeatures` and `querySourceFeatures` with `featureset`, fix `filter` option to apply to `featureset` selectors rather than original properties, and add `featureNamespace` validation.
+- Fix `queryRenderedFeatures` missing `source`, `sourceLayer` and `layer` properties in resulting features where they should be present.
+
+## 3.9.0
+
+### Breaking changes ⚠️
+
+- Rename `featureset` property to `target` in `addInteraction` and `queryRenderedFeatures` options.
+
+### Features and improvements ✨
+
+- Add _experimental_ vector icons support.
+- Add _experimental_ precipitation support through `snow` and `rain` style properties.
+- Add _experimental_ features for interactive indoor maps.
+- Add `to-hsla` expression.
+- Add `*-use-theme` property to override the color theme for specific layers.
+- Add support for `color-theme` overrides in imports.
+- Add per-feature `mouseenter`, `mouseover`, `mouseleave`, and `mouseout` events for `addInteraction`.
+- Enable mixing `featuresets` and `layers` in the `Map#queryRenderedFeatures`.
+- Improve landmark rendering performance.
+- The `clip` layer is now stable and no longer marked _experimental_.
+
+### Bug fixes 🐞
+
+- Fix crash on devices with PowerVR GPUs.
+- Fix dark shade of fill-extrusion buildings caused by specific light directions.
+- Fix double shadowing on lines at ground level.
+- Fix shadow acne from 3D structures close to the ground.
+- Fix update of state-dependent features during brightness changes.
+- Fix an edge case with fill extrusions around tile borders not being updated correctly on terrain load.
+- Fix a race condition where using `line-z-offset` would sometimes break layer rendering order.
+
+## 3.8.0
+
+### Features and improvements ✨
+
+- Add _experimental_ support for style-defined `featuresets`, an upcoming way to query features in Mapbox Standard and other fragment-based styles.
+- Add _experimental_ `Map` `addInteraction`/`removeInteraction` methods that make it easier to manage map interactions like clicking and hovering over features.
+- Add _experimental_ support for elevated lines with `line-cross-slope` and `line-elevation-reference` properties.
+- Add _experimental_ `scaleFactor` map option and `setScaleFactor` method to increase map label size (useful for improving accessibility or adjusting text size for different devices).
+- Add support for using `line-progress` expression in non-data-driven line properties.
+- Improve performance of dynamic brightness changes.
+- Minor optimizations to reduce load time.
+
+### Bug fixes 🐞
+
+- Fix localization when setting a worldview on the Mapbox Standard style.
+- Fix raster array rendering on some Android devices.
+- Fix an issue where fill-extrusion buildings would disappear when zooming out.
+- Fix line joins for thick semi-transparent or blurred lines.
+- Improve appearance of line corners with densely placed vertices.
+- Fix anti-alising aftifacts on blurred lines.
+- Fix call stack overflow caused by repeated `addImport` calls.
+- Fix failures when handling non-renderable characters.
+- Fix rendering of Osage script.
+- Fix certain edge cases when using config expression in filter properties.
+- Fix patterned fill extrusions being visible with zero opacity alpha.
+- Fix data-driven `symbol-z-offset` not working properly.
+- Fix fill extrusions on terrain producing WebGL warnings in some cases.
+- Fix `line-emissive-strength` not being applied to patterned lines.
+
+## v3.7.0
+
+### Features and improvements ✨
+
+- Add `background-pitch-alignment` property of the `background` layer, which is set to `map` by default but can now be set to `viewport`. Useful for highlighting individual features by dimming the rest of the map with a semitransparent background.
+- Add new control positions (`top`, `right`, `bottom`, and `left`) (h/t [@Ethan-Guttman](https://github.com/Ethan-Guttman)).
+- Add `retainPadding` option for camera movement methods, which can be set to `false` for pre-v3.4 padding behavior.
+- Add `config` expression support in layer filter.
+- Add symbol elevation properties: `symbol-z-offset` and `symbol-elevation-reference`.
+- Add the `fill-z-offset` property for fill layers.
+- Improve `Map#fitBounds` for the alternative projections.
+- Improve terrain hillshade lighting anchored to viewport.
+- Improve shadow casting from 3D models.
+- Improve error messages for invalid expressions.
+- Skip landmarks rendering when the camera is inside them.
+- Improve type checking for the `Map#setPaintProperty` and `Map#setLayoutProperty` methods.
+- Allow the `string` event type in Map event handlers.
+- Expose `RequestTransformFunction`, `ResourceType`, and `RequestParameters` types.
+- Improve texture memory footprint on some platforms.
+
+### Bug fixes 🐞
+- Fix feature filtering when using 3D lights.
+- Fix pattern rendering issues on some devices at high zoom levels.
+- Fix `fill-extrusion-line-width` rendering for large polygons
+- Fix symbol placement ordering when `symbol-z-order` is set to `auto`.
+- Fix the issue where `minzoom` and `maxzoom` properties were ignored by `clip` layers.
+- Fix handling previously hidden models in `clip` layers.
+- Fix directional light `cast-shadows` property type.
+- Fix an edge case that could produce `setStencilMode`-related error in the console with the dev build.
+- Fix an issue where some fill extrusions could temporarily disappear when zooming quickly in certain areas.
+- Fix an edge case that could cause flickering on a far plane on high zooms.
+
+## 3.6.0
+
+### Features and improvements ✨
+- Add wall rendering mode to the `fill-exturion` layer by introducing `fill-extrusion-line-width` and `fill-extrusion-line-alignment` properties. Set `fill-extrusion-line-width` to a non-zero value to render walls instead of a solid extrusion.
+- Improve initial load performance.
+- Add inner glow effect for negative `circle-blur` values.
+- Add support for inlining TileJSON in style source definitions using `data` field.
+- Improve 3D models' shadow appearance.
+- Improve performance of updating config values of a style.
+- Add more descriptive expression evaluation error messages.
+- Improve TypeScript typings.
+- Improve performance of symbol occlusion (visibility checks against terrain and 3D objects).
+- Add `clip-layer-scope` property to limit `clip` layer to a specific style fragment.
+- Add `Map` `idle` method to check whether a map is idle.
+
+### Bug fixes 🐞
+- Fix `isSourceLoaded` flag on `sourcedata` event for already loaded sources.
+- Fix firing `load` event when all tiles fail to load.
+- Fix performance issues when GeoJSON in `dynamic` mode is updated too frequently.
+- Fix GeoJSON line rendering in `dynamic` mode.
+- Fix rasterarray layer flickering from stale tiles cache.
+- Fix spikes when viewing terrain-enabled maps in certain environments.
+- Fix `Map` `getLayer` not working properly with custom layers.
+- Fix custom layer rendering issues on globe with high pitch.
+- Fix an issue with `line-trim-offset` on very long lines.
+- Fix rendering issues when ground effects overlap with line layers.
+- Fix landmark visibility issues near tile borders.
+- Fix accessibility issues with compact attribution button and logo.
+
+## 3.5.2
+
+- Improve 3D models rendering performance.
+- Slightly improve terrain rendering performance.
+- Fix raster particle data decoding and improve rendering quality.
+- Fix 3D lighting rendering when lookup tables (LUT) image is applied.
+- Fix shadows rendering artifacts on `fill-extrusion-cutoff-fade-range`.
+- Improve TypeScript API, including strongly typed Map event listeners, improved type narrowing, and more.
+
 ## 3.5.1
 
 - Revert default behavior of symbol occlusion behind terrain to maintain compatibility. Set `icon-occlusion-opacity`/`text-occlusion-opacity` properties to opt-in to new occlusion behavior.

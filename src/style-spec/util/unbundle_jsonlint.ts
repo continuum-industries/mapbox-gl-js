@@ -14,8 +14,9 @@ export function deepUnbundle(value: unknown): unknown {
         const unbundledValue: {
             [key: string]: unknown;
         } = {};
-        for (const key in value) {
-            unbundledValue[key] = deepUnbundle(value[key]);
+        const valueRec = value as Record<string, unknown>;
+        for (const key in valueRec) {
+            unbundledValue[key] = deepUnbundle(valueRec[key]);
         }
         return unbundledValue;
     }

@@ -1,15 +1,13 @@
 import {Event, ErrorEvent, Evented} from '../../src/util/evented';
-
-import Model from '../data/model';
-import convertModel from '../source/model_loader';
-
-import {RequestManager} from '../../src/util/mapbox';
 import {ResourceType} from '../../src/util/ajax';
+import {isValidUrl} from '../../src/style-spec/validate/validate_model';
+import {Standard, prepareStandard} from '../../modules/standard_main';
 
-import {loadGLTF} from '../util/loaders';
-
+import type Model from '../data/model';
+import type {RequestManager} from '../../src/util/mapbox';
 import type Painter from '../../src/render/painter';
 import type {ModelsSpecification} from '../../src/style-spec/types';
+import type {StyleModelMap} from '../../src/style/style_mode';
 
 // Keep the number of references to each model
 // to avoid deleting models in use
@@ -24,63 +22,86 @@ class ModelManager extends Evented {
             [id: string]: ReferencedModel;
         };
     };
+    modelUris: {
+        [scope: string]: {
+            [id: string]: string;
+        }
+    };
     numModelsLoading: {
         [scope: string]: number;
     };
     requestManager: RequestManager;
+    modelByURL: Record<string, {modelId: string, scope: string}>;
 
     constructor(requestManager: RequestManager) {
         super();
         this.requestManager = requestManager;
-        this.models = {'': {}};
-        this.numModelsLoading = {};
+        this.models = Object.create(null) as ModelManager['models'];
+        this.models[''] = Object.create(null) as ModelManager['models'][string];
+        this.modelUris = Object.create(null) as ModelManager['modelUris'];
+        this.modelUris[''] = Object.create(null) as ModelManager['modelUris'][string];
+        this.modelByURL = Object.create(null) as ModelManager['modelByURL'];
+        this.numModelsLoading = Object.create(null) as ModelManager['numModelsLoading'];
     }
 
-    loadModel(id: string, url: string): Promise<Model | null | undefined> {
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        return loadGLTF(this.requestManager.transformRequest(url, ResourceType.Model).url)
-            .then(gltf => {
-                if (!gltf) return;
+    async loadModel(id: string, url: string): Promise<Model | null | undefined> {
+        try {
+            const request = await this.requestManager.transformRequest(url, ResourceType.Model);
+            if (!this.modelByURL[url]) return null;
 
-                const nodes = convertModel(gltf);
-                const model = new Model(id, undefined, undefined, nodes);
-                model.computeBoundsAndApplyParent();
-                return model;
-            })
-            .catch((err) => {
-                if (err && err.status === 404) {
-                    return null;
-                }
-                this.fire(new ErrorEvent(new Error(`Could not load model ${id} from ${url}: ${err.message}`)));
-            });
+            await prepareStandard();
+            if (!Standard.loadModel) return null;
+            return await Standard.loadModel(request.url, id, url);
+        } catch (e) {
+            if ((e as {status?: number}).status === 404) return null;
+            this.fire(new ErrorEvent(new Error(`Could not load model ${id} from ${url}`, {cause: e})));
+        }
     }
 
     load(modelUris: {
         [key: string]: string;
-    }, scope: string) {
-        if (!this.models[scope]) this.models[scope] = {};
+    }, scope: string,
+    options: {forceReload: boolean} = {forceReload: false}) {
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
 
         const modelIds = Object.keys(modelUris);
-        this.numModelsLoading[scope] = (this.numModelsLoading[scope] || 0) + modelIds.length;
 
-        const modelLoads = [];
+        const modelLoads: Promise<Model | null | undefined>[] = [];
+        const idsToLoad: (string | number)[] = [];
         for (const modelId of modelIds) {
-            modelLoads.push(this.loadModel(modelId, modelUris[modelId]));
+            const modelURI = modelUris[modelId];
+            if (!this.hasURLBeenRequested(modelURI) || options.forceReload) {
+                this.modelByURL[modelURI] = {modelId, scope};
+                modelLoads.push(this.loadModel(modelId, modelURI));
+                idsToLoad.push(modelId);
+            }
+            if (!this.models[scope][modelId]) {
+                this.models[scope][modelId] = {model: null, numReferences: 1};
+            }
         }
+
+        this.numModelsLoading[scope] = (this.numModelsLoading[scope] || 0) + idsToLoad.length;
 
         Promise.allSettled(modelLoads)
             .then(results => {
                 for (let i = 0; i < results.length; i++) {
-                    // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'PromiseSettledResult<any>'.
-                    const {status, value} = results[i];
-                    if (status === 'fulfilled' && value) {
-                        this.models[scope][modelIds[i]] = {model: value, numReferences : 1};
+                    const {status} = results[i];
+                    if (status === 'rejected') continue;
+                    const {value} = results[i] as PromiseFulfilledResult<Model>;
+
+                    if (!this.models[scope][idsToLoad[i]]) {
+                        // Before promises getting resolved, models could have been deleted
+
+                        this.models[scope][idsToLoad[i]] = {model: null, numReferences: 1};
                     }
+
+                    this.models[scope][idsToLoad[i]].model = value;
                 }
-                this.numModelsLoading[scope] -= modelIds.length;
+                this.numModelsLoading[scope] -= idsToLoad.length;
                 this.fire(new Event('data', {dataType: 'style'}));
             })
             .catch((err) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 this.fire(new ErrorEvent(new Error(`Could not load models: ${err.message}`)));
             });
     }
@@ -92,68 +113,128 @@ class ModelManager extends Evented {
         return true;
     }
 
-    hasModel(id: string, scope: string): boolean {
-        return !!this.getModel(id, scope);
+    hasModel(id: string, scope: string, options: {exactIdMatch: boolean} = {exactIdMatch: false}): boolean {
+        return !!(options.exactIdMatch ? this.getModel(id, scope) : this.getModelByURL(this.modelUris[scope][id]));
     }
 
     getModel(id: string, scope: string): Model | null | undefined {
-        if (!this.models[scope]) this.models[scope] = {};
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
         return this.models[scope][id] ? this.models[scope][id].model : undefined;
     }
 
+    getModelByURL(modelURL: string): Model | null | undefined {
+        if (!modelURL) return null;
+
+        const referencedModel = this.modelByURL[modelURL];
+        if (!referencedModel) return null;
+
+        return this.models[referencedModel.scope][referencedModel.modelId].model;
+    }
+
+    hasModelBeenAdded(id: string, scope: string): boolean {
+        return (this.models[scope] && this.models[scope][id] !== undefined);
+    }
+
+    getModelURIs(scope: string): StyleModelMap {
+        return this.modelUris[scope] || Object.create(null) as StyleModelMap;
+    }
+
     addModel(id: string, url: string, scope: string) {
-        if (!this.models[scope]) this.models[scope] = {};
-        // update num references if the model exists
-        if (this.hasModel(id, scope)) {
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
+        if (!this.modelUris[scope]) this.modelUris[scope] = Object.create(null) as ModelManager['modelUris'][string];
+
+        const normalizedModelURL = this.requestManager.normalizeModelURL(url);
+
+        if ((this.hasModel(id, scope, {exactIdMatch: true}) || this.hasModelBeenAdded(id, scope)) && (this.modelUris[scope][id] === normalizedModelURL)) {
             this.models[scope][id].numReferences++;
+        } else if (this.hasURLBeenRequested(normalizedModelURL)) {
+            const {scope, modelId} = this.modelByURL[normalizedModelURL];
+            this.models[scope][modelId].numReferences++;
+        } else {
+            // If it's the first time we see this URL, we load it
+            this.modelUris[scope][id] = normalizedModelURL;
+            this.load({[id]: this.modelUris[scope][id]}, scope);
         }
-        this.load({[id]: this.requestManager.normalizeModelURL(url)}, scope);
     }
 
-    addModels(models: ModelsSpecification, scope: string) {
-        if (!this.models[scope]) this.models[scope] = {};
+    addModelURLs(modelsToAdd: ModelsSpecification, scope: string) {
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
+        if (!this.modelUris[scope]) this.modelUris[scope] = Object.create(null) as ModelManager['modelUris'][string];
 
-        const modelUris: Record<string, any> = {};
-        for (const modelId in models) {
-            // Add a void object so we mark this model as requested
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type 'ReferencedModel': model, numReferences
-            this.models[scope][modelId] = {};
-            modelUris[modelId] = this.requestManager.normalizeModelURL(models[modelId]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const modelUris: Record<string, any> = this.modelUris[scope];
+        for (const modelId of Object.keys(modelsToAdd)) {
+            const modelUri = modelsToAdd[modelId];
+            modelUris[modelId] = this.requestManager.normalizeModelURL(modelUri);
         }
-        this.load(modelUris, scope);
     }
 
-    addModelsFromBucket(modelUris: Array<string>, scope: string) {
-        if (!this.models[scope]) this.models[scope] = {};
+    reloadModels(scope: string) {
+        this.load(this.modelUris[scope], scope, {forceReload: true});
+    }
 
-        const modelsRequests: Record<string, any> = {};
-        for (const modelUri of modelUris) {
-            if (this.hasModel(modelUri, scope)) {
-                this.models[scope][modelUri].numReferences++;
-            } else {
-                modelsRequests[modelUri] = this.requestManager.normalizeModelURL(modelUri);
+    addModelsFromBucket(modelIds: Array<string>, scope: string) {
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
+        if (!this.modelUris[scope]) this.modelUris[scope] = Object.create(null) as ModelManager['modelUris'][string];
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const modelsRequests = Object.create(null) as Record<string, any>;
+        for (const modelId of modelIds) {
+            if (this.hasModel(modelId, scope, {exactIdMatch: true}) || this.hasURLBeenRequested(modelId)) {
+                this.models[scope][modelId].numReferences++;
+            } else if (this.modelUris[scope][modelId] && !this.hasURLBeenRequested(modelId)) {
+                modelsRequests[modelId] = this.modelUris[scope][modelId];
+            } else if (!this.hasURLBeenRequested(modelId) && isValidUrl(modelId, false)) {
+                // A non-style model that has not yet been requested
+                this.modelUris[scope][modelId] = this.requestManager.normalizeModelURL(modelId);
+                modelsRequests[modelId] = this.modelUris[scope][modelId];
             }
         }
         this.load(modelsRequests, scope);
     }
 
-    removeModel(id: string, scope: string) {
+    hasURLBeenRequested(url: string) {
+        return this.modelByURL[url] !== undefined;
+    }
+
+    removeModel(id: string, scope: string, keepModelURI = false, forceRemoval = false) {
         if (!this.models[scope] || !this.models[scope][id]) return;
         this.models[scope][id].numReferences--;
-        if (this.models[scope][id].numReferences === 0) {
+        if (this.models[scope][id].numReferences === 0 || forceRemoval) {
+            const modelURI = this.modelUris[scope][id];
+            if (!keepModelURI) delete this.modelUris[scope][id];
+            delete this.modelByURL[modelURI];
             const model = this.models[scope][id].model;
+            if (!model) return;
             delete this.models[scope][id];
             model.destroy();
         }
     }
 
+    destroy() {
+        for (const scope of Object.keys(this.models)) {
+            for (const modelId of Object.keys(this.models[scope])) {
+                const model = this.models[scope][modelId].model;
+                delete this.models[scope][modelId];
+                if (model) model.destroy();
+            }
+        }
+
+        this.models = Object.create(null) as ModelManager['models'];
+        this.models[''] = Object.create(null) as ModelManager['models'][string];
+        this.modelUris = Object.create(null) as ModelManager['modelUris'];
+        this.modelUris[''] = Object.create(null) as ModelManager['modelUris'][string];
+        this.modelByURL = Object.create(null) as ModelManager['modelByURL'];
+        this.numModelsLoading = Object.create(null) as ModelManager['numModelsLoading'];
+    }
+
     listModels(scope: string): Array<string> {
-        if (!this.models[scope]) this.models[scope] = {};
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
         return Object.keys(this.models[scope]);
     }
 
     upload(painter: Painter, scope: string) {
-        if (!this.models[scope]) this.models[scope] = {};
+        if (!this.models[scope]) this.models[scope] = Object.create(null) as ModelManager['models'][string];
         for (const modelId in this.models[scope]) {
             if (this.models[scope][modelId].model) {
                 this.models[scope][modelId].model.upload(painter.context);

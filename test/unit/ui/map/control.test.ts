@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect, vi, createMap} from '../../../util/vitest';
 
@@ -8,7 +9,8 @@ describe('Map#control', () => {
             onAdd(_) {
                 expect(map).toEqual(_);
                 return window.document.createElement('div');
-            }
+            },
+            onRemove() {}
         };
         map.addControl(control);
         expect(map._controls[1]).toEqual(control);
@@ -45,12 +47,17 @@ describe('Map#control', () => {
         Ctrl.prototype = {
             onAdd(_) {
                 return window.document.createElement('div');
-            }
+            },
+            onRemove() {}
         };
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const control = new Ctrl();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(map.hasControl(control)).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         map.addControl(control);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         expect(map.hasControl(control)).toEqual(true);
     });
 });

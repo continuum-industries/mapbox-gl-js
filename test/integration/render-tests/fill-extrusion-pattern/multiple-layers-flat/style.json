@@ -11,6 +11,10 @@
           "exaggeration": 0.03
         }],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web", "reason": "Inconsistent fill extrusion height rendering across tile boundaries https://github.com/mapbox/mapbox-gl-js/issues/10181"},
+        {"platform-tag-contains": "native", "reason": "not implemented in gl-native yet"}
       ]
     }
   },
@@ -147,7 +151,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "pitch": 62.5,
   "zoom": 18,
   "bearing": -45,
@@ -163,7 +167,7 @@
       "type": "fill-extrusion",
       "source": "geojson",
       "paint": {
-        "fill-extrusion-pattern": "generic_icon",
+        "fill-extrusion-pattern": "information",
         "fill-extrusion-opacity": 0.5,
         "fill-extrusion-height": {
           "stops": [[0, 0], [100, 100]],
@@ -181,7 +185,7 @@
       "type": "fill-extrusion",
       "source": "geojson",
       "paint": {
-        "fill-extrusion-pattern": "generic_icon",
+        "fill-extrusion-pattern": "information",
         "fill-extrusion-opacity": 0.5,
         "fill-extrusion-height": {
           "stops": [[0, 0], [100, 100]],

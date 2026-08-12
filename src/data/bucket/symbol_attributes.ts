@@ -21,13 +21,18 @@ export const placementOpacityAttributes: StructArrayLayout = createLayout([
     {name: 'a_fade_opacity', components: 1, type: 'Uint32'}
 ], 4);
 
-export const occlusionQueryOpacityAttributes: StructArrayLayout = createLayout([
-    {name: 'a_occlusion_query_opacity', components: 1, type: 'Float32'}
+export const zOffsetAttributes: StructArrayLayout = createLayout([
+    {name: 'a_auto_z_offset', components: 1, type: 'Float32'}
 ], 4);
 
-export const zOffsetAttributes: StructArrayLayout = createLayout([
-    {name: 'a_z_offset', components: 1, type: 'Float32'}
+export const featureIdAttributes: StructArrayLayout = createLayout([
+    {name: 'a_feature_index', components: 1, type: 'Float32'}
 ], 4);
+
+export const orientationAttributes: StructArrayLayout = createLayout([
+    {name: 'a_x_axis', components: 3, type: 'Float32'},
+    {name: 'a_y_axis', components: 3, type: 'Float32'}
+]);
 
 export const iconTransitioningAttributes: StructArrayLayout = createLayout([
     {name: 'a_texb', components: 2, type: 'Uint16'}
@@ -36,12 +41,13 @@ export const iconTransitioningAttributes: StructArrayLayout = createLayout([
 export const collisionVertexAttributes: StructArrayLayout = createLayout([
     {name: 'a_placed', components: 2, type: 'Uint8'},
     {name: 'a_shift', components: 2, type: 'Float32'},
+    {name: 'a_elevation_from_sea', components: 2, type: 'Float32'}
 ]);
 
 export const collisionVertexAttributesExt: StructArrayLayout = createLayout([
     {name: 'a_size_scale', components: 1, type: 'Float32'},
     {name: 'a_padding', components: 2, type: 'Float32'},
-    {name: 'a_z_offset', components: 1, type: 'Float32'}
+    {name: 'a_auto_z_offset', components: 1, type: 'Float32'}
 ]);
 
 export const collisionBox: StructArrayLayout = createLayout([
@@ -140,9 +146,8 @@ export const symbolInstance: StructArrayLayout = createLayout([
     {type: 'Float32', components: 2, name: 'textOffset'},
     {type: 'Float32', name: 'collisionCircleDiameter'},
     {type: 'Float32', name: 'zOffset'},
-    {type: 'Float32', name: 'occlusionState'},
-    {type: 'Float32', name: 'occlusionOpacity'},
     {type: 'Uint8', name: 'hasIconTextFit'},
+    {type: 'Uint16', name: 'elevationFeatureIndex'},
 ]);
 
 export const glyphOffset: StructArrayLayout = createLayout([

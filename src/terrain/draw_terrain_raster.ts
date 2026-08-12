@@ -2,16 +2,11 @@ import DepthMode from '../gl/depth_mode';
 import CullFaceMode from '../gl/cull_face_mode';
 import {terrainRasterUniformValues} from './terrain_raster_program';
 import {globeRasterUniformValues} from './globe_raster_program';
-import Tile from '../source/tile';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {easeCubicInOut} from '../util/util';
 import browser from '../util/browser';
 import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
-import type Painter from '../render/painter';
-import type SourceCache from '../source/source_cache';
-import {OverscaledTileID, CanonicalTileID} from '../source/tile_id';
 import StencilMode from '../gl/stencil_mode';
-import ColorMode from '../gl/color_mode';
 import {mat4} from 'gl-matrix';
 import {
     calculateGlobeMercatorMatrix,
@@ -24,16 +19,24 @@ import {
     globeUseCustomAntiAliasing,
     getLatitudinalLod
 } from '../geo/projection/globe_util';
-import extend from '../style-spec/util/extend';
+import {calculateGroundShadowFactor} from '../../3d-style/render/shadow_utils';
+import {getCutoffParams} from '../render/cutoff';
+
 import type Program from '../render/program';
 import type VertexBuffer from '../gl/vertex_buffer';
 import type {Terrain} from './terrain';
-import {calculateGroundShadowFactor} from '../../3d-style/render/shadow_renderer';
-import {getCutoffParams} from '../render/cutoff';
+import type {OverscaledTileID, CanonicalTileID} from '../source/tile_id';
+import type SourceCache from '../source/source_cache';
+import type Painter from '../render/painter';
+import type Tile from '../source/tile';
+import type {DynamicDefinesType} from '../render/program/program_uniforms';
+import type {GlobeRasterUniformsType} from './globe_raster_program';
+import type {TerrainRasterUniformsType} from './terrain_raster_program';
+import type {UserManagedTexture} from '../render/texture';
+import type Texture from '../render/texture';
 
 export {
-    drawTerrainRaster,
-    drawTerrainDepth
+    drawTerrainRaster
 };
 
 type DEMChain = {
@@ -138,23 +141,20 @@ const SHADER_DEFAULT = 0;
 const SHADER_MORPHING = 1;
 const defaultDuration = 250;
 
-const shaderDefines = {
-    "0": null,
-    "1": 'TERRAIN_VERTEX_MORPHING'
-};
-
 function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: SourceCache, tileIDs: Array<OverscaledTileID>, now: number) {
     const context = painter.context;
     const gl = context.gl;
 
-    let program, programMode;
+    let program: Program<GlobeRasterUniformsType>;
+    let programMode: number;
     const tr = painter.transform;
     const useCustomAntialiasing = globeUseCustomAntiAliasing(painter, context, tr);
 
     const setShaderMode = (coord: OverscaledTileID, mode: number) => {
         if (programMode === mode) return;
-        const defines = [shaderDefines[mode], 'PROJECTION_GLOBE_VIEW'];
-
+        const defines: DynamicDefinesType[] = [];
+        if (mode === SHADER_MORPHING) defines.push('TERRAIN_VERTEX_MORPHING');
+        defines.push('PROJECTION_GLOBE_VIEW');
         if (useCustomAntialiasing) defines.push('CUSTOM_ANTIALIASING');
 
         const affectedByFog = painter.isTileAffectedByFog(coord);
@@ -166,9 +166,9 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
     const depthMode = new DepthMode(gl.LEQUAL, DepthMode.ReadWrite, painter.depthRangeFor3D);
     vertexMorphing.update(now);
     const globeMercatorMatrix = calculateGlobeMercatorMatrix(tr);
-    const mercatorCenter = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
+    const mercatorCenter: [number, number] = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
     const sharedBuffers = painter.globeSharedBuffers;
-    const viewport = [tr.width * browser.devicePixelRatio, tr.height * browser.devicePixelRatio];
+    const viewport: [number, number] = [tr.width * browser.devicePixelRatio, tr.height * browser.devicePixelRatio];
     const globeMatrix = Float32Array.from(tr.globeMatrix);
     const elevationOptions = {useDenormalizedUpVectorScale: true};
 
@@ -191,6 +191,8 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
                 vertexMorphing.newMorphing(coord.key, prevDemTile, nextDemTile, now, defaultDuration);
             }
 
+            bindEmissiveTexture(painter, tile.emissiveTexture);
+
             // Bind the main draped texture
             context.activeTexture.set(gl.TEXTURE0);
             if (tile.texture) {
@@ -201,18 +203,18 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
             const shaderMode = morph ? SHADER_MORPHING : SHADER_DEFAULT;
 
             if (morph) {
-                extend(elevationOptions, {morphing: {srcDemTile: morph.from, dstDemTile: morph.to, phase: easeCubicInOut(morph.phase)}});
+                Object.assign(elevationOptions, {morphing: {srcDemTile: morph.from, dstDemTile: morph.to, phase: easeCubicInOut(morph.phase)}});
             }
 
             const tileBounds = tileCornersToBounds(coord.canonical);
             const latitudinalLod = getLatitudinalLod(tileBounds.getCenter().lat);
             const gridMatrix = getGridMatrix(coord.canonical, tileBounds, latitudinalLod, tr.worldSize / tr._pixelsPerMercatorPixel);
             const normalizeMatrix = globeNormalizeECEF(globeTileBounds(coord.canonical));
+            const emissiveTexture = painter.emissiveMode === 'mrt-fallback' ? 1.0 : 0.0;
             const uniformValues = globeRasterUniformValues(
-                // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array | Float64Array' is not assignable to parameter of type 'mat4'.
                 tr.expandedFarZProjMatrix, globeMatrix, globeMercatorMatrix, normalizeMatrix, globeToMercatorTransition(tr.zoom),
                 mercatorCenter, tr.frustumCorners.TL, tr.frustumCorners.TR, tr.frustumCorners.BR,
-                tr.frustumCorners.BL, tr.globeCenterInViewSpace, tr.globeRadius, viewport, skirtHeightValue, tr._farZ, gridMatrix);
+                tr.frustumCorners.BL, tr.globeCenterInViewSpace, tr.globeRadius, viewport, skirtHeightValue, tr._farZ, emissiveTexture, gridMatrix);
 
             setShaderMode(coord, shaderMode);
             if (!program) {
@@ -234,10 +236,9 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
 
     // Render the poles.
     if (sharedBuffers && (painter.renderDefaultNorthPole || painter.renderDefaultSouthPole)) {
-        const defines = ['GLOBE_POLES', 'PROJECTION_GLOBE_VIEW'];
+        const defines: DynamicDefinesType[] = ['GLOBE_POLES', 'PROJECTION_GLOBE_VIEW'];
         if (useCustomAntialiasing) defines.push('CUSTOM_ANTIALIASING');
 
-        // @ts-expect-error - TS2322 - Type 'string[]' is not assignable to type 'DynamicDefinesType[]'.
         program = painter.getOrCreateProgram('globeRaster', {defines});
         for (const coord of tileIDs) {
             // Fill poles by extrapolating adjacent border tiles
@@ -250,6 +251,8 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
             if (segment && (topCap || bottomCap)) {
                 const tile = sourceCache.getTile(coord);
 
+                bindEmissiveTexture(painter, tile.emissiveTexture);
+
                 // Bind the main draped texture
                 context.activeTexture.set(gl.TEXTURE0);
                 if (tile.texture) {
@@ -258,14 +261,13 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
 
                 let poleMatrix = globePoleMatrixForTile(z, x, tr);
                 const normalizeMatrix = globeNormalizeECEF(globeTileBounds(coord.canonical));
+                const emissiveTexture = painter.emissiveMode === 'mrt-fallback' ? 1.0 : 0.0;
 
-                // @ts-expect-error - TS2554 - Expected 12-16 arguments, but got 11.
-                const drawPole = (program: Program<any>, vertexBuffer: VertexBuffer) => program.draw(
+                const drawPole = (program: Program<GlobeRasterUniformsType>, vertexBuffer: VertexBuffer) => program.draw(
                     painter, gl.TRIANGLES, depthMode, StencilMode.disabled, colorMode, CullFaceMode.disabled,
-                    // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array | Float64Array' is not assignable to parameter of type 'mat4'.
                     globeRasterUniformValues(tr.expandedFarZProjMatrix, poleMatrix, poleMatrix, normalizeMatrix, 0.0, mercatorCenter,
                     tr.frustumCorners.TL, tr.frustumCorners.TR, tr.frustumCorners.BR, tr.frustumCorners.BL,
-                    tr.globeCenterInViewSpace, tr.globeRadius, viewport, 0, tr._farZ), "globe_pole_raster", vertexBuffer,
+                    tr.globeCenterInViewSpace, tr.globeRadius, viewport, 0, tr._farZ, emissiveTexture), "globe_pole_raster", vertexBuffer,
                     indexBuffer, segment);
 
                 terrain.setupElevationDraw(tile, program, elevationOptions);
@@ -276,7 +278,6 @@ function drawTerrainForGlobe(painter: Painter, terrain: Terrain, sourceCache: So
                     drawPole(program, northPoleBuffer);
                 }
                 if (bottomCap && painter.renderDefaultSouthPole) {
-                    // @ts-expect-error - TS2322 - Type 'mat4' is not assignable to type 'Float32Array'.
                     poleMatrix = mat4.scale(mat4.create(), poleMatrix, [1, -1, 1]);
                     drawPole(program, southPoleBuffer);
                 }
@@ -292,17 +293,24 @@ function drawTerrainRaster(painter: Painter, terrain: Terrain, sourceCache: Sour
         const context = painter.context;
         const gl = context.gl;
 
-        let program, programMode;
+        let program: Program<TerrainRasterUniformsType>;
+        let programMode: number;
         const shadowRenderer = painter.shadowRenderer;
         const cutoffParams = getCutoffParams(painter, painter.longestCutoffRange);
 
         const setShaderMode = (mode: number) => {
             if (programMode === mode)
                 return;
-            const modes = ([] as any);
-            modes.push(shaderDefines[mode]);
+            const modes: DynamicDefinesType[] = [];
+            if (mode === SHADER_MORPHING) modes.push('TERRAIN_VERTEX_MORPHING');
             if (cutoffParams.shouldRenderCutoff) {
                 modes.push('RENDER_CUTOFF');
+            }
+            if (shadowRenderer) {
+                modes.push('RENDER_SHADOWS');
+                if (shadowRenderer.useNormalOffset) {
+                    modes.push('NORMAL_OFFSET');
+                }
             }
             program = painter.getOrCreateProgram('terrainRaster', {defines: modes});
             programMode = mode;
@@ -340,6 +348,8 @@ function drawTerrainRaster(painter: Painter, terrain: Terrain, sourceCache: Sour
                     vertexMorphing.newMorphing(coord.key, prevDemTile, nextDemTile, now, defaultDuration);
                 }
 
+                bindEmissiveTexture(painter, tile.emissiveTexture);
+
                 // Bind the main draped texture
                 context.activeTexture.set(gl.TEXTURE0);
                 if (tile.texture) {
@@ -348,13 +358,14 @@ function drawTerrainRaster(painter: Painter, terrain: Terrain, sourceCache: Sour
 
                 const morph = vertexMorphing.getMorphValuesForProxy(coord.key);
                 const shaderMode = morph ? SHADER_MORPHING : SHADER_DEFAULT;
-                let elevationOptions;
+                let elevationOptions: {morphing: {srcDemTile: Tile, dstDemTile: Tile, phase: number}} | undefined;
 
                 if (morph) {
                     elevationOptions = {morphing: {srcDemTile: morph.from, dstDemTile: morph.to, phase: easeCubicInOut(morph.phase)}};
                 }
 
-                const uniformValues = terrainRasterUniformValues(coord.projMatrix, isEdgeTile(coord.canonical, tr.renderWorldCopies) ? skirt / 10 : skirt, groundShadowFactor);
+                const emissiveTexture = painter.emissiveMode === 'mrt-fallback' ? 1.0 : 0.0;
+                const uniformValues = terrainRasterUniformValues(coord.projMatrix, isEdgeTile(coord.canonical, tr.renderWorldCopies) ? skirt / 10 : skirt, groundShadowFactor, emissiveTexture);
                 setShaderMode(shaderMode);
                 if (!program) {
                     continue;
@@ -377,31 +388,6 @@ function drawTerrainRaster(painter: Painter, terrain: Terrain, sourceCache: Sour
     }
 }
 
-function drawTerrainDepth(painter: Painter, terrain: Terrain, sourceCache: SourceCache, tileIDs: Array<OverscaledTileID>) {
-    if (painter.transform.projection.name === 'globe') {
-        return;
-    }
-
-    assert(painter.renderPass === 'offscreen');
-
-    const context = painter.context;
-    const gl = context.gl;
-
-    context.clear({depth: 1});
-    const program = painter.getOrCreateProgram('terrainDepth');
-    const depthMode = new DepthMode(gl.LESS, DepthMode.ReadWrite, painter.depthRangeFor3D);
-
-    for (const coord of tileIDs) {
-        const tile = sourceCache.getTile(coord);
-        const uniformValues = terrainRasterUniformValues(coord.projMatrix, 0, [0, 0, 0]);
-        terrain.setupElevationDraw(tile, program);
-
-        // @ts-expect-error - TS2554 - Expected 12-16 arguments, but got 11.
-        program.draw(painter, gl.TRIANGLES, depthMode, StencilMode.disabled, ColorMode.unblended, CullFaceMode.backCCW,
-            uniformValues, "terrain_depth", terrain.gridBuffer, terrain.gridIndexBuffer, terrain.gridNoSkirtSegments);
-    }
-}
-
 function skirtHeight(zoom: number, terrainExaggeration: number, tileSize: number) {
     // Skirt height calculation is heuristic: provided value hides
     // seams between tiles and it is not too large: 9 at zoom 22, ~20000m at zoom 0.
@@ -413,6 +399,24 @@ function skirtHeight(zoom: number, terrainExaggeration: number, tileSize: number
 function isEdgeTile(cid: CanonicalTileID, renderWorldCopies: boolean): boolean {
     const numTiles = 1 << cid.z;
     return (!renderWorldCopies && (cid.x === 0 || cid.x === numTiles - 1)) || cid.y === 0 || cid.y === numTiles - 1;
+}
+
+function bindEmissiveTexture(painter: Painter, texture: Texture | UserManagedTexture) {
+    // Only bind if 3D lights are enabled
+    if (!painter.style || !painter.style.enable3dLights()) {
+        return;
+    }
+
+    const context = painter.context;
+    const gl = context.gl;
+    // Bind the emissive texture
+    context.activeTexture.set(gl.TEXTURE1);
+    if (texture) {
+        texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+    } else {
+        // Bind an empty texture to avoid WebGL warnings
+        painter.emptyTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+    }
 }
 
 export {

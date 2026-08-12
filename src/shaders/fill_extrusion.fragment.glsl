@@ -1,6 +1,8 @@
 #include "_prelude_fog.fragment.glsl"
 #include "_prelude_shadow.fragment.glsl"
 #include "_prelude_lighting.glsl"
+#include "_prelude_indicator_cutout.fragment.glsl"
+#include "_prelude_feature_cutout.fragment.glsl"
 
 in vec4 v_color;
 in vec4 v_flat;
@@ -11,6 +13,16 @@ in highp vec4 v_pos_light_view_1;
 #endif
 
 uniform lowp float u_opacity;
+
+#ifdef RENDER_FRONT_CUTOFF
+in float v_front_cutoff_opacity;
+#endif
+
+#ifdef INDICATOR_CUTOUT
+#ifdef FEATURE_CUTOUT
+in vec4 v_ground_roof;
+#endif
+#endif
 
 #ifdef FAUX_AO
 uniform lowp vec2 u_ao;
@@ -35,11 +47,13 @@ in float v_flood_radius;
 in float v_has_floodlight;
 #endif
 
-uniform float u_emissive_strength;
-
 in float v_height;
 
+
+#pragma mapbox: define highp float emissive_strength
+
 void main() {
+    #pragma mapbox: initialize highp float emissive_strength
 
 #if defined(ZERO_ROOF_RADIUS) || defined(RENDER_SHADOWS) || defined(LIGHTING_3D_MODE)
     vec3 normal = normalize(v_normal);
@@ -102,7 +116,15 @@ float flood_radiance = 0.0;
 
     color.rgb = mix(litColor, floodLitColor, flood_radiance);
 #else // FLOOD_LIGHT
-    float shadowed_lighting_factor = shadowed_light_factor_normal(normal, v_pos_light_view_0, v_pos_light_view_1, 1.0 / gl_FragCoord.w);
+    float shadowed_lighting_factor;
+#ifdef RENDER_CUTOFF
+    shadowed_lighting_factor = shadowed_light_factor_normal_opacity(normal, v_pos_light_view_0, v_pos_light_view_1, 1.0 / gl_FragCoord.w, v_cutoff_opacity);
+    if (v_cutoff_opacity == 0.0) {
+        discard;
+    }
+#else // RENDER_CUTOFF
+    shadowed_lighting_factor = shadowed_light_factor_normal(normal, v_pos_light_view_0, v_pos_light_view_1, 1.0 / gl_FragCoord.w);
+#endif // RENDER_CUTOFF
     color.rgb = apply_lighting(color.rgb, normal, shadowed_lighting_factor);
 #endif // !FLOOD_LIGHT 
 #else // RENDER_SHADOWS
@@ -112,7 +134,7 @@ float flood_radiance = 0.0;
 #endif // FLOOD_LIGHT
 #endif // !RENDER_SHADOWS
 
-    color.rgb = mix(color.rgb, v_flat.rgb, u_emissive_strength);
+    color.rgb = mix(color.rgb, v_flat.rgb, emissive_strength);
     color *= u_opacity;
 #endif // LIGHTING_3D_MODE
 
@@ -121,7 +143,32 @@ float flood_radiance = 0.0;
 #endif
 
 #ifdef INDICATOR_CUTOUT
-    color = applyCutout(color);
+#ifdef FEATURE_CUTOUT
+    {
+        float ditherOpacity = cutoutGroundRoofOpacity(v_ground_roof);
+        if (ditherOpacity < 1.0) {
+            int index = viewport_dither_index(gl_FragCoord.xy);
+            if (ditherOpacity < DITHER_THRESHOLDS[index]) {
+                discard;
+            }
+        }
+    }
+#else
+    color = applyCutout(color, h);
+#endif
+#endif
+
+#ifdef RENDER_FRONT_CUTOFF
+    if (v_front_cutoff_opacity < 1.0) {
+        int index = viewport_dither_index(gl_FragCoord.xy);
+        if (v_front_cutoff_opacity < DITHER_THRESHOLDS[index]) {
+            discard;
+        }
+    }
+#endif
+
+#ifdef FEATURE_CUTOUT
+    color = apply_feature_cutout(color, gl_FragCoord, get_cutout_factors(gl_FragCoord).x, 0.0);
 #endif
 
     glFragColor = color;

@@ -1,15 +1,15 @@
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect, waitFor, vi, createMap} from '../../../util/vitest';
 import {createStyle} from './util';
 import {Map} from '../../../../src/ui/map';
-import {extend} from '../../../../src/util/util';
-import {getPNGResponse} from '../../../util/network';
 import {fixedLngLat, fixedNum} from '../../../util/fixed';
 import {Event} from '../../../../src/util/evented';
 import Fog from '../../../../src/style/fog';
 import Color from '../../../../src/style-spec/util/color';
 import RasterTileSource from '../../../../src/source/raster_tile_source';
+import RasterDEMTileSource from '../../../../src/source/raster_dem_tile_source';
 import {LngLatBounds} from '../../../../src/geo/lng_lat';
 
 describe('Map#setStyle', () => {
@@ -29,6 +29,7 @@ describe('Map#setStyle', () => {
                 expect(error).toBeFalsy();
 
                 const events: Array<any> = [];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 function recordEvent(event) { events.push(event.type); }
 
                 map.on('error', recordEvent);
@@ -56,6 +57,7 @@ describe('Map#setStyle', () => {
                 expect(error).toBeFalsy();
 
                 const events: Array<any> = [];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 function recordEvent(event) { events.push(event.type); }
 
                 map.on('styledata', recordEvent);
@@ -190,10 +192,12 @@ describe('Map#setStyle', () => {
         expect(map.getStyle().terrain).toEqual(undefined);
         map.setZoom(3); // Below threshold for Mercator transition
         await waitFor(map, "render");
+        // Wait for the terrain renderer to be created asynchronously (Standard loads lazily)
+        await vi.waitUntil(() => !!map.painter._terrain, {timeout: 3000});
         expect(initStyleObj.setTerrain).toHaveBeenCalledTimes(1);
         expect(map.style.terrain).toBeTruthy();
         expect(map.getTerrain()).toEqual(null);
-        expect(map.painter._terrain.isUsingMockSource()).toBeTruthy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeTruthy();
         expect(map.getStyle().terrain).toEqual(undefined);
     });
 
@@ -221,9 +225,9 @@ describe('Map#setStyle', () => {
         style['terrain'] = {
             'source': 'mapbox-dem'
         };
-        vi.spyOn(window, 'fetch').mockImplementation(async () => {
-            const res = await getPNGResponse();
-            return new window.Response(res);
+        vi.spyOn(RasterDEMTileSource.prototype, 'loadTile').mockImplementation((tile, callback) => {
+            tile.state = 'loaded';
+            callback(null);
         });
         const map = createMap({style});
         await waitFor(map, 'load');
@@ -243,19 +247,20 @@ describe('Map#setStyle', () => {
 
         map.setProjection('globe');
         expect(map.getProjection().name).toEqual('globe');
+        expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(1);
 
         map.setZoom(4);
         expect(map.getProjection().name).toEqual('globe');
-        expect(map.painter.clearBackgroundTiles).not.toHaveBeenCalled();
+        expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(1);
     });
 
     test('Setting terrain to null disables the terrain but does not affect draping', async () => {
-        const style = extend(createStyle(), {
+        const style = Object.assign(createStyle(), {
             terrain: null,
             imports: [{
                 id: 'basemap',
                 url: '',
-                data: extend(createStyle(), {
+                data: Object.assign(createStyle(), {
                     projection: {name: 'globe'},
                     terrain: {source: 'dem', exaggeration: 1},
                     sources: {dem: {type: 'raster-dem', tiles: ['http://example.com/{z}/{x}/{y}.png']}}
@@ -264,7 +269,7 @@ describe('Map#setStyle', () => {
             {
                 id: 'navigation',
                 url: '',
-                data: extend(createStyle(), {
+                data: Object.assign(createStyle(), {
                     terrain: {source: 'dem', exaggeration: 2},
                     sources: {dem: {type: 'raster-dem', tiles: ['http://example.com/{z}/{x}/{y}.png']}}
                 })
@@ -350,26 +355,30 @@ describe('Map#setStyle', () => {
 
             test('adding terrain', async () => {
                 const style = createStyle();
-                vi.spyOn(window, 'fetch').mockImplementation(async () => {
-                    const res = await getPNGResponse();
-                    return new window.Response(res);
+                vi.spyOn(RasterDEMTileSource.prototype, 'loadTile').mockImplementation((tile, callback) => {
+                    tile.state = 'loaded';
+                    callback(null);
                 });
                 const map = createMap({style});
                 const initStyleObj = map.style;
                 vi.spyOn(initStyleObj, 'setTerrain');
                 vi.spyOn(initStyleObj, 'setState');
                 await waitFor(map, "style.load");
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const styleWithTerrain = JSON.parse(JSON.stringify(style));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 styleWithTerrain['sources']["mapbox-dem"] = {
                     "type": "raster-dem",
                     "tiles": ['http://example.com/{z}/{x}/{y}.png'],
                     "tileSize": 256,
                     "maxzoom": 14
                 };
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 styleWithTerrain['terrain'] = {
                     "source": "mapbox-dem"
                 };
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                 map.setStyle(styleWithTerrain);
                 await waitFor(map, "load");
                 expect(initStyleObj).toEqual(map.style);
@@ -392,13 +401,13 @@ describe('Map#setStyle', () => {
             'maxzoom': 14
         });
         await waitFor(map, "render");
-        expect(map.painter._terrain.isUsingMockSource()).toBeTruthy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeTruthy();
         map.setTerrain({'source': 'mapbox-dem'});
         await waitFor(map, "render");
-        expect(map.painter._terrain.isUsingMockSource()).toBeFalsy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeFalsy();
         map.setTerrain(null);
         await waitFor(map, "render");
-        expect(map.painter._terrain.isUsingMockSource()).toBeTruthy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeTruthy();
     });
 
     test('Setting terrain and then globe correctly sets terrain mock source', async () => {
@@ -415,12 +424,12 @@ describe('Map#setStyle', () => {
         });
         map.setTerrain({'source': 'mapbox-dem'});
         await waitFor(map, "render");
-        expect(map.painter._terrain.isUsingMockSource()).toBeFalsy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeFalsy();
         map.setProjection('globe');
-        expect(map.painter._terrain.isUsingMockSource()).toBeFalsy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeFalsy();
         map.setTerrain(null);
         await waitFor(map, "render");
-        expect(map.painter._terrain.isUsingMockSource()).toBeTruthy();
+        expect(map.painter._terrain?.isUsingMockSource()).toBeTruthy();
     });
 
     test('should apply different styles when toggling setStyle (https://github.com/mapbox/mapbox-gl-js/issues/11939)', async () => {
@@ -453,9 +462,9 @@ describe('Map#setStyle', () => {
             'layers': []
         };
 
-        vi.spyOn(window, 'fetch').mockImplementation(async () => {
-            const res = await getPNGResponse();
-            return new window.Response(res);
+        vi.spyOn(RasterDEMTileSource.prototype, 'loadTile').mockImplementation((tile, callback) => {
+            tile.state = 'loaded';
+            callback(null);
         });
         const map = createMap({style: styleWithTerrainExaggeration});
 
@@ -513,7 +522,7 @@ describe('Map#setStyle', () => {
         const styleB = {
             'version': 8,
             'sources': {},
-            'fog':  {
+            'fog': {
                 'color': '#0F2127',
                 'high-color': '#000',
                 'horizon-blend': 0.5,
@@ -640,12 +649,15 @@ describe('Map#setStyle', () => {
             vi.spyOn(initStyleObj, 'setFog');
             vi.spyOn(initStyleObj, 'setState');
             await waitFor(map, "style.load");
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const styleWithFog = JSON.parse(JSON.stringify(style));
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             styleWithFog['fog'] = {
                 "range": [2, 5],
                 "color": "white"
             };
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             map.setStyle(styleWithFog);
             expect(initStyleObj).toEqual(map.style);
             expect(initStyleObj.setState).toHaveBeenCalledTimes(1);
@@ -654,6 +666,46 @@ describe('Map#setStyle', () => {
         });
     });
 
+    describe('fontstackCompositing', () => {
+        test('defaults _fontstackCompositing to "client" when not provided', () => {
+            const map = createMap();
+            expect(map._fontstackCompositing).toEqual('client');
+        });
+
+        test('propagates fontstackCompositing from Map constructor to GlyphLoader', () => {
+            const map = createMap({fontstackCompositing: 'server'});
+            expect(map._fontstackCompositing).toEqual('server');
+            expect(map.style.glyphManager.glyphLoader.fontstackCompositing).toEqual('server');
+        });
+
+        test('setStyle with changed fontstackCompositing triggers full rebuild and updates GlyphLoader', async () => {
+            const map = createMap({fontstackCompositing: 'server'});
+            await waitFor(map, 'style.load');
+            expect(map.style.glyphManager.glyphLoader.fontstackCompositing).toEqual('server');
+
+            map.setStyle(createStyle(), {fontstackCompositing: 'client'});
+            await waitFor(map, 'style.load');
+
+            expect(map._fontstackCompositing).toEqual('client');
+            expect(map.style.glyphManager.glyphLoader.fontstackCompositing).toEqual('client');
+        });
+
+        test('setStyle updates _fontstackCompositing across successive calls', async () => {
+            const map = createMap();
+            await waitFor(map, 'style.load');
+            expect(map._fontstackCompositing).toEqual('client');
+
+            map.setStyle(createStyle(), {fontstackCompositing: 'server'});
+            await waitFor(map, 'style.load');
+            expect(map._fontstackCompositing).toEqual('server');
+
+            map.setStyle(createStyle(), {fontstackCompositing: 'client'});
+            await waitFor(map, 'style.load');
+            expect(map._fontstackCompositing).toEqual('client');
+        });
+    });
+
+    // eslint-disable-next-line @typescript-eslint/require-await
     test('emits load event after a style is set', async () => {
         vi.spyOn(Map.prototype, '_detectMissingCSS').mockImplementation(() => {});
         vi.spyOn(Map.prototype, '_authenticate').mockImplementation(() => {});

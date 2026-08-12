@@ -1,6 +1,8 @@
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
-import CrossTileSymbolIndex from '../../../src/symbol/cross_tile_symbol_index';
+import CrossTileSymbolIndex, {TileLayerIndex} from '../../../src/symbol/cross_tile_symbol_index';
 import {OverscaledTileID} from '../../../src/source/tile_id';
 
 const styleLayer = {
@@ -8,23 +10,40 @@ const styleLayer = {
     fqid: 'test'
 };
 
-function makeSymbolInstance(x, y, key) {
+function makeSymbolInstance(x, y, key, crossTileID = 0) {
     return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         tileAnchorX: x,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         tileAnchorY: y,
-        key
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        key,
+        crossTileID
+    };
+}
+
+function makeSymbolInstanceArray(instances) {
+
+    return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        get: (i) => instances[i],
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+        length: instances.length
     };
 }
 
 function makeTile(tileID, symbolInstances) {
     const bucket = {
         symbolInstances: {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             get(i) { return symbolInstances[i]; },
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             length: symbolInstances.length
         },
         layerIds: ['test']
     };
     return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         tileID,
         getBucket: () => bucket,
         latestFeatureIndex: {}
@@ -229,4 +248,35 @@ test('CrossTileSymbolIndex.pruneUnusedLayers', () => {
     // remove styleLayer
     index.pruneUnusedLayers([]);
     expect(index.layerIndexes[styleLayer.id]).toBeFalsy();
+});
+
+test('TileLayerIndex.findMatches sort order', () => {
+    const tileID = new OverscaledTileID(6, 0, 6, 8, 8);
+
+    const instances = [
+        makeSymbolInstance(1000, 1000, "", 0),
+        makeSymbolInstance(1000, 1000, "", 1),
+        makeSymbolInstance(1000, 1000, "", 2),
+        makeSymbolInstance(1000, 1000, "", 3),
+        makeSymbolInstance(1000, 1000, "", 4),
+        makeSymbolInstance(1000, 1000, "", 5),
+        makeSymbolInstance(1000, 1000, "", 6),
+        makeSymbolInstance(1000, 1000, "", 7),
+        makeSymbolInstance(1000, 1000, "", 8),
+        makeSymbolInstance(1000, 1000, "", 9),
+        makeSymbolInstance(1000, 1000, "", 10),
+        makeSymbolInstance(1000, 1000, "", 11),
+        makeSymbolInstance(1000, 1000, "", 12),
+        makeSymbolInstance(1000, 1000, "", 13),
+        makeSymbolInstance(1000, 1000, "", 14),
+        makeSymbolInstance(1000, 1000, "", 15),
+        makeSymbolInstance(1000, 1000, "", 16),
+        makeSymbolInstance(1000, 1000, "", 17)
+    ];
+    const instanceArray = makeSymbolInstanceArray(instances);
+
+    const index = new TileLayerIndex(tileID, instanceArray, 0);
+    index.findMatches(instanceArray, new OverscaledTileID(7, 0, 6, 8, 8), new Set());
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+    expect(instanceArray.get(0).crossTileID).toBe(0);
 });

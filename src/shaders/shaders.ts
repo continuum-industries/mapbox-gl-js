@@ -1,6 +1,7 @@
-// @ts-nocheck
-// Disable Flow annotations here because Flow doesn't support importing GLSL files
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference
+/// <reference path="../types/glsl.d.ts" />
 
+import assert from '../style-spec/util/assert';
 import preludeCommon from './_prelude.glsl';
 import preludeFrag from './_prelude.fragment.glsl';
 import preludeVert from './_prelude.vertex.glsl';
@@ -30,13 +31,15 @@ import fillOutlinePatternFrag from './fill_outline_pattern.fragment.glsl';
 import fillOutlinePatternVert from './fill_outline_pattern.vertex.glsl';
 import fillPatternFrag from './fill_pattern.fragment.glsl';
 import fillPatternVert from './fill_pattern.vertex.glsl';
+import lineBlendCompositeFrag from './line_blend_composite.fragment.glsl';
+import lineBlendCompositeVert from './line_blend_composite.vertex.glsl';
+import lineBlendReduceFrag from './line_blend_reduce.fragment.glsl';
+import lineBlendReduceVert from './line_blend_reduce.vertex.glsl';
 import fillExtrusionFrag from './fill_extrusion.fragment.glsl';
 import fillExtrusionVert from './fill_extrusion.vertex.glsl';
 import fillExtrusionPatternFrag from './fill_extrusion_pattern.fragment.glsl';
 import fillExtrusionPatternVert from './fill_extrusion_pattern.vertex.glsl';
 import hillshadePrepareFrag from './hillshade_prepare.fragment.glsl';
-import fillExtrusionGroundEffectFrag from './fill_extrusion_ground_effect.fragment.glsl';
-import fillExtrusionGroundEffectVert from './fill_extrusion_ground_effect.vertex.glsl';
 import hillshadePrepareVert from './hillshade_prepare.vertex.glsl';
 import hillshadeFrag from './hillshade.fragment.glsl';
 import hillshadeVert from './hillshade.vertex.glsl';
@@ -46,91 +49,98 @@ import linePatternFrag from './line_pattern.fragment.glsl';
 import linePatternVert from './line_pattern.vertex.glsl';
 import rasterFrag from './raster.fragment.glsl';
 import rasterVert from './raster.vertex.glsl';
-import rasterParticleFrag from './raster_particle.fragment.glsl';
-import rasterParticleVert from './raster_particle.vertex.glsl';
-import rasterParticleDrawFrag from './raster_particle_draw.fragment.glsl';
-import rasterParticleDrawVert from './raster_particle_draw.vertex.glsl';
-import rasterParticleTextureFrag from './raster_particle_texture.fragment.glsl';
-import rasterParticleTextureVert from './raster_particle_texture.vertex.glsl';
-import rasterParticleUpdateFrag from './raster_particle_update.fragment.glsl';
-import rasterParticleUpdateVert from './raster_particle_update.vertex.glsl';
-import symbolIconFrag from './symbol_icon.fragment.glsl';
-import symbolIconVert from './symbol_icon.vertex.glsl';
-import symbolSDFFrag from './symbol_sdf.fragment.glsl';
-import symbolSDFVert from './symbol_sdf.vertex.glsl';
-import symbolTextAndIconFrag from './symbol_text_and_icon.fragment.glsl';
-import symbolTextAndIconVert from './symbol_text_and_icon.vertex.glsl';
+import symbolFrag from './symbol.fragment.glsl';
+import symbolVert from './symbol.vertex.glsl';
 import skyboxFrag from './skybox.fragment.glsl';
 import skyboxGradientFrag from './skybox_gradient.fragment.glsl';
 import skyboxVert from './skybox.vertex.glsl';
-import terrainRasterFrag from './terrain_raster.fragment.glsl';
-import terrainRasterVert from './terrain_raster.vertex.glsl';
-import terrainDepthFrag from './terrain_depth.fragment.glsl';
-import terrainDepthVert from './terrain_depth.vertex.glsl';
 import preludeTerrainVert from './_prelude_terrain.vertex.glsl';
 import preludeFogVert from './_prelude_fog.vertex.glsl';
 import preludeFogFrag from './_prelude_fog.fragment.glsl';
 import preludeLighting from './_prelude_lighting.glsl';
 import preludeRasterArrayFrag from './_prelude_raster_array.glsl';
-import preludeRasterParticleFrag from './_prelude_raster_particle.glsl';
+import preludeIndicatorCutoutFrag from './_prelude_indicator_cutout.fragment.glsl';
 import skyboxCaptureFrag from './skybox_capture.fragment.glsl';
 import skyboxCaptureVert from './skybox_capture.vertex.glsl';
-import globeFrag from './globe_raster.fragment.glsl';
-import globeVert from './globe_raster.vertex.glsl';
 import atmosphereFrag from './atmosphere.fragment.glsl';
 import atmosphereVert from './atmosphere.vertex.glsl';
 import starsFrag from './stars.fragment.glsl';
 import starsVert from './stars.vertex.glsl';
 import occlusionFrag from './occlusion.fragment.glsl';
 import occlusionVert from './occlusion.vertex.glsl';
-
 // 3d-style related shaders
-import fillExtrusionDepthFrag from '../../3d-style/shaders/fill_extrusion_depth.fragment.glsl';
-import fillExtrusionDepthVert from '../../3d-style/shaders/fill_extrusion_depth.vertex.glsl';
-import groundShadowFrag from '../../3d-style/shaders/ground_shadow.fragment.glsl';
-import groundShadowVert from '../../3d-style/shaders/ground_shadow.vertex.glsl';
-import modelVert from '../../3d-style/shaders/model.vertex.glsl';
-import modelFrag from '../../3d-style/shaders/model.fragment.glsl';
-import modelDepthVert from '../../3d-style/shaders/model_depth.vertex.glsl';
-import modelDepthFrag from '../../3d-style/shaders/model_depth.fragment.glsl';
 import preludeShadowVert from '../../3d-style/shaders/_prelude_shadow.vertex.glsl';
 import preludeShadowFrag from '../../3d-style/shaders/_prelude_shadow.fragment.glsl';
+import preludeMaterialTableVert from './_prelude_material_table.vertex.glsl';
 
-export let preludeTerrain: Record<string, any> = {};
-export let preludeFog: Record<string, any> = {};
-export let preludeShadow: Record<string, any> = {};
-export let preludeRasterArray: Record<string, any> = {};
-export let preludeRasterParticle: Record<string, any> = {};
+import type {ShaderSource} from '../render/program';
+import type {DynamicDefinesType} from '../render/program/program_uniforms';
 
-const commonDefines = [];
+const INCLUDE_REGEX = /^#include\s+"([^"]+)"\s*\r?\n/gm;
+const PRAGMA_REGEX = /#pragma mapbox: ([\w\-]+) ([\w]+) ([\w]+) ([\w]+)/g;
+
+const IDENTIFIER_REGEX = /\b[A-Za-z_][A-Za-z0-9_]*\b/g;
+const PREPROCESSOR_KEYWORDS = new Set(['ifdef', 'ifndef', 'elif', 'if', 'defined']);
+
+// Feature cutout is gl-native only. Shared GLSL #includes this prelude, but gl-js never
+// enables FEATURE_CUTOUT, so a comment stub is enough for include resolution and define tracking.
+const preludeFeatureCutoutFrag = '// feature cutout (gl-native only)\n';
+const preludeFeatureCutoutVert = '// feature cutout (gl-native only)\n';
+
+const commonDefines: Set<DynamicDefinesType> = new Set();
 parseUsedPreprocessorDefines(preludeCommon, commonDefines);
 parseUsedPreprocessorDefines(preludeVert, commonDefines);
 parseUsedPreprocessorDefines(preludeFrag, commonDefines);
-export const includeMap = {
-    "_prelude_fog.vertex.glsl": preludeFogVert,
-    "_prelude_terrain.vertex.glsl": preludeTerrainVert,
-    "_prelude_shadow.vertex.glsl": preludeShadowVert,
-    "_prelude_fog.fragment.glsl": preludeFogFrag,
-    "_prelude_shadow.fragment.glsl": preludeShadowFrag,
-    "_prelude_lighting.glsl": preludeLighting,
-    "_prelude_raster_array.glsl": preludeRasterArrayFrag,
-    "_prelude_raster_particle.glsl": preludeRasterParticleFrag
-} as const;
+
+export const includeMap: Record<string, string> = {
+    '_prelude_fog.vertex.glsl': preludeFogVert,
+    '_prelude_terrain.vertex.glsl': preludeTerrainVert,
+    '_prelude_shadow.vertex.glsl': preludeShadowVert,
+    '_prelude_material_table.vertex.glsl': preludeMaterialTableVert,
+    '_prelude_fog.fragment.glsl': preludeFogFrag,
+    '_prelude_shadow.fragment.glsl': preludeShadowFrag,
+    '_prelude_lighting.glsl': preludeLighting,
+    '_prelude_raster_array.glsl': preludeRasterArrayFrag,
+    '_prelude_indicator_cutout.fragment.glsl': preludeIndicatorCutoutFrag,
+    '_prelude_feature_cutout.fragment.glsl': preludeFeatureCutoutFrag,
+    '_prelude_feature_cutout.vertex.glsl': preludeFeatureCutoutVert
+};
+
 // Populated during precompilation
-const defineMap: Record<string, any> = {};
-
-preludeTerrain = compile('', preludeTerrainVert);
-preludeFog = compile(preludeFogFrag, preludeFogVert);
-preludeShadow = compile(preludeShadowFrag, preludeShadowVert);
-preludeRasterArray = compile(preludeRasterArrayFrag, '');
-preludeRasterParticle = compile(preludeRasterParticleFrag, '');
-
-export const prelude = compile(preludeFrag, preludeVert);
+const defineMap: Record<string, Set<DynamicDefinesType>> = {};
 export const preludeCommonSource = preludeCommon;
-export const preludeLightingSource = preludeLighting;
 
-export const preludeVertPrecisionQualifiers = `precision highp float;`;
-export const preludeFragPrecisionQualifiers = `precision mediump float;`;
+const preludeVertPrecisionQualifiers = `precision highp float;`;
+const preludeFragPrecisionQualifiers = `precision mediump float;`;
+
+const preludeFragExtensions = `
+#if defined(GL_EXT_blend_func_extended) && defined(DUAL_SOURCE_BLENDING)
+#extension GL_EXT_blend_func_extended : require
+#endif`;
+
+export const preludeShaders = {
+    preludeTerrain: compile('', preludeTerrainVert),
+    preludeFog: compile(preludeFogFrag, preludeFogVert),
+    preludeShadow: compile(preludeShadowFrag, preludeShadowVert),
+    preludeRasterArray: compile(preludeRasterArrayFrag, ''),
+    preludeLighting: compile(preludeLighting, preludeLighting),
+    preludePrecisionQualifiers: compile(preludeFragPrecisionQualifiers, preludeVertPrecisionQualifiers),
+    prelude: compile(preludeFrag, preludeVert),
+    preludeExtensions: compile(preludeFragExtensions, ''),
+} as const;
+
+export const FRAGMENT_PRELUDE_BLOCK = [
+    preludeFragExtensions,
+    preludeFragPrecisionQualifiers,
+    preludeCommon,
+    preludeShaders.prelude.fragmentSource
+].join('\n');
+
+export const VERTEX_PRELUDE_BLOCK = [
+    preludeVertPrecisionQualifiers,
+    preludeCommon,
+    preludeShaders.prelude.vertexSource
+].join('\n');
 
 export default {
     background: compile(backgroundFrag, backgroundVert),
@@ -146,118 +156,101 @@ export default {
     fillOutline: compile(fillOutlineFrag, fillOutlineVert),
     fillOutlinePattern: compile(fillOutlinePatternFrag, fillOutlinePatternVert),
     fillPattern: compile(fillPatternFrag, fillPatternVert),
+    lineBlendComposite: compile(lineBlendCompositeFrag, lineBlendCompositeVert),
+    lineBlendReduce: compile(lineBlendReduceFrag, lineBlendReduceVert),
     fillExtrusion: compile(fillExtrusionFrag, fillExtrusionVert),
-    fillExtrusionDepth: compile(fillExtrusionDepthFrag, fillExtrusionDepthVert),
     fillExtrusionPattern: compile(fillExtrusionPatternFrag, fillExtrusionPatternVert),
-    groundShadow: compile(groundShadowFrag, groundShadowVert),
-    fillExtrusionGroundEffect: compile(fillExtrusionGroundEffectFrag, fillExtrusionGroundEffectVert),
     hillshadePrepare: compile(hillshadePrepareFrag, hillshadePrepareVert),
     hillshade: compile(hillshadeFrag, hillshadeVert),
     line: compile(lineFrag, lineVert),
     linePattern: compile(linePatternFrag, linePatternVert),
     raster: compile(rasterFrag, rasterVert),
-    rasterParticle: compile(rasterParticleFrag, rasterParticleVert),
-    rasterParticleDraw: compile(rasterParticleDrawFrag, rasterParticleDrawVert),
-    rasterParticleTexture: compile(rasterParticleTextureFrag, rasterParticleTextureVert),
-    rasterParticleUpdate: compile(rasterParticleUpdateFrag, rasterParticleUpdateVert),
-    symbolIcon: compile(symbolIconFrag, symbolIconVert),
-    symbolSDF: compile(symbolSDFFrag, symbolSDFVert),
-    symbolTextAndIcon: compile(symbolTextAndIconFrag, symbolTextAndIconVert),
-    terrainRaster: compile(terrainRasterFrag, terrainRasterVert),
-    terrainDepth: compile(terrainDepthFrag, terrainDepthVert),
+    symbol: compile(symbolFrag, symbolVert),
     skybox: compile(skyboxFrag, skyboxVert),
     skyboxGradient: compile(skyboxGradientFrag, skyboxVert),
     skyboxCapture: compile(skyboxCaptureFrag, skyboxCaptureVert),
-    globeRaster: compile(globeFrag, globeVert),
     globeAtmosphere: compile(atmosphereFrag, atmosphereVert),
-    model: compile(modelFrag, modelVert),
-    modelDepth: compile(modelDepthFrag, modelDepthVert),
     stars: compile(starsFrag, starsVert),
     occlusion: compile(occlusionFrag, occlusionVert)
-};
+} as const;
 
-export function parseUsedPreprocessorDefines(source, defines) {
-    const lines = source.replace(/\s*\/\/[^\n]*\n/g, '\n').split('\n');
+export function parseUsedPreprocessorDefines(source: string, defines: Set<DynamicDefinesType>): void {
+    const lines = source.split('\n');
     for (let line of lines) {
-        line = line.trim();
-        if (line[0] === '#') {
-            if (line.includes('if') && !line.includes('endif')) {
-                line = line.replace('#', '')
-                    .replace(/ifdef|ifndef|elif|if/g, '')
-                    .replace(/!|defined|\(|\)|\|\||&&/g, '')
-                    .replace(/\s+/g, ' ').trim();
+        line = line.trimStart();
+        if (line[0] !== '#') continue;
 
-                const newDefines = line.split(' ');
-                for (const define of newDefines) {
-                    if (!defines.includes(define)) {
-                        defines.push(define);
-                    }
-                }
+        if (!line.includes('if')) continue;
+        if (line.startsWith('#endif')) continue;
+
+        const matches = line.match(IDENTIFIER_REGEX);
+        if (!matches) continue;
+
+        for (const match of matches) {
+            if (!PREPROCESSOR_KEYWORDS.has(match)) {
+                defines.add(match as DynamicDefinesType);
             }
         }
     }
 }
 
+function isIntegerType(type: string): boolean {
+    const intTypes = new Set(['uint', 'int', 'uvec2', 'ivec2', 'uvec3', 'ivec3', 'uvec4', 'ivec4']);
+    return intTypes.has(type);
+}
+
 // Expand #pragmas to #ifdefs.
-export function compile(fragmentSource, vertexSource) {
-    const includeRegex = /#include\s+"([^"]+)"/g;
-    const pragmaRegex = /#pragma mapbox: ([\w\-]+) ([\w]+) ([\w]+) ([\w]+)/g;
-    const attributeRegex = /(attribute(\S*)|(^\s*|;)in) (highp |mediump |lowp )?([\w]+) ([\w]+)/gm;
+export function compile(fragmentSource: string, vertexSource: string): ShaderSource {
+    const fragmentPragmas: Set<string> = new Set();
+    const vertexIncludes: string[] = [];
+    const fragmentIncludes: string[] = [];
 
-    let staticAttributes = vertexSource.match(attributeRegex);
-
-    if (staticAttributes) {
-        staticAttributes = staticAttributes.map((str) => {
-            const tokens = str.split(' ');
-            return tokens[tokens.length - 1];
-        });
-        // remove duplicates as Safari does not support lookbehind in regex
-        // so we need to get rid of initialize-* expressions
-        staticAttributes = [...new Set(staticAttributes)];
-    }
-    const fragmentPragmas: Record<string, any> = {};
-
-    const vertexIncludes = [];
-    const fragmentIncludes = [];
-    fragmentSource = fragmentSource.replace(includeRegex, (match, name) => {
+    fragmentSource = fragmentSource.replace(INCLUDE_REGEX, (_, name: string) => {
         fragmentIncludes.push(name);
         return '';
     });
-    vertexSource = vertexSource.replace(includeRegex, (match, name) => {
+
+    vertexSource = vertexSource.replace(INCLUDE_REGEX, (_, name: string) => {
         vertexIncludes.push(name);
         return '';
     });
 
-    if (vertexSource.includes("flat out")) {
-        console.error(`The usage of "flat" qualifier is disallowed, see: https://bugs.webkit.org/show_bug.cgi?id=268071`);
-        return;
-    }
+    assert(!vertexSource.includes('flat out'), 'The usage of "flat" qualifier is disallowed, see: https://bugs.webkit.org/show_bug.cgi?id=268071');
 
-    let usedDefines = [...commonDefines];
+    let usedDefines: Set<DynamicDefinesType> = new Set(commonDefines);
     parseUsedPreprocessorDefines(fragmentSource, usedDefines);
     parseUsedPreprocessorDefines(vertexSource, usedDefines);
+
     for (const includePath of [...vertexIncludes, ...fragmentIncludes]) {
-        if (!includeMap[includePath]) {
-            console.error(`Undefined include: ${includePath}`);
-        }
+        // Check for *registration*, not truthiness: a prelude can legitimately be empty. The
+        // build's dead-branch elimination (build/glsl_dead_code.js) reduces preludes whose entire
+        // body is guarded by a gl-native-only define to the empty string — e.g.
+        // `_prelude_material_table.vertex.glsl`, which is wholly inside
+        // `#ifdef HAS_SHADER_STORAGE_BLOCK_material_buffer` (WebGL 2 has no SSBOs, and
+        // `_prelude.vertex.glsl` supplies the `#ifndef` fallback macros). A truthiness check
+        // reports those as "Unknown include" in dev builds, where asserts are not stripped.
+        assert(includeMap[includePath] !== undefined, `Unknown include: ${includePath}`);
+
         if (!defineMap[includePath]) {
-            defineMap[includePath] = [];
+            defineMap[includePath] = new Set();
             parseUsedPreprocessorDefines(includeMap[includePath], defineMap[includePath]);
         }
-        usedDefines = [...usedDefines, ...defineMap[includePath]];
+
+        usedDefines = new Set([...usedDefines, ...defineMap[includePath]]);
     }
 
-    fragmentSource = fragmentSource.replace(pragmaRegex, (match, operation, precision, type, name) => {
-        fragmentPragmas[name] = true;
+    fragmentSource = fragmentSource.replace(PRAGMA_REGEX, (_, operation, precision, type: string, name: string) => {
+        fragmentPragmas.add(name);
         if (operation === 'define') {
+            const interpolation = isIntegerType(type) ? 'flat ' : '';
             return `
 #ifndef HAS_UNIFORM_u_${name}
-in ${precision} ${type} ${name};
+${interpolation}in ${precision} ${type} ${name};
 #else
 uniform ${precision} ${type} u_${name};
 #endif
 `;
-        } else  if (operation === 'initialize') {
+        } else if (operation === 'initialize') {
             return `
 #ifdef HAS_UNIFORM_u_${name}
     ${precision} ${type} ${name} = u_${name};
@@ -272,12 +265,14 @@ uniform ${precision} ${type} u_${name};
         } else if (operation === 'initialize-attribute') {
             return '';
         }
-
     });
 
-    vertexSource = vertexSource.replace(pragmaRegex, (match, operation, precision, type, name) => {
+    vertexSource = vertexSource.replace(PRAGMA_REGEX, (_, operation, precision, type: string, name: string) => {
+
+        const materialOffsetNameDefineName = `MATERIAL_ATTRIBUTE_OFFSET_${name}`;
         const attrType = type === 'float' ? 'vec2' : type;
-        const unpackType = name.match(/color/) ? 'color' : attrType;
+        const materialAttribExpression = `GET_ATTRIBUTE_${attrType}(a_${name}, materialInfo, ${materialOffsetNameDefineName})`;
+        const unpackType = name.includes('color') ? 'color' : attrType;
 
         if (operation === 'define-attribute-vertex-shader-only') {
             return `
@@ -285,19 +280,22 @@ uniform ${precision} ${type} u_${name};
 in ${precision} ${type} a_${name};
 #endif
 `;
-        } else if (fragmentPragmas[name]) {
+        } else if (fragmentPragmas.has(name)) {
             if (operation === 'define') {
+                const interpolation = isIntegerType(type) ? 'flat ' : '';
                 return `
 #ifndef HAS_UNIFORM_u_${name}
 uniform lowp float u_${name}_t;
-in ${precision} ${attrType} a_${name};
-out ${precision} ${type} ${name};
+    #if !defined(${materialOffsetNameDefineName})
+        in ${precision} ${attrType} a_${name};
+    #endif
+${interpolation}out ${precision} ${type} ${name};
 #else
 uniform ${precision} ${type} u_${name};
 #endif
 `;
             } else if (operation === 'initialize') {
-                if (unpackType === 'vec4') {
+                if (unpackType === 'vec4' || unpackType === 'uvec4') {
                     // vec4 attributes are only used for cross-faded properties, and are not packed
                     return `
 #ifndef HAS_UNIFORM_u_${name}
@@ -308,8 +306,12 @@ uniform ${precision} ${type} u_${name};
 `;
                 } else {
                     return `
-#ifndef HAS_UNIFORM_u_${name}
-    ${name} = unpack_mix_${unpackType}(a_${name}, u_${name}_t);
+#if !defined(HAS_UNIFORM_u_${name})
+    #ifdef ${materialOffsetNameDefineName}
+        ${name} = unpack_mix_${unpackType}(${materialAttribExpression}, u_${name}_t);
+    #else
+        ${name} = unpack_mix_${unpackType}(a_${name}, u_${name}_t);
+    #endif
 #else
     ${precision} ${type} ${name} = u_${name};
 #endif
@@ -334,7 +336,9 @@ uniform ${precision} ${type} u_${name};
                 return `
 #ifndef HAS_UNIFORM_u_${name}
 uniform lowp float u_${name}_t;
-in ${precision} ${attrType} a_${name};
+    #if !defined(${materialOffsetNameDefineName})
+        in ${precision} ${attrType} a_${name};
+    #endif
 #else
 uniform ${precision} ${type} u_${name};
 #endif
@@ -367,11 +371,15 @@ uniform ${precision} ${type} u_${name};
 #endif
 `;
             } else /* if (operation === 'initialize') */ {
-                if (unpackType === 'vec4') {
+                if (unpackType === 'vec4' || unpackType === 'uvec4') {
                     // vec4 attributes are only used for cross-faded properties, and are not packed
                     return `
 #ifndef HAS_UNIFORM_u_${name}
-    ${precision} ${type} ${name} = a_${name};
+    #ifdef ${materialOffsetNameDefineName}
+        ${precision} ${type} ${name} = ${materialAttribExpression};
+    #else
+        ${precision} ${type} ${name} = a_${name};
+    #endif
 #else
     ${precision} ${type} ${name} = u_${name};
 #endif
@@ -379,7 +387,11 @@ uniform ${precision} ${type} u_${name};
                 } else /* */ {
                     return `
 #ifndef HAS_UNIFORM_u_${name}
-    ${precision} ${type} ${name} = unpack_mix_${unpackType}(a_${name}, u_${name}_t);
+    #ifdef ${materialOffsetNameDefineName}
+        ${precision} ${type} ${name} = unpack_mix_${unpackType}(${materialAttribExpression}, u_${name}_t);
+    #else
+        ${precision} ${type} ${name} = unpack_mix_${unpackType}(a_${name}, u_${name}_t);
+    #endif
 #else
     ${precision} ${type} ${name} = u_${name};
 #endif
@@ -389,5 +401,5 @@ uniform ${precision} ${type} u_${name};
         }
     });
 
-    return {fragmentSource, vertexSource, staticAttributes, usedDefines, vertexIncludes, fragmentIncludes};
+    return {fragmentSource, vertexSource, usedDefines, vertexIncludes, fragmentIncludes};
 }

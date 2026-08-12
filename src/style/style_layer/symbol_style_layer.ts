@@ -1,41 +1,20 @@
 import {mat4} from 'gl-matrix';
-
-import StyleLayer from '../style_layer';
-
-import assert from 'assert';
+import StyleLayer, {rawLayoutMayUseHD} from '../style_layer';
+import {prepareHD} from '../../../modules/hd_worker';
+import assert from '../../style-spec/util/assert';
 import SymbolBucket from '../../data/bucket/symbol_bucket';
 import resolveTokens from '../../util/resolve_tokens';
-import properties from './symbol_style_layer_properties';
+import {getLayoutProperties, getPaintProperties} from './symbol_style_layer_properties';
 import {computeColorAdjustmentMatrix} from '../../util/util';
-
-import type {FormattedSection} from '../../style-spec/expression/types/formatted';
-import type {FormattedSectionExpression} from '../../style-spec/expression/definitions/format';
-import type {CreateProgramParams} from '../../render/painter';
-import type {ConfigOptions} from '../properties';
-
 import {
-    Transitionable,
-    Transitioning,
-    Layout,
-    PossiblyEvaluated,
     PossiblyEvaluatedPropertyValue,
-    PropertyValue
 } from '../properties';
-
 import {
     isExpression,
     StyleExpression,
     ZoomConstantExpression,
     ZoomDependentExpression
 } from '../../style-spec/expression/index';
-
-import type {BucketParameters} from '../../data/bucket';
-import type {LayoutProps, PaintProps} from './symbol_style_layer_properties';
-import type EvaluationParameters from '../evaluation_parameters';
-import type {LayerSpecification} from '../../style-spec/types';
-import type {Feature, SourceExpression, CompositeExpression} from '../../style-spec/expression/index';
-import type {Expression} from '../../style-spec/expression/expression';
-import type {CanonicalTileID} from '../../source/tile_id';
 import {FormattedType} from '../../style-spec/expression/types';
 import {typeOf} from '../../style-spec/expression/values';
 import Formatted from '../../style-spec/expression/types/formatted';
@@ -43,34 +22,99 @@ import FormatSectionOverride from '../format_section_override';
 import FormatExpression from '../../style-spec/expression/definitions/format';
 import Literal from '../../style-spec/expression/definitions/literal';
 import ProgramConfiguration from '../../data/program_configuration';
+
+import type {
+    PropertyValue,
+    ConfigOptions, Properties,
+    Transitionable,
+    Transitioning,
+    Layout,
+    PossiblyEvaluated
+} from '../properties';
+import type {FormattedSection} from '../../style-spec/expression/types/formatted';
+import type {FormattedSectionExpression} from '../../style-spec/expression/definitions/format';
+import type {CreateProgramParams} from '../../render/painter';
+import type {BucketParameters} from '../../data/bucket';
+import type {LayoutProps, PaintProps} from './symbol_style_layer_properties';
+import type EvaluationParameters from '../evaluation_parameters';
+import type {LayerSpecification} from '../../style-spec/types';
+import type {Feature, SourceExpression, CompositeExpression} from '../../style-spec/expression/index';
+import type {Expression} from '../../style-spec/expression/expression';
+import type {CanonicalTileID} from '../../source/tile_id';
 import type {LUT} from "../../util/lut";
+import type {ImageId} from '../../style-spec/expression/types/image_id';
+import type {ProgramName} from '../../render/program';
+import type SymbolAppearance from '../appearance';
+import type {AppearanceProps} from '../appearance_properties';
+import type {RuntimeModuleType} from '../style_layer';
 
-class SymbolStyleLayer extends StyleLayer {
-    _unevaluatedLayout: Layout<LayoutProps>;
-    layout: PossiblyEvaluated<LayoutProps>;
+let properties: {
+    layout: Properties<LayoutProps>;
+    paint: Properties<PaintProps>;
+};
 
-    _transitionablePaint: Transitionable<PaintProps>;
-    _transitioningPaint: Transitioning<PaintProps>;
-    paint: PossiblyEvaluated<PaintProps>;
-
-    _colorAdjustmentMatrix: Float32Array;
-    _saturation: number;
-    _contrast: number;
-    _brightnessMin: number;
-    _brightnessMax: number;
-
-    hasInitialOcclusionOpacityProperties: boolean;
-
-    constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
-        super(layer, properties, scope, lut, options);
-        // @ts-expect-error - TS2322 - Type 'mat4' is not assignable to type 'Float32Array'.
-        this._colorAdjustmentMatrix = mat4.identity([] as any);
-
-        this.hasInitialOcclusionOpacityProperties = (layer.paint !== undefined) && (('icon-occlusion-opacity' in layer.paint) || ('text-occlusion-opacity' in layer.paint));
+const getProperties = () => {
+    if (properties) {
+        return properties;
     }
 
-    recalculate(parameters: EvaluationParameters, availableImages: Array<string>) {
+    properties = {
+        layout: getLayoutProperties(),
+        paint: getPaintProperties()
+    };
+
+    return properties;
+};
+
+class SymbolStyleLayer extends StyleLayer {
+    override type!: 'symbol';
+
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
+
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
+
+    _colorAdjustmentMatrix: mat4;
+    _saturation!: number;
+    _contrast!: number;
+    _brightnessMin!: number;
+    _brightnessMax!: number;
+
+    hasOcclusionOpacityProperties: boolean;
+
+    constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        super(layer, getProperties(), scope, lut, options, layer.layout ? layer.layout['icon-image-use-theme'] : null);
+        this._colorAdjustmentMatrix = mat4.identity([]);
+        this.hasOcclusionOpacityProperties = (layer.paint !== undefined) && (('icon-occlusion-opacity' in layer.paint) || ('text-occlusion-opacity' in layer.paint));
+    }
+
+    override _handleSpecialPaintPropertyUpdate(name: string) {
+        if (name === 'icon-occlusion-opacity' || name === 'text-occlusion-opacity') {
+            this.hasOcclusionOpacityProperties = true;
+        }
+    }
+
+    override recalculate(parameters: EvaluationParameters, availableImages: ImageId[]) {
         super.recalculate(parameters, availableImages);
+
+        if (this.appearances) {
+            this.appearances.forEach(a => {
+                a.recalculate(parameters, availableImages, this.iconImageUseTheme);
+            });
+        }
+
+        if (this.appearances.length !== 0) {
+            // When text-variable-anchor is present, a proper unified bbox for appearances would be very large as it
+            // needs to cover texts for all appearances for all anchors.
+            // A better solution might be to have a separate bbox for each anchor, but it requires significant changes
+            // in stored data and placement logic.
+            // For now we disable text-variable-anchor when appearances are present.
+            // Deleting it here makes it use the default value
+            delete this.layout._values['text-variable-anchor'];
+        }
 
         if (this.layout.get('icon-rotation-alignment') === 'auto') {
             if (this.layout.get('symbol-placement') !== 'point') {
@@ -102,8 +146,9 @@ class SymbolStyleLayer extends StyleLayer {
             const deduped = [];
 
             for (const m of writingModes) {
-                if (deduped.indexOf(m) < 0) deduped.push(m);
+                if (!deduped.includes(m)) deduped.push(m);
             }
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this.layout._values['text-writing-mode'] = deduped;
         } else if (this.layout.get('symbol-placement') === 'point') {
             // default value for 'point' placement symbols
@@ -121,7 +166,7 @@ class SymbolStyleLayer extends StyleLayer {
         contrast: number,
         brightnessMin: number,
         brightnessMax: number,
-    ): Float32Array {
+    ): mat4 {
         if (this._saturation !== saturation ||
             this._contrast !== contrast ||
             this._brightnessMin !== brightnessMin ||
@@ -137,13 +182,14 @@ class SymbolStyleLayer extends StyleLayer {
         return this._colorAdjustmentMatrix;
     }
 
-    getValueAndResolveTokens(
-        name: any,
+    getValueAndResolveTokens<T extends keyof LayoutProps>(
+        name: T,
         feature: Feature,
         canonical: CanonicalTileID,
-        availableImages: Array<string>,
+        availableImages: ImageId[],
     ): string {
-        const value = this.layout.get(name).evaluate(feature, {}, canonical, availableImages);
+        const property = this.layout.get(name) as unknown as PossiblyEvaluatedPropertyValue<LayoutProps[T]>;
+        const value = property.evaluate(feature, {}, canonical, availableImages) as unknown as string;
         const unevaluated = this._unevaluatedLayout._values[name];
         if (!unevaluated.isDataDriven() && !isExpression(unevaluated.value) && value) {
             return resolveTokens(feature.properties, value);
@@ -152,53 +198,66 @@ class SymbolStyleLayer extends StyleLayer {
         return value;
     }
 
-    createBucket(parameters: BucketParameters<SymbolStyleLayer>): SymbolBucket {
+    getAppearanceValueAndResolveTokens<T extends keyof AppearanceProps>(
+        appearance: SymbolAppearance,
+        name: T,
+        feature: Feature,
+        canonical: CanonicalTileID,
+        availableImages: ImageId[],
+    ) {
+        const property = appearance.getLayoutProperty(name) as unknown as PossiblyEvaluatedPropertyValue<LayoutProps[T]>;
+        if (!property) return;
+
+        const value = property.evaluate(feature, {}, canonical, availableImages);
+        const unevaluated = appearance.getUnevaluatedLayoutProperties()._values[name];
+        if (!unevaluated.isDataDriven() && !isExpression(unevaluated.value) && value && typeof value === 'string') {
+            return resolveTokens(feature.properties, value);
+        }
+
+        return value;
+    }
+
+    override createBucket(parameters: BucketParameters<this>): SymbolBucket {
         return new SymbolBucket(parameters);
     }
 
-    queryRadius(): number {
+    override queryRadius(): number {
         return 0;
     }
 
-    queryIntersectsFeature(): boolean {
+    override queryIntersectsFeature(): boolean {
         assert(false); // Should take a different path in FeatureIndex
         return false;
     }
 
     _setPaintOverrides() {
-        for (const overridable of properties.paint.overridableProperties) {
+        for (const overridable of getProperties().paint.overridableProperties as Array<keyof PaintProps>) {
             if (!SymbolStyleLayer.hasPaintOverride(this.layout, overridable)) {
                 continue;
             }
-            // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type 'keyof PaintProps'.
-            const overriden = this.paint.get(overridable);
-            // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'PossiblyEvaluatedPropertyValue<unknown>'.
+            const overriden = this.paint.get(overridable) as unknown as PossiblyEvaluatedPropertyValue<PaintProps>;
             const override = new FormatSectionOverride(overriden);
-            // @ts-expect-error - TS2339 - Property 'property' does not exist on type 'unknown'.
-            const styleExpression = new StyleExpression(override, overriden.property.specification, this.scope, this.options);
+            const styleExpression = new StyleExpression(override, overriden.property.specification, this.scope, this.options, this.layout.get('icon-image-use-theme'));
             let expression = null;
             // eslint-disable-next-line no-warning-comments
             // TODO: check why were the `isLightConstant` values omitted from the construction of these expressions
-            // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'. | TS2339 - Property 'value' does not exist on type 'unknown'.
             if (overriden.value.kind === 'constant' || overriden.value.kind === 'source') {
                 expression = (new ZoomConstantExpression('source', styleExpression) as SourceExpression);
             } else {
                 expression = (new ZoomDependentExpression('composite',
                                                           styleExpression,
-                                                          // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
                                                           overriden.value.zoomStops,
-                                                          // @ts-expect-error - TS2339 - Property 'value' does not exist on type 'unknown'.
-                                                          overriden.value._interpolationType) as CompositeExpression);
+                                                          overriden.value.interpolationType) as CompositeExpression);
             }
-            // @ts-expect-error - TS2339 - Property 'property' does not exist on type 'unknown'.
-            this.paint._values[overridable] = new PossiblyEvaluatedPropertyValue(overriden.property,
-                                                                                 expression,
-                                                                                 // @ts-expect-error - TS2339 - Property 'parameters' does not exist on type 'unknown'.
-                                                                                 overriden.parameters);
+            (this.paint._values as unknown as Record<string, PossiblyEvaluatedPropertyValue<unknown>>)[overridable] =
+                new PossiblyEvaluatedPropertyValue(overriden.property,
+                                                   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                                                   expression,
+                                                   overriden.parameters);
         }
     }
 
-    _handleOverridablePaintPropertyUpdate<T, R>(name: string, oldValue: PropertyValue<T, R>, newValue: PropertyValue<T, R>): boolean {
+    override _handleOverridablePaintPropertyUpdate<T, R>(name: string, oldValue: PropertyValue<T, R>, newValue: PropertyValue<T, R>): boolean {
         if (!this.layout || oldValue.isDataDriven() || newValue.isDataDriven()) {
             return false;
         }
@@ -207,7 +266,8 @@ class SymbolStyleLayer extends StyleLayer {
 
     static hasPaintOverride(layout: PossiblyEvaluated<LayoutProps>, propertyName: string): boolean {
         const textField = layout.get('text-field');
-        const property = properties.paint.properties[propertyName];
+
+        const property = getProperties().paint.properties[propertyName] as {overrides?: {hasOverride: (o: unknown) => boolean}};
         let hasOverrides = false;
 
         const checkSections = (sections: Array<FormattedSection> | Array<FormattedSectionExpression>) => {
@@ -229,7 +289,7 @@ class SymbolStyleLayer extends StyleLayer {
                 if (hasOverrides) return;
 
                 if (expression instanceof Literal && typeOf(expression.value) === FormattedType) {
-                    const formatted: Formatted = ((expression.value) as any);
+                    const formatted = (expression.value) as Formatted;
                     checkSections(formatted.sections);
                 } else if (expression instanceof FormatExpression) {
                     checkSections(expression.sections);
@@ -238,7 +298,7 @@ class SymbolStyleLayer extends StyleLayer {
                 }
             };
 
-            const expr: ZoomConstantExpression<'source'> = ((textField.value) as any);
+            const expr = (textField.value) as ZoomConstantExpression<'source'>;
             if (expr._styleExpression) {
                 checkExpression(expr._styleExpression.expression);
             }
@@ -247,26 +307,27 @@ class SymbolStyleLayer extends StyleLayer {
         return hasOverrides;
     }
 
-    getProgramIds(): string[] {
-
-        const hasIcon = (this.paint.get('icon-opacity').constantOr(1) !== 0);
-
-        const hasText = (this.paint.get('text-opacity').constantOr(1) !== 0);
-        const ids = [];
-        if (hasIcon) {
-            ids.push('symbolIcon');
-        }
-        if (hasText) {
-            ids.push('symbolSDF');
-        }
-        return ids;
+    override getProgramIds(): ProgramName[] {
+        return ['symbol'];
     }
 
-    getDefaultProgramParams(name: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
+    override getDefaultProgramParams(name: string, zoom: number, lut: LUT | null): CreateProgramParams | null {
         return {
             config: new ProgramConfiguration(this, {zoom, lut}),
             overrideFog: false
         };
+    }
+
+    override hasElevation(): boolean {
+        return this.layout && this.layout.get('symbol-elevation-reference') === 'hd-road-markup';
+    }
+
+    override mayUse(type: RuntimeModuleType): boolean {
+        return type === 'HD' && rawLayoutMayUseHD(this, 'symbol-elevation-reference', v => v === 'hd-road-markup');
+    }
+
+    override prepare(): Promise<void> {
+        return this.mayUse('HD') ? prepareHD() : Promise.resolve();
     }
 }
 

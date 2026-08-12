@@ -3,6 +3,16 @@ import {plugin as rtlTextPlugin} from '../source/rtl_text_plugin';
 
 import type {TransitionSpecification} from '../style-spec/types';
 
+type EvaluationParametersOptions = {
+    pitch?: number;
+    now?: number;
+    fadeDuration?: number;
+    transition?: TransitionSpecification;
+    brightness?: number;
+    worldview?: string;
+    activeFloors?: Set<string>;
+};
+
 class EvaluationParameters {
     zoom: number;
     pitch: number | undefined;
@@ -10,9 +20,10 @@ class EvaluationParameters {
     fadeDuration: number;
     transition: TransitionSpecification;
     brightness: number | undefined;
+    worldview: string | undefined;
+    activeFloors: Set<string> | undefined;
 
-    // "options" may also be another EvaluationParameters to copy
-    constructor(zoom: number, options?: any) {
+    constructor(zoom: number, options?: EvaluationParametersOptions) {
         this.zoom = zoom;
 
         if (options) {
@@ -21,6 +32,8 @@ class EvaluationParameters {
             this.transition = options.transition;
             this.pitch = options.pitch;
             this.brightness = options.brightness;
+            this.worldview = options.worldview;
+            this.activeFloors = options.activeFloors;
         } else {
             this.now = 0;
             this.fadeDuration = 0;

@@ -4,7 +4,6 @@
     "test": {
       "width": 1000,
       "height": 512,
-      "allowed": 0.08,
       "showTerrainWireframe": true,
       "interactive": false,
       "operations": [
@@ -16,6 +15,12 @@
         ["wait", 1500],
         ["setZoom", 5.13 ],
         ["wait", 1500]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "skip - needs setPitchBearing operation port"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.08}
       ]
     }
   },

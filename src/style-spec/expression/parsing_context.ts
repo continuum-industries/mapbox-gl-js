@@ -10,7 +10,7 @@ import CollatorExpression from './definitions/collator';
 import Within from './definitions/within';
 import Distance from './definitions/distance';
 import Config from './definitions/config';
-import {isGlobalPropertyConstant, isFeatureConstant} from './is_constant';
+import {isGlobalPropertyConstantSet, isFeatureConstant} from './is_constant';
 import Var from './definitions/var';
 
 import type {Expression, ExpressionRegistry} from './expression';
@@ -23,12 +23,12 @@ import type {ConfigOptions} from '../types/config_options';
  */
 class ParsingContext {
     registry: ExpressionRegistry;
-    path: Array<number>;
-    key: string;
+    path: Array<number | string>;
     scope: Scope;
     errors: Array<ParsingError>;
     _scope: string | null | undefined;
     options: ConfigOptions | null | undefined;
+    iconImageUseTheme: string | null | undefined;
 
     // The expected type of this expression. Provided only to allow Expression
     // implementations to infer argument types: Expression#parse() need not
@@ -38,21 +38,31 @@ class ParsingContext {
 
     constructor(
         registry: ExpressionRegistry,
-        path: Array<number> = [],
+        path: Array<number | string> = [],
         expectedType?: Type | null,
         scope: Scope = new Scope(),
         errors: Array<ParsingError> = [],
         _scope?: string | null,
-        options?: ConfigOptions | null
+        options?: ConfigOptions | null,
+        iconImageUseTheme?: string | null
     ) {
         this.registry = registry;
         this.path = path;
-        this.key = path.map(part => `[${part}]`).join('');
         this.scope = scope;
         this.errors = errors;
         this.expectedType = expectedType;
         this._scope = _scope;
         this.options = options;
+        this.iconImageUseTheme = iconImageUseTheme;
+    }
+
+    get key(): string {
+        let key = '';
+        for (let i = 0; i < this.path.length; i++) {
+            const part = this.path[i];
+            key += typeof part === 'string' ? `['${part}']` : `[${part}]`;
+        }
+        return key;
     }
 
     /**
@@ -70,11 +80,53 @@ class ParsingContext {
         options: {
             typeAnnotation?: 'assert' | 'coerce' | 'omit';
         } = {},
-    ): Expression | null | undefined {
+    ): Expression | null | void {
         if (index || expectedType) {
-            return this.concat(index, expectedType, bindings)._parse(expr, options);
+            const prevExpectedType = this.expectedType;
+            const prevScope = this.scope;
+            if (bindings) this.scope = this.scope.concat(bindings);
+            this.expectedType = expectedType || null;
+            const pushed = typeof index === 'number';
+            if (pushed) this.path.push(index);
+            const result = this._parse(expr, options);
+            if (pushed) this.path.pop();
+            this.expectedType = prevExpectedType;
+            this.scope = prevScope;
+            return result;
         }
         return this._parse(expr, options);
+    }
+
+    /**
+     * @param expr the JSON expression to parse
+     * @param index the optional argument index if parent object being is an argument of another expression
+     * @param key key of parent object being parsed
+     * @param options
+     * @param options.omitTypeAnnotations set true to omit inferred type annotations.  Caller beware: with this option set, the parsed expression's type will NOT satisfy `expectedType` if it would normally be wrapped in an inferred annotation.
+     * @private
+     */
+    parseObjectValue(
+        expr: unknown,
+        index: number,
+        key: string,
+        expectedType?: Type | null,
+        bindings?: Array<[string, Expression]>,
+        options: {
+            typeAnnotation?: 'assert' | 'coerce' | 'omit';
+        } = {},
+    ): Expression | null | void {
+        const prevExpectedType = this.expectedType;
+        const prevScope = this.scope;
+        if (bindings) this.scope = this.scope.concat(bindings);
+        this.expectedType = expectedType || null;
+        this.path.push(index);
+        this.path.push(key);
+        const result = this._parse(expr, options);
+        this.path.pop();
+        this.path.pop();
+        this.expectedType = prevExpectedType;
+        this.scope = prevScope;
+        return result;
     }
 
     _parse(
@@ -82,28 +134,17 @@ class ParsingContext {
         options: {
             typeAnnotation?: 'assert' | 'coerce' | 'omit';
         },
-    ): Expression | null | undefined {
+    ): Expression | null | void {
         if (expr === null || typeof expr === 'string' || typeof expr === 'boolean' || typeof expr === 'number') {
             expr = ['literal', expr];
         }
 
-        function annotate(parsed: Expression, type: Type, typeAnnotation: 'assert' | 'coerce' | 'omit') {
-            if (typeAnnotation === 'assert') {
-                return new Assertion(type, [parsed]);
-            } else if (typeAnnotation === 'coerce') {
-                return new Coercion(type, [parsed]);
-            } else {
-                return parsed;
-            }
-        }
-
         if (Array.isArray(expr)) {
             if (expr.length === 0) {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
                 return this.error(`Expected an array with at least one element. If you wanted a literal array, use ["literal", []].`);
             }
 
-            const Expr = typeof expr[0] === 'string' ? this.registry[expr[0]] : undefined;
+            const Expr = typeof expr[0] === 'string' && Object.hasOwn(this.registry, expr[0]) ? this.registry[expr[0]] : undefined;
             if (Expr) {
                 let parsed = Expr.parse(expr, this);
                 if (!parsed) return null;
@@ -134,11 +175,12 @@ class ParsingContext {
                 // parsed/compiled result. Expressions that expect an image should
                 // not be resolved here so we can later get the available images.
                 if (!(parsed instanceof Literal) && (parsed.type.kind !== 'resolvedImage') && isConstant(parsed)) {
-                    const ec = new EvaluationContext(this._scope, this.options);
+                    const ec = new EvaluationContext(this._scope, this.options, this.iconImageUseTheme);
                     try {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                         parsed = new Literal(parsed.type, parsed.evaluate(ec));
-                    } catch (e: any) {
-                        this.error(e.message);
+                    } catch (e) {
+                        this.error((e as Error).message);
                         return null;
                     }
                 }
@@ -149,13 +191,10 @@ class ParsingContext {
             // Try to parse as array
             return Coercion.parse(['to-array', expr], this);
         } else if (typeof expr === 'undefined') {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return this.error(`'undefined' value invalid. Use null instead.`);
         } else if (typeof expr === 'object') {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return this.error(`Bare objects invalid. Use ["literal", {...}] instead.`);
         } else {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return this.error(`Expected an array, but found ${typeof expr} instead.`);
         }
     }
@@ -170,11 +209,14 @@ class ParsingContext {
      */
     concat(
         index?: number | null,
+        key?: string | null,
         expectedType?: Type | null,
         bindings?: Array<[string, Expression]>,
     ): ParsingContext {
-        const path = typeof index === 'number' ? this.path.concat(index) : this.path;
         const scope = bindings ? this.scope.concat(bindings) : this.scope;
+        const path = this.path.slice();
+        if (typeof index === 'number') path.push(index);
+        if (typeof key === 'string') path.push(key);
         return new ParsingContext(
             this.registry,
             path,
@@ -182,7 +224,27 @@ class ParsingContext {
             scope,
             this.errors,
             this._scope,
-            this.options
+            this.options,
+            this.iconImageUseTheme
+        );
+    }
+
+    /**
+     * Returns a fresh context that shares the same path position as this one
+     * but has an empty errors array. Used by CompoundExpression to probe
+     * overload signatures without polluting the parent errors list.
+     * @private
+     */
+    _forkForSignature(): ParsingContext {
+        return new ParsingContext(
+            this.registry,
+            this.path.slice(),
+            null,
+            this.scope,
+            [],
+            this._scope,
+            this.options,
+            this.iconImageUseTheme
         );
     }
 
@@ -202,14 +264,30 @@ class ParsingContext {
      * Returns null if `t` is a subtype of `expected`; otherwise returns an
      * error message and also pushes it to `this.errors`.
      */
-    checkSubtype(expected: Type, t: Type): string | null | undefined {
+    checkSubtype(expected: Type, t: Type, index?: number): string | null | undefined {
         const error = checkSubtype(expected, t);
-        if (error) this.error(error);
+        if (error) this.error(error, ...(typeof index === 'number' ? [index] : []));
         return error;
     }
 }
 
 export default ParsingContext;
+
+const CONSTANT_FOLD_EXCLUDED_GLOBALS = new Set([
+    'zoom', 'heatmap-density', 'worldview', 'line-progress', 'raster-value',
+    'sky-radial-progress', 'accumulated', 'is-supported-script', 'pitch',
+    'distance-from-center', 'measure-light', 'raster-particle-speed', 'is-active-floor',
+]);
+
+function annotate(parsed: Expression, type: Type, typeAnnotation: 'assert' | 'coerce' | 'omit') {
+    if (typeAnnotation === 'assert') {
+        return new Assertion(type, [parsed]);
+    } else if (typeAnnotation === 'coerce') {
+        return new Coercion(type, [parsed]);
+    } else {
+        return parsed;
+    }
+}
 
 function isConstant(expression: Expression) {
     if (expression instanceof Var) {
@@ -252,5 +330,5 @@ function isConstant(expression: Expression) {
     }
 
     return isFeatureConstant(expression) &&
-        isGlobalPropertyConstant(expression, ['zoom', 'heatmap-density', 'line-progress', 'raster-value', 'sky-radial-progress', 'accumulated', 'is-supported-script', 'pitch', 'distance-from-center', 'measure-light', 'raster-particle-speed']);
+        isGlobalPropertyConstantSet(expression, CONSTANT_FOLD_EXCLUDED_GLOBALS);
 }

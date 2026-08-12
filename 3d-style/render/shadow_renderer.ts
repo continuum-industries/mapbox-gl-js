@@ -1,36 +1,73 @@
 import Texture from '../../src/render/texture';
-import Framebuffer from '../../src/gl/framebuffer';
 import ColorMode from '../../src/gl/color_mode';
 import DepthMode from '../../src/gl/depth_mode';
 import StencilMode from '../../src/gl/stencil_mode';
 import CullFaceMode from '../../src/gl/cull_face_mode';
-import Transform from '../../src/geo/transform';
 import {Frustum, Aabb} from '../../src/util/primitives';
 import Color from '../../src/style-spec/util/color';
 import {FreeCamera} from '../../src/ui/free_camera';
-import {OverscaledTileID, UnwrappedTileID} from '../../src/source/tile_id';
 import {mercatorZfromAltitude, tileToMeter} from '../../src/geo/mercator_coordinate';
-import {cartesianPositionToSpherical, sphericalPositionToCartesian, clamp, linearVec3TosRGB} from '../../src/util/util';
-
-import Lights from '../style/lights';
+import {clamp} from '../../src/util/util';
+import {calculateGroundShadowFactor, shadowDirectionFromProperties} from './shadow_utils';
 import {defaultShadowUniformValues} from '../render/shadow_uniforms';
 import TextureSlots from './texture_slots';
-
-import assert from 'assert';
-
+import assert from '../../src/style-spec/util/assert';
 import {mat4, vec3} from 'gl-matrix';
 import {groundShadowUniformValues} from './program/ground_shadow_program';
 import EXTENT from '../../src/style-spec/data/extent';
 import {getCutoffParams} from '../../src/render/cutoff';
+import {Debug} from '../../src/util/debug';
 
+import type {vec4} from 'gl-matrix';
+import type {DevToolsFolder} from '../../src/ui/control/devtools';
+import type Lights from '../style/lights';
+import type {OverscaledTileID, UnwrappedTileID} from '../../src/source/tile_id';
+import type Transform from '../../src/geo/transform';
+import type Framebuffer from '../../src/gl/framebuffer';
 import type Painter from '../../src/render/painter';
 import type Program from '../../src/render/program';
 import type Style from '../../src/style/style';
 import type {UniformValues} from '../../src/render/uniform_binding';
 import type {LightProps as Directional} from '../style/directional_light_properties';
-import type {LightProps as Ambient} from '../style/ambient_light_properties';
 import type {ShadowUniformsType} from '../render/shadow_uniforms';
-import type {vec4} from 'gl-matrix';
+import type {GroundShadowUniformsType} from '../render/program/ground_shadow_program';
+import type {ModelUniformsType, ModelDepthUniformsType} from '../render/program/model_program';
+import type {SymbolUniformsType} from '../../src/render/program/symbol_program';
+import type {DynamicDefinesType} from '../../src/render/program/program_uniforms';
+import type {
+    FillExtrusionDepthUniformsType,
+    FillExtrusionPatternUniformsType
+} from '../../src/render/program/fill_extrusion_program';
+import type {BuildingUniformsType, BuildingDepthUniformsType} from './program/building_program';
+
+type ShadowsUniformsType =
+    | ShadowUniformsType
+    | GroundShadowUniformsType
+    | SymbolUniformsType
+    | ModelUniformsType
+    | ModelDepthUniformsType
+    | FillExtrusionDepthUniformsType
+    | FillExtrusionPatternUniformsType
+    | BuildingUniformsType
+    | BuildingDepthUniformsType;
+
+// One scratch buffer per cascade; each assignment into the uniforms bag must keep a distinct
+// reference because the bag is consumed after the cascade loop completes. Grown lazily in case
+// the cascade count ever increases (currently capped at 2 by the u_light_matrix_0/1 uniforms).
+const lightMatrixScratches: Float64Array[] = [];
+function getLightMatrixScratch(i: number): Float64Array {
+    const scratch = lightMatrixScratches[i] = lightMatrixScratches[i] || new Float64Array(16);
+    return scratch;
+}
+
+// Per-tile cache of cascade.matrix * tileMatrix, filled by computeCascadeTileMatrices and
+// consumed by setupShadowsFromTileCache. Module-level: the caller drains it per-node before
+// moving to the next tile.
+const cascadeTileMatrixScratches: Float64Array[] = [];
+
+// Reused by calculateShadowPassMatrixFromMatrix. All callers consume the result synchronously
+// (uniform upload or .set() copy), so a single scratch is safe.
+const shadowPassMatrixScratch = new Float32Array(16);
 
 type ShadowCascade = {
     framebuffer: Framebuffer;
@@ -52,10 +89,10 @@ export type TileShadowVolume = {
 
 type ShadowNormalOffsetMode = 'vector-tile' | 'model-tile';
 
-const shadowParameters = {
-    cascadeCount: 2,
-    shadowMapResolution: 2048
-};
+function lerpClamp(x: number, x1: number, x2: number, y1: number, y2: number) {
+    const t = clamp((x - x1) / (x2 - x1), 0, 1);
+    return (1 - t) * y1 + t * y2;
+}
 
 class ShadowReceiver {
     constructor(aabb: Aabb, lastCascade?: number | null) {
@@ -82,8 +119,8 @@ class ShadowReceivers {
             this.receivers[tileId.key] = new ShadowReceiver(aabb, null);
         }
     }
+
     clear() {
-        // @ts-expect-error - TS2741 - Property 'number' is missing in type '{}' but required in type '{ number: ShadowReceiver; }'.
         this.receivers = {};
     }
 
@@ -94,11 +131,11 @@ class ShadowReceivers {
     // Returns the number of cascades that need to be rendered based on visibility on screen.
     // Cascades that need to be rendered always include the first cascade.
     computeRequiredCascades(frustum: Frustum, worldSize: number, cascades: Array<ShadowCascade>): number {
-        const frustumAabb = Aabb.fromPoints((frustum.points as any));
+        const frustumAabb = Aabb.fromPoints(frustum.points);
         let lastCascade = 0;
 
         for (const receiverKey in this.receivers) {
-            const receiver = (this.receivers[receiverKey] as ShadowReceiver | null | undefined);
+            const receiver = this.receivers[receiverKey];
             if (!receiver) continue;
 
             if (!frustumAabb.intersectsAabb(receiver.aabb)) continue;
@@ -111,8 +148,8 @@ class ShadowReceivers {
                 let aabbInsideCascade = true;
 
                 for (const point of clampedTileAabbPoints) {
-                    const p = [point[0] * worldSize, point[1] * worldSize, point[2]];
-                    vec3.transformMat4(p as [number, number, number], p as [number, number, number], cascades[i].matrix);
+                    const p: [number, number, number] = [point[0] * worldSize, point[1] * worldSize, point[2]];
+                    vec3.transformMat4(p, p, cascades[i].matrix);
 
                     if (p[0] < -1.0 || p[0] > 1.0 || p[1] < -1.0 || p[1] > 1.0) {
                         aabbInsideCascade = false;
@@ -132,30 +169,35 @@ class ShadowReceivers {
         return lastCascade + 1;
     }
 
-    receivers: {
-        number: ShadowReceiver;
-    };
+    receivers!: Record<number, ShadowReceiver>;
 }
 
 export class ShadowRenderer {
     painter: Painter;
     _enabled: boolean;
-    _shadowLayerCount: number;
+    _drawShadowAfterLayer: number;
     _numCascadesToRender: number;
     _cascades: Array<ShadowCascade>;
     _groundShadowTiles: Array<OverscaledTileID>;
     _receivers: ShadowReceivers;
     _depthMode: DepthMode;
     _uniformValues: UniformValues<ShadowUniformsType>;
-    shadowDirection: vec3;
+    shadowDirection!: vec3;
     useNormalOffset: boolean;
 
     _forceDisable: boolean;
+    _devtoolsFolder: DevToolsFolder | null;
+
+    _shadowParameters: {
+        cascadeCount: number,
+        normalOffset: number,
+        shadowMapResolution: number
+    };
 
     constructor(painter: Painter) {
         this.painter = painter;
         this._enabled = false;
-        this._shadowLayerCount = 0;
+        this._drawShadowAfterLayer = -1;
         this._numCascadesToRender = 0;
         this._cascades = [];
         this._groundShadowTiles = [];
@@ -163,16 +205,25 @@ export class ShadowRenderer {
         this._depthMode = new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadWrite, [0, 1]);
         this._uniformValues = defaultShadowUniformValues();
         this._forceDisable = false;
+        this._devtoolsFolder = null;
 
         this.useNormalOffset = false;
 
-        painter.tp.registerParameter(this, ["Shadows"], "_forceDisable", {label: "forceDisable"}, () => { this.painter.style.map.triggerRepaint(); });
-        painter.tp.registerParameter(shadowParameters, ["Shadows"], "cascadeCount", {min: 1, max: 2, step: 1});
-        painter.tp.registerParameter(shadowParameters, ["Shadows"], "shadowMapResolution", {min: 32, max: 2048, step: 32});
-        painter.tp.registerBinding(this, ["Shadows"], "_numCascadesToRender", {readonly: true, label: 'numCascadesToRender'});
+        this._shadowParameters = {
+            cascadeCount: 2,
+            normalOffset: 3,
+            shadowMapResolution: 2048
+        };
     }
 
     destroy() {
+        Debug.run(() => {
+            if (this.painter._devtools) {
+                this.painter._devtools.removeFolder('Shadows');
+            }
+            this._devtoolsFolder = null;
+        });
+
         for (const cascade of this._cascades) {
             cascade.texture.destroy();
             cascade.framebuffer.destroy();
@@ -184,8 +235,20 @@ export class ShadowRenderer {
     updateShadowParameters(transform: Transform, directionalLight?: Lights<Directional> | null) {
         const painter = this.painter;
 
+        Debug.run(() => {
+            if (painter._devtools && !this._devtoolsFolder) {
+                const folder = painter._devtools.addFolder('Shadows');
+                folder.addBinding(this, '_forceDisable', {label: 'forceDisable'}, () => painter.style.map.triggerRepaint());
+                folder.addBinding(this._shadowParameters, 'cascadeCount', {min: 1, max: 2, step: 1});
+                folder.addBinding(this._shadowParameters, 'normalOffset', {min: 0, max: 10, step: 0.05});
+                folder.addBinding(this._shadowParameters, 'shadowMapResolution', {min: 32, max: 2048, step: 32});
+                folder.addReadonly(this, '_numCascadesToRender', {label: 'numCascadesToRender'});
+                this._devtoolsFolder = folder;
+            }
+        });
+
         this._enabled = false;
-        this._shadowLayerCount = 0;
+        this._drawShadowAfterLayer = -1;
         this._receivers.clear();
 
         if (!directionalLight || !directionalLight.properties) {
@@ -193,46 +256,56 @@ export class ShadowRenderer {
         }
 
         const shadowIntensity = directionalLight.properties.get('shadow-intensity');
+        const drawBeforeLayer = directionalLight.properties.get('shadow-draw-before-layer');
 
         if (!directionalLight.shadowsEnabled() || shadowIntensity <= 0.0) {
             return;
         }
 
-        this._shadowLayerCount = painter.style.order.reduce(
-            (accumulator: number, layerId: string) => {
-                const layer = painter.style._mergedLayers[layerId];
-                return accumulator + (layer.hasShadowPass() && !layer.isHidden(transform.zoom) ? 1 : 0);
-            }, 0);
+        let lastShadowLayer = -1;
 
-        this._enabled = this._shadowLayerCount > 0;
+        let layerIdx = 0;
+        for (const layerId of painter.style.order) {
+            const layer = painter.style._mergedLayers[layerId];
+            if (layer.hasShadowPass() && !layer.isHidden(transform.zoom)) {
+                lastShadowLayer = layerIdx;
+            }
+            // If drawBeforeLayer is specified, ground shadows will be rendered right before that layer.
+            // Check the exact match for the layer id or a match for a layer with the specific slot.
+            // Slots themselves are not included in layerRenderItems but if we have at least one layer
+            // which has a matching slot, then we will use that layer as the target.
+            if (drawBeforeLayer && (drawBeforeLayer === layerId || drawBeforeLayer === layer.slot)) {
+                // There should be no need to render shadows before the first layer, and it's not supported
+                this._drawShadowAfterLayer = layerIdx > 0 ? layerIdx - 1 : 0;
+            }
+            layerIdx += 1;
+        }
+
+        this._enabled = lastShadowLayer >= 0;
 
         if (!this.enabled) {
             return;
         }
 
+        if (this._drawShadowAfterLayer < 0) {
+            this._drawShadowAfterLayer = lastShadowLayer;
+        }
+
         const context = painter.context;
-        const width = shadowParameters.shadowMapResolution;
-        const height = shadowParameters.shadowMapResolution;
+        const width = this._shadowParameters.shadowMapResolution;
+        const height = this._shadowParameters.shadowMapResolution;
 
-        if (this._cascades.length === 0 || shadowParameters.shadowMapResolution !== this._cascades[0].texture.size[0]) {
+        if (this._cascades.length === 0 || this._shadowParameters.shadowMapResolution !== this._cascades[0].texture.size[0]) {
             this._cascades = [];
-            for (let i = 0; i < shadowParameters.cascadeCount; ++i) {
-                const useColor = painter._shadowMapDebug;
-
+            for (let i = 0; i < this._shadowParameters.cascadeCount; ++i) {
                 const gl = context.gl;
-                const fbo = context.createFramebuffer(width, height, useColor, 'texture');
-                const depthTexture = new Texture(context, {width, height, data: null}, gl.DEPTH_COMPONENT);
+                const fbo = context.createFramebuffer(width, height, 0, 'texture');
+                const depthTexture = new Texture(context, {width, height, data: null}, gl.DEPTH_COMPONENT16);
                 fbo.depthAttachment.set(depthTexture.texture);
-
-                if (useColor) {
-                    const colorTexture = new Texture(context, {width, height, data: null}, gl.RGBA);
-                    fbo.colorAttachment.set(colorTexture.texture);
-                }
 
                 this._cascades.push({
                     framebuffer: fbo,
                     texture: depthTexture,
-                    // @ts-expect-error - TS2322 - Type '[]' is not assignable to type 'mat4'.
                     matrix: [],
                     far: 0,
                     boundingSphereRadius: 0,
@@ -248,7 +321,7 @@ export class ShadowRenderer {
             const elevation = transform.elevation;
             const range = [10000, -10000];
             elevation.visibleDemTiles.filter(tile => tile.dem).forEach(tile => {
-                const minMaxTree = (tile.dem as any).tree;
+                const minMaxTree = tile.dem.tree;
                 range[0] = Math.min(range[0], minMaxTree.minimums[0]);
                 range[1] = Math.max(range[1], minMaxTree.maximums[0]);
             });
@@ -266,7 +339,7 @@ export class ShadowRenderer {
             let near = transform.height / 50.0;
             let far = 1.0;
 
-            if (shadowParameters.cascadeCount === 1) {
+            if (this._shadowParameters.cascadeCount === 1) {
                 far = shadowCutoutDist;
             } else {
                 if (cascadeIndex === 0) {
@@ -277,13 +350,11 @@ export class ShadowRenderer {
                 }
             }
 
-            const [matrix, radius] = createLightMatrix(transform, this.shadowDirection, near, far, shadowParameters.shadowMapResolution, verticalRange);
+            const [matrix, radius] = createLightMatrix(transform, this.shadowDirection, near, far, this._shadowParameters.shadowMapResolution, verticalRange);
             cascade.scale = transform.scale;
-            // @ts-expect-error - TS2322 - Type 'Float64Array' is not assignable to type 'mat4'.
             cascade.matrix = matrix;
             cascade.boundingSphereRadius = radius;
 
-            // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
             mat4.invert(cameraInvProj, cascade.matrix);
             cascade.frustum = Frustum.fromInvProjectionMatrix(cameraInvProj, 1, 0, true);
             cascade.far = far;
@@ -292,8 +363,8 @@ export class ShadowRenderer {
         this._uniformValues['u_fade_range'] = [this._cascades[fadeRangeIdx].far * 0.75, this._cascades[fadeRangeIdx].far];
         this._uniformValues['u_shadow_intensity'] = shadowIntensity;
         this._uniformValues['u_shadow_direction'] = [this.shadowDirection[0], this.shadowDirection[1], this.shadowDirection[2]];
-        this._uniformValues['u_shadow_texel_size'] = 1 / shadowParameters.shadowMapResolution;
-        this._uniformValues['u_shadow_map_resolution'] = shadowParameters.shadowMapResolution;
+        this._uniformValues['u_shadow_texel_size'] = 1 / this._shadowParameters.shadowMapResolution;
+        this._uniformValues['u_shadow_map_resolution'] = this._shadowParameters.shadowMapResolution;
         this._uniformValues['u_shadowmap_0'] = TextureSlots.ShadowMap0;
         this._uniformValues['u_shadowmap_1'] = TextureSlots.ShadowMap0 + 1;
 
@@ -342,7 +413,7 @@ export class ShadowRenderer {
         // shadows.
         this._numCascadesToRender = this._receivers.computeRequiredCascades(painter.transform.getFrustum(0), painter.transform.worldSize, this._cascades);
 
-        context.viewport.set([0, 0, shadowParameters.shadowMapResolution, shadowParameters.shadowMapResolution]);
+        context.viewport.set([0, 0, this._shadowParameters.shadowMapResolution, this._shadowParameters.shadowMapResolution]);
 
         for (let cascade = 0; cascade < this._numCascadesToRender; ++cascade) {
             painter.currentShadowCascade = cascade;
@@ -358,7 +429,6 @@ export class ShadowRenderer {
                 const coords = sourceCache ? sourceCoords[sourceCache.id] : undefined;
                 if (layer.type !== 'model' && !(coords && coords.length)) continue;
 
-                // @ts-expect-error - TS2345 - Argument of type 'void | SourceCache' is not assignable to parameter of type 'SourceCache'.
                 painter.renderLayer(painter, sourceCache, layer, coords);
             }
         }
@@ -374,6 +444,7 @@ export class ShadowRenderer {
         const painter = this.painter;
         const style = painter.style;
         const context = painter.context;
+        const gl = context.gl;
         const directionalLight = style.directionalLight;
         const ambientLight = style.ambientLight;
 
@@ -381,15 +452,20 @@ export class ShadowRenderer {
             return;
         }
 
-        const baseDefines = ([] as any);
+        const baseDefines = [] as DynamicDefinesType[];
         const cutoffParams = getCutoffParams(painter, painter.longestCutoffRange);
         if (cutoffParams.shouldRenderCutoff) {
             baseDefines.push('RENDER_CUTOFF');
         }
+        baseDefines.push('RENDER_SHADOWS');
+        if (this.useNormalOffset) {
+            baseDefines.push('NORMAL_OFFSET');
+        }
 
         const shadowColor = calculateGroundShadowFactor(style, directionalLight, ambientLight);
 
-        const depthMode = new DepthMode(context.gl.LEQUAL, DepthMode.ReadOnly, painter.depthRangeFor3D);
+        const depthMode = new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, painter.depthRangeFor3D);
+        const stencilMode = new StencilMode({func: gl.EQUAL, mask: 0xFF}, 0x00, 0xFF, gl.KEEP, gl.KEEP, gl.KEEP);
 
         for (const id of this._groundShadowTiles) {
             const unwrapped = id.toUnwrapped();
@@ -402,41 +478,35 @@ export class ShadowRenderer {
 
             const uniformValues = groundShadowUniformValues(painter.transform.calculateProjMatrix(unwrapped), shadowColor);
 
-            program.draw(painter, context.gl.TRIANGLES, depthMode, StencilMode.disabled, ColorMode.multiply, CullFaceMode.disabled,
+            program.draw(painter, gl.TRIANGLES, depthMode, stencilMode, ColorMode.multiply, CullFaceMode.disabled,
                 uniformValues, "ground_shadow", painter.tileExtentBuffer, painter.quadTriangleIndexBuffer,
-                painter.tileExtentSegments, {}, painter.transform.zoom,
+                painter.tileExtentSegments, null, painter.transform.zoom,
                 null, null);
         }
-    }
-
-    getShadowPassColorMode(): Readonly<ColorMode> {
-        return this.painter._shadowMapDebug ? ColorMode.unblended : ColorMode.disabled;
     }
 
     getShadowPassDepthMode(): Readonly<DepthMode> {
         return this._depthMode;
     }
 
-    getShadowCastingLayerCount(): number {
-        return this._shadowLayerCount;
+    getGroundShadowLayerIndex(): number {
+        return this._drawShadowAfterLayer;
     }
 
-    calculateShadowPassMatrixFromTile(unwrappedId: UnwrappedTileID): Float32Array {
+    calculateShadowPassMatrixFromTile(unwrappedId: UnwrappedTileID): mat4 {
         const tr = this.painter.transform;
         const tileMatrix = tr.calculatePosMatrix(unwrappedId, tr.worldSize);
         const lightMatrix = this._cascades[this.painter.currentShadowCascade].matrix;
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.multiply(tileMatrix, lightMatrix, tileMatrix);
         return Float32Array.from(tileMatrix);
     }
 
-    calculateShadowPassMatrixFromMatrix(matrix: mat4): Float32Array {
+    calculateShadowPassMatrixFromMatrix(matrix: mat4): mat4 {
         const lightMatrix = this._cascades[this.painter.currentShadowCascade].matrix;
-        mat4.multiply(matrix, lightMatrix, matrix);
-        return Float32Array.from(matrix);
+        return mat4.multiply(shadowPassMatrixScratch, lightMatrix, matrix);
     }
 
-    setupShadows(unwrappedTileID: UnwrappedTileID, program: Program<any>, normalOffsetMode?: ShadowNormalOffsetMode | null, tileOverscaledZ: number = 0) {
+    setupShadows(unwrappedTileID: UnwrappedTileID, program: Program<ShadowsUniformsType>, normalOffsetMode?: ShadowNormalOffsetMode | null) {
         if (!this.enabled) {
             return;
         }
@@ -446,62 +516,83 @@ export class ShadowRenderer {
         const gl = context.gl;
         const uniforms = this._uniformValues;
 
-        const lightMatrix = new Float64Array(16);
         const tileMatrix = transform.calculatePosMatrix(unwrappedTileID, transform.worldSize);
 
         for (let i = 0; i < this._cascades.length; i++) {
-            // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
-            mat4.multiply(lightMatrix, this._cascades[i].matrix, tileMatrix);
-            uniforms[i === 0 ? 'u_light_matrix_0' : 'u_light_matrix_1'] = Float32Array.from(lightMatrix);
+            const scratch = getLightMatrixScratch(i);
+            mat4.multiply(scratch, this._cascades[i].matrix, tileMatrix);
+            uniforms[i === 0 ? 'u_light_matrix_0' : 'u_light_matrix_1'] = scratch;
             context.activeTexture.set(gl.TEXTURE0 + TextureSlots.ShadowMap0 + i);
-            this._cascades[i].texture.bind(gl.NEAREST, gl.CLAMP_TO_EDGE);
+            this._cascades[i].texture.bindExtraParam(gl.LINEAR, gl.LINEAR, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE, gl.GREATER);
         }
 
         this.useNormalOffset = !!normalOffsetMode;
 
         if (this.useNormalOffset) {
             const meterInTiles = tileToMeter(unwrappedTileID.canonical);
-            const texelScale = 2.0 / transform.tileSize * EXTENT / shadowParameters.shadowMapResolution;
+            const texelScale = 2.0 / transform.tileSize * EXTENT / this._shadowParameters.shadowMapResolution;
             const shadowTexelInTileCoords0 = texelScale * this._cascades[0].boundingSphereRadius;
-            const shadowTexelInTileCoords1 = texelScale * this._cascades[this._cascades.length - 1].boundingSphereRadius;
+            const shadowTexelInTileCoords1 = texelScale * this._cascades.at(-1).boundingSphereRadius;
             // Instanced model tiles could have smoothened (shared among neighbor faces) normals. Normal is not surface normal
             // and this is why it is needed to increase the offset. 3.0 in case of model-tile could be alternatively replaced by
             // 2.0 if normal would not get scaled by dotScale in shadow_normal_offset().
             const tileTypeMultiplier = (normalOffsetMode === 'vector-tile') ? 1.0 : 3.0;
-            const scale = tileTypeMultiplier / Math.pow(2, tileOverscaledZ - unwrappedTileID.canonical.z - (1 - transform.zoom + Math.floor(transform.zoom)));
+            // Scale is applied differently depending on zoom level to avoid shadow acne
+            // These values were determined empirically over the whole zoom range to be
+            // consistent with the old formula (see file history).
+            const scale = tileTypeMultiplier * lerpClamp(transform.zoom, 22, 0, 0.125, 4);
             const offset0 = shadowTexelInTileCoords0 * scale;
             const offset1 = shadowTexelInTileCoords1 * scale;
             uniforms["u_shadow_normal_offset"] = [meterInTiles, offset0, offset1];
-            uniforms["u_shadow_bias"] = [0.00006, 0.0012, 0.012]; // Reduce constant offset
+            uniforms["u_shadow_bias"] = [0.00010, 0.0012, 0.012]; // Reduce constant offset
         } else {
             uniforms["u_shadow_bias"] = [0.00036, 0.0012, 0.012];
         }
         program.setShadowUniformValues(context, uniforms);
     }
 
-    setupShadowsFromMatrix(worldMatrix: mat4, program: Program<any>, normalOffset: boolean = false) {
-        if (!this.enabled) {
-            return;
+    // Precompute cascade.matrix * tileMatrix for each active cascade, returning per-cascade
+    // scratches. The caller layers per-node translate/scale on top before passing the result
+    // to setupShadowsFromCascadeMatrices — saves the per-node cascade-mul.
+    computeCascadeTileMatrices(tileMatrix: mat4): Float64Array[] {
+        const count = this._shadowParameters.cascadeCount;
+        for (let i = 0; i < count; i++) {
+            const out = cascadeTileMatrixScratches[i] = cascadeTileMatrixScratches[i] || new Float64Array(16);
+            mat4.multiply(out, this._cascades[i].matrix, tileMatrix);
         }
+        cascadeTileMatrixScratches.length = count;
+        return cascadeTileMatrixScratches;
+    }
+
+    setupShadowsFromMatrix(worldMatrix: mat4, program: Program<ShadowUniformsType | ModelUniformsType | BuildingUniformsType>, normalOffset: boolean = false) {
+        if (!this.enabled) return;
+        const count = this._shadowParameters.cascadeCount;
+        for (let i = 0; i < count; i++) {
+            mat4.multiply(getLightMatrixScratch(i), this._cascades[i].matrix, worldMatrix);
+        }
+        lightMatrixScratches.length = count;
+        this.setupShadowsFromCascadeMatrices(lightMatrixScratches, program, normalOffset);
+    }
+
+    // Bind shadow textures and upload per-cascade light matrices already baked by the caller.
+    setupShadowsFromCascadeMatrices(perCascadeMatrices: mat4[], program: Program<ShadowUniformsType | ModelUniformsType | BuildingUniformsType>, normalOffset: boolean = false) {
+        if (!this.enabled) return;
 
         const context = this.painter.context;
         const gl = context.gl;
         const uniforms = this._uniformValues;
 
-        const lightMatrix = new Float64Array(16);
-        for (let i = 0; i < shadowParameters.cascadeCount; i++) {
-            // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
-            mat4.multiply(lightMatrix, this._cascades[i].matrix, worldMatrix);
-            uniforms[i === 0 ? 'u_light_matrix_0' : 'u_light_matrix_1'] = Float32Array.from(lightMatrix);
+        for (let i = 0; i < this._shadowParameters.cascadeCount; i++) {
+            uniforms[i === 0 ? 'u_light_matrix_0' : 'u_light_matrix_1'] = perCascadeMatrices[i];
             context.activeTexture.set(gl.TEXTURE0 + TextureSlots.ShadowMap0 + i);
-            this._cascades[i].texture.bind(gl.NEAREST, gl.CLAMP_TO_EDGE);
+            this._cascades[i].texture.bindExtraParam(gl.LINEAR, gl.LINEAR, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE, gl.GREATER);
         }
 
         this.useNormalOffset = normalOffset;
 
         if (normalOffset) {
-            const scale = 5.0; // Experimentally found value
-            uniforms["u_shadow_normal_offset"] = [1.0, scale, scale]; // meterToTile isn't used
+            const s = this._shadowParameters.normalOffset;
+            uniforms["u_shadow_normal_offset"] = [1.0, s, s]; // meterToTile isn't used
             uniforms["u_shadow_bias"] = [0.00006, 0.0012, 0.012]; // Reduce constant offset
         } else {
             uniforms["u_shadow_bias"] = [0.00036, 0.0012, 0.012];
@@ -522,8 +613,7 @@ export class ShadowRenderer {
 
     computeSimplifiedTileShadowVolume(id: UnwrappedTileID, height: number, worldSize: number, lightDir: vec3): TileShadowVolume {
         if (lightDir[2] >= 0.0) {
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type 'TileShadowVolume': vertices, planes
-            return {};
+            return {} as TileShadowVolume;
         }
         const corners = tileAabb(id, height, worldSize).getCorners();
         const t = height / -lightDir[2];
@@ -542,13 +632,12 @@ export class ShadowRenderer {
             vec3.add(corners[2], corners[2], [0.0, lightDir[1] * t, 0.0]);
             vec3.add(corners[3], corners[3], [0.0, lightDir[1] * t, 0.0]);
         }
-        // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type 'TileShadowVolume': vertices, planes
-        const tileShadowVolume: TileShadowVolume = {};
+        const tileShadowVolume = {} as TileShadowVolume;
         tileShadowVolume.vertices = corners;
         tileShadowVolume.planes = [computePlane(corners[1], corners[0], corners[4]), // top
             computePlane(corners[2], corners[1], corners[5]), // right
             computePlane(corners[3], corners[2], corners[6]), // bottom
-            computePlane(corners[0], corners[3], corners[7]) ];
+            computePlane(corners[0], corners[3], corners[7])];
         return tileShadowVolume;
     }
 
@@ -573,10 +662,10 @@ function tileAabb(id: UnwrappedTileID, height: number, worldSize: number): Aabb 
 }
 
 function computePlane(a: vec3, b: vec3, c: vec3): vec4 {
-    const bc = vec3.sub([] as any, c, b);
-    const ba = vec3.sub([] as any, a, b);
+    const bc = vec3.sub([], c, b);
+    const ba = vec3.sub([], a, b);
 
-    const normal = vec3.cross([] as any, bc, ba);
+    const normal = vec3.cross([], bc, ba);
     const len = vec3.length(normal);
 
     if (len === 0) {
@@ -586,61 +675,6 @@ function computePlane(a: vec3, b: vec3, c: vec3): vec4 {
     return [normal[0], normal[1], normal[2], -vec3.dot(normal, b)];
 }
 
-export function shadowDirectionFromProperties(directionalLight: Lights<Directional>): vec3 {
-    const direction = directionalLight.properties.get('direction');
-
-    const spherical = cartesianPositionToSpherical(direction.x, direction.y, direction.z);
-
-    // Limit light position specifically for shadow rendering.
-    // If the polar coordinate goes very high, we get visual artifacts.
-    // We limit the position in order to avoid these issues.
-    // 75 degrees is an arbitrarily chosen value, based on a subjective assessment of the visuals.
-    const MaxPolarCoordinate = 75.0;
-    spherical[2] = clamp(spherical[2], 0.0, MaxPolarCoordinate);
-
-    const position = sphericalPositionToCartesian([spherical[0], spherical[1], spherical[2]]);
-
-    // Convert polar and azimuthal to cartesian
-    return vec3.fromValues(position.x, position.y, position.z);
-}
-
-export function calculateGroundShadowFactor(
-    style: Style,
-    directionalLight: Lights<Directional>,
-    ambientLight: Lights<Ambient>,
-): [number, number, number] {
-    const dirColor = directionalLight.properties.get('color');
-    const dirIntensity = directionalLight.properties.get('intensity');
-    const dirDirection = directionalLight.properties.get('direction');
-
-    const directionVec = [dirDirection.x, dirDirection.y, dirDirection.z];
-    const ambientColor = ambientLight.properties.get('color');
-    const ambientIntensity = ambientLight.properties.get('intensity');
-
-    const groundNormal = [0.0, 0.0, 1.0];
-    const dirDirectionalFactor = Math.max(vec3.dot(groundNormal as [number, number, number], directionVec as [number, number, number]), 0.0);
-    const ambStrength = [0, 0, 0];
-    // @ts-expect-error - TS2339 - Property 'toRenderColor' does not exist on type 'unknown'. | TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'number'.
-    vec3.scale(ambStrength as [number, number, number], ambientColor.toRenderColor(style.getLut(directionalLight.scope)).toArray01Linear().slice(0, 3), ambientIntensity);
-    const dirStrength = [0, 0, 0];
-    // @ts-expect-error - TS2339 - Property 'toRenderColor' does not exist on type 'unknown'. | TS2363 - The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.
-    vec3.scale(dirStrength as [number, number, number], dirColor.toRenderColor(style.getLut(ambientLight.scope)).toArray01Linear().slice(0, 3), dirDirectionalFactor * dirIntensity);
-
-    // Multiplier X to get from lit surface color L to shadowed surface color S
-    // X = A / (A + D)
-    // A: Ambient light coming into the surface; taking into account color and intensity
-    // D: Directional light coming into the surface; taking into account color, intensity and direction
-    const shadow = [
-        ambStrength[0] > 0.0 ? ambStrength[0] / (ambStrength[0] + dirStrength[0]) : 0.0,
-        ambStrength[1] > 0.0 ? ambStrength[1] / (ambStrength[1] + dirStrength[1]) : 0.0,
-        ambStrength[2] > 0.0 ? ambStrength[2] / (ambStrength[2] + dirStrength[2]) : 0.0
-    ];
-
-    // Because blending will happen in sRGB space, convert the shadow factor to sRGB
-    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type '[number, number, number]'.
-    return linearVec3TosRGB(shadow);
-}
-
 function createLightMatrix(
     transform: Transform,
     shadowDirection: vec3,
@@ -648,7 +682,7 @@ function createLightMatrix(
     far: number,
     resolution: number,
     verticalRange: number,
-): [Float64Array, number] {
+): [mat4, number] {
     const zoom = transform.zoom;
     const scale = transform.scale;
     const ws = transform.worldSize;
@@ -662,8 +696,8 @@ function createLightMatrix(
     const farMinusNear = far - near;
     const farPlusNear = far + near;
 
-    let centerDepth;
-    let radius;
+    let centerDepth: number;
+    let radius: number;
     if (k2 > farMinusNear / farPlusNear) {
         centerDepth = far;
         radius = far * k;
@@ -674,12 +708,12 @@ function createLightMatrix(
 
     const pixelsPerMeter = transform.projection.pixelsPerMeter(transform.center.lat, ws);
     const cameraToWorldMerc = transform._camera.getCameraToWorldMercator();
-    const sphereCenter = [0.0, 0.0, -centerDepth * wsInverse];
-    vec3.transformMat4(sphereCenter as [number, number, number], sphereCenter as [number, number, number], cameraToWorldMerc);
+    const sphereCenter: [number, number, number] = [0.0, 0.0, -centerDepth * wsInverse];
+    vec3.transformMat4(sphereCenter, sphereCenter, cameraToWorldMerc);
     let sphereRadius = radius * wsInverse;
 
     // Transform frustum bounds to mercator space
-    const frustumPointToMercator = function(point: vec3): vec3 {
+    const frustumPointToMercator = function (point: vec3): vec3 {
         point[0] /= scale;
         point[1] /= scale;
         point[2] = mercatorZfromAltitude(point[2], transform._center.lat);
@@ -702,11 +736,9 @@ function createLightMatrix(
             cameraToClip[9] = transform.centerOffset.y * 2 / transform.height;
 
             const cameraProj = new Float64Array(16);
-            // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
             mat4.mul(cameraProj, cameraToClip, worldToCamera);
 
             const cameraInvProj = new Float64Array(16);
-            // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
             mat4.invert(cameraInvProj, cameraProj);
 
             const frustum = Frustum.fromInvProjectionMatrix(cameraInvProj, ws, zoom, true);
@@ -714,7 +746,7 @@ function createLightMatrix(
             // Iterate over the frustum points to get the furthest one from the center
             for (const p of frustum.points) {
                 const fp = frustumPointToMercator(p);
-                sphereRadius = Math.max(sphereRadius, vec3.len(vec3.subtract([] as any, sphereCenter as [number, number, number], fp)));
+                sphereRadius = Math.max(sphereRadius, vec3.len(vec3.subtract([], sphereCenter, fp)));
             }
         }
     }
@@ -726,7 +758,6 @@ function createLightMatrix(
     const bearing = Math.atan2(-shadowDirection[0], -shadowDirection[1]);
 
     const camera = new FreeCamera();
-    // @ts-expect-error - TS2322 - Type 'number[]' is not assignable to type 'vec3'.
     camera.position = sphereCenter;
     camera.setPitchBearing(pitch, bearing);
 
@@ -743,29 +774,24 @@ function createLightMatrix(
 
     const lightViewToClip = camera.getCameraToClipOrthographic(-radiusPx, radiusPx, -radiusPx, radiusPx, lightMatrixNearZ, lightMatrixFarZ);
     const lightWorldToClip = new Float64Array(16);
-    // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
     mat4.multiply(lightWorldToClip, lightViewToClip, lightWorldToView);
 
     // Move light camera in discrete steps in order to reduce shimmering when translating
     const alignedCenter = vec3.fromValues(Math.floor(sphereCenter[0] * 1e6) / 1e6 * ws, Math.floor(sphereCenter[1] * 1e6) / 1e6 * ws, 0.);
 
     const halfResolution = 0.5 * resolution;
-    const projectedPoint = [0.0, 0.0, 0.0];
-    // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-    vec3.transformMat4(projectedPoint as [number, number, number], alignedCenter, lightWorldToClip);
-    vec3.scale(projectedPoint as [number, number, number], projectedPoint as [number, number, number], halfResolution);
+    const projectedPoint: [number, number, number] = [0.0, 0.0, 0.0];
+    vec3.transformMat4(projectedPoint, alignedCenter, lightWorldToClip);
+    vec3.scale(projectedPoint, projectedPoint, halfResolution);
 
-    const roundedPoint = [Math.floor(projectedPoint[0]), Math.floor(projectedPoint[1]), Math.floor(projectedPoint[2])];
-    const offsetVec = [0.0, 0.0, 0.0];
-    vec3.sub(offsetVec as [number, number, number], projectedPoint as [number, number, number], roundedPoint as [number, number, number]);
-    vec3.scale(offsetVec as [number, number, number], offsetVec as [number, number, number], -1.0 / halfResolution);
+    const roundedPoint: [number, number, number] = [Math.floor(projectedPoint[0]), Math.floor(projectedPoint[1]), Math.floor(projectedPoint[2])];
+    const offsetVec: [number, number, number] = [0.0, 0.0, 0.0];
+    vec3.sub(offsetVec, projectedPoint, roundedPoint);
+    vec3.scale(offsetVec, offsetVec, -1.0 / halfResolution);
 
     const truncMatrix = new Float64Array(16);
-    // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
     mat4.identity(truncMatrix);
-    // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
-    mat4.translate(truncMatrix, truncMatrix, offsetVec as [number, number, number]);
-    // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
+    mat4.translate(truncMatrix, truncMatrix, offsetVec);
     mat4.multiply(lightWorldToClip, truncMatrix, lightWorldToClip);
 
     return [lightWorldToClip, radiusPx];

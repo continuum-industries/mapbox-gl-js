@@ -1,0 +1,10 @@
+[
+  {
+    "message": "layers[0]: source \"constructor\" not found",
+    "line": 8
+  },
+  {
+    "message": "layers[1]: source \"toString\" not found",
+    "line": 13
+  }
+]

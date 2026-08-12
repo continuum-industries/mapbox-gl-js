@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {
     describe,
@@ -21,10 +22,13 @@ describe('Popup', () => {
     let container: any;
 
     function createMap(options) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         options = options || {};
         Object.defineProperty(container, 'getBoundingClientRect',
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         {value: () => ({height: options.height || containerHeight, width: options.width || containerWidth})});
-        return globalCreateMap({container});
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        return globalCreateMap({container, ...options});
     }
 
     beforeEach(() => {
@@ -65,11 +69,13 @@ describe('Popup', () => {
             .setLngLat([0, 0])
             .addTo(map);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.click(map.getCanvas());
 
         expect(!popup.isOpen()).toBeTruthy();
     });
 
+    // eslint-disable-next-line @typescript-eslint/require-await
     test('Popup close event listener is removed on map click', async () => {
         const map = createMap();
         const popup = new Popup()
@@ -80,7 +86,9 @@ describe('Popup', () => {
         const listener = vi.fn();
         popup.on('close', listener);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.click(map.getCanvas());
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.click(map.getCanvas());
 
         expect(!popup.isOpen()).toBeTruthy();
@@ -96,6 +104,7 @@ describe('Popup', () => {
                 .setLngLat([0, 0])
                 .addTo(map);
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             simulate.click(map.getCanvas());
 
             expect(popup.isOpen()).toBeTruthy();
@@ -109,6 +118,7 @@ describe('Popup', () => {
             .setLngLat([0, 0])
             .addTo(map);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         simulate.click(map.getContainer().querySelector('.mapboxgl-popup-close-button'));
 
         expect(!popup.isOpen()).toBeTruthy();
@@ -483,6 +493,7 @@ describe('Popup', () => {
         const point = args[1];
         const transform = args[2];
 
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string
         test(`Popup automatically anchors to ${anchor}`, () => {
             const map = createMap();
             const popup = new Popup()
@@ -499,9 +510,11 @@ describe('Popup', () => {
             popup.setLngLat([0, 0]);
             map._domRenderTaskQueue.run();
 
+            // eslint-disable-next-line @typescript-eslint/no-base-to-string
             expect(popup.getElement().classList.contains(`mapboxgl-popup-anchor-${anchor}`)).toBeTruthy();
         });
 
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string
         test(`Popup translation reflects offset and ${anchor} anchor`, () => {
             const map = createMap();
             vi.spyOn(map, 'project').mockImplementation(() => new Point(0, 0));
@@ -842,8 +855,9 @@ describe('Popup', () => {
             .trackPointer()
             .addTo(map);
 
-        simulate.mousemove(map.getCanvas(), {screenX:10, screenY:1000});
-        expect(popup._pos).toEqual({x:0, y:0});
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+        simulate.mousemove(map.getCanvas(), {screenX: 10, screenY: 1000});
+        expect(popup._pos).toEqual({x: 0, y: 0});
     });
 
     test('Popup closes on Map#remove', () => {
@@ -961,5 +975,23 @@ describe('Popup', () => {
             .addTo(createMap());
 
         expect(window.document.activeElement).toEqual(dummyFocusedEl);
+    });
+
+    test('Popup can set and update altitude', () => {
+        const map = createMap({zoom: 16, pitch: 45});
+        const popup = new Popup({altitude: 100})
+            .setLngLat([0, 0])
+            .setText('Test')
+            .addTo(map);
+        map._domRenderTaskQueue.run();
+
+        expect(popup.getAltitude()).toEqual(100);
+        expect(popup.getElement().style.transform).toEqual('translate(-50%, -100%) translate(256px, 192px)');
+
+        popup.setAltitude(0);
+        map._domRenderTaskQueue.run();
+
+        expect(popup.getAltitude()).toEqual(0);
+        expect(popup.getElement().style.transform).toEqual('translate(-50%, -100%) translate(256px, 256px)');
     });
 });

@@ -1,4 +1,5 @@
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, createMap} from '../../../util/vitest';
 import ScaleControl from '../../../../src/ui/control/scale_control';
@@ -65,6 +66,7 @@ test('ScaleControl should respect the maxWidth regardless of the unit and actual
     map._domRenderTaskQueue.run();
 
     const el = map.getContainer().querySelector(selector);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     expect(parseFloat(el.style.width, 10) <= maxWidth).toBeTruthy();
 });
 
@@ -98,27 +100,5 @@ test('ScaleControl should support different projections', () => {
         map._domRenderTaskQueue.run();
         contents = map.getContainer().querySelector(selector).innerHTML;
         expect(contents).not.toMatch(/NaN|undefined/);
-    }
-});
-
-test('ScaleControl should work in legacy safari', () => {
-    const realNumberFormat = Intl.NumberFormat;
-    Intl.NumberFormat = function(arg, options) {
-        if (options && options.style === 'unit') {
-            throw new Error('not supported');
-        }
-        return realNumberFormat.call(Intl, arg, options);
-    };
-    try {
-        const map = createMap();
-        const scale = new ScaleControl();
-        const selector = '.mapboxgl-ctrl-bottom-left .mapboxgl-ctrl-scale';
-        map.addControl(scale);
-        map._domRenderTaskQueue.run();
-
-        const contents = map.getContainer().querySelector(selector).innerHTML;
-        expect(contents).toMatch(/km/);
-    } finally {
-        Intl.NumberFormat = realNumberFormat;
     }
 });

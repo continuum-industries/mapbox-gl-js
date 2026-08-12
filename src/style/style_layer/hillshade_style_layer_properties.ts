@@ -19,10 +19,10 @@ import type {StylePropertySpecification} from '../../style-spec/style-spec';
 export type LayoutProps = {
     "visibility": DataConstantProperty<"visible" | "none">;
 };
-
-const layout: Properties<LayoutProps> = new Properties({
+let layout: Properties<LayoutProps>;
+export const getLayoutProperties = (): Properties<LayoutProps> => layout || (layout = new Properties({
     "visibility": new DataConstantProperty(styleSpec["layout_hillshade"]["visibility"]),
-});
+}));
 
 export type PaintProps = {
     "hillshade-illumination-direction": DataConstantProperty<number>;
@@ -32,9 +32,13 @@ export type PaintProps = {
     "hillshade-highlight-color": DataConstantProperty<Color>;
     "hillshade-accent-color": DataConstantProperty<Color>;
     "hillshade-emissive-strength": DataConstantProperty<number>;
+    "hillshade-shadow-color-use-theme": DataDrivenProperty<string>;
+    "hillshade-highlight-color-use-theme": DataDrivenProperty<string>;
+    "hillshade-accent-color-use-theme": DataDrivenProperty<string>;
 };
 
-const paint: Properties<PaintProps> = new Properties({
+let paint: Properties<PaintProps>;
+export const getPaintProperties = (): Properties<PaintProps> => paint || (paint = new Properties({
     "hillshade-illumination-direction": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-illumination-direction"]),
     "hillshade-illumination-anchor": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-illumination-anchor"]),
     "hillshade-exaggeration": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-exaggeration"]),
@@ -42,6 +46,7 @@ const paint: Properties<PaintProps> = new Properties({
     "hillshade-highlight-color": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-highlight-color"]),
     "hillshade-accent-color": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-accent-color"]),
     "hillshade-emissive-strength": new DataConstantProperty(styleSpec["paint_hillshade"]["hillshade-emissive-strength"]),
-});
-
-export default { paint, layout };
+    "hillshade-shadow-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+    "hillshade-highlight-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+    "hillshade-accent-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+}));

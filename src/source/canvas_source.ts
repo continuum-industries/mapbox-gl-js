@@ -1,5 +1,4 @@
 import ImageSource from './image_source';
-
 import Texture, {UserManagedTexture} from '../render/texture';
 import {ErrorEvent} from '../util/evented';
 import ValidationError from '../style-spec/error/validation_error';
@@ -24,6 +23,12 @@ export type CanvasSourceSpecification = {
  * @property {Array<Array<number>>} coordinates Four geographical coordinates denoting where to place the corners of the canvas, specified in `[longitude, latitude]` pairs.
  * @property {boolean} [animate=true] Whether the canvas source is animated. If the canvas is static (pixels do not need to be re-read on every frame), `animate` should be set to `false` to improve performance.
  */
+export type CanvasSourceOptions = {
+    type: 'canvas';
+    canvas: string | HTMLCanvasElement;
+    coordinates: Array<[number, number]>;
+    animate?: boolean;
+};
 
 /**
  * A data source containing the contents of an HTML canvas. See {@link CanvasSourceOptions} for detailed documentation of options.
@@ -54,13 +59,13 @@ export type CanvasSourceSpecification = {
  * map.removeSource('some id');  // remove
  * @see [Example: Add a canvas source](https://docs.mapbox.com/mapbox-gl-js/example/canvas-source/)
  */
-class CanvasSource extends ImageSource {
-    options: CanvasSourceSpecification;
+class CanvasSource extends ImageSource<'canvas'> {
+    override options: CanvasSourceSpecification;
     animate: boolean;
-    canvas: HTMLCanvasElement;
-    play: () => void;
-    pause: () => void;
-    _playing: boolean;
+    canvas!: HTMLCanvasElement;
+    play!: () => void;
+    pause!: () => void;
+    _playing!: boolean;
 
     /**
      * @private
@@ -106,7 +111,8 @@ class CanvasSource extends ImageSource {
      * @memberof CanvasSource
      */
 
-    load() {
+    // eslint-disable-next-line @typescript-eslint/require-await
+    override async load() {
         this._loaded = true;
         if (!this.canvas) {
             this.canvas = (this.options.canvas instanceof HTMLCanvasElement) ?
@@ -121,12 +127,12 @@ class CanvasSource extends ImageSource {
             return;
         }
 
-        this.play = function() {
+        this.play = function () {
             this._playing = true;
             this.map.triggerRepaint();
         };
 
-        this.pause = function() {
+        this.pause = function () {
             if (this._playing) {
                 this.prepare();
                 this._playing = false;
@@ -159,15 +165,16 @@ class CanvasSource extends ImageSource {
         return this.canvas;
     }
 
-    onAdd(map: Map) {
+    override onAdd(map: Map) {
         this.map = map;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         this.load();
         if (this.canvas) {
             if (this.animate) this.play();
         }
     }
 
-    onRemove(_: Map) {
+    override onRemove(_: Map) {
         this.pause();
     }
 
@@ -186,7 +193,7 @@ class CanvasSource extends ImageSource {
 
     // setCoordinates inherited from ImageSource
 
-    prepare() {
+    override prepare() {
         let resize = false;
         if (this.canvas.width !== this.width) {
             this.width = this.canvas.width;
@@ -204,7 +211,7 @@ class CanvasSource extends ImageSource {
         const context = this.map.painter.context;
 
         if (!this.texture) {
-            this.texture = new Texture(context, this.canvas, context.gl.RGBA, {premultiply: true});
+            this.texture = new Texture(context, this.canvas, context.gl.RGBA8, {premultiply: true});
         } else if ((resize || this._playing) && !(this.texture instanceof UserManagedTexture)) {
             this.texture.update(this.canvas, {premultiply: true});
         }
@@ -212,14 +219,15 @@ class CanvasSource extends ImageSource {
         this._prepareData(context);
     }
 
-    serialize(): any {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    override serialize(): any {
         return {
             type: 'canvas',
             coordinates: this.coordinates
         };
     }
 
-    hasTransition(): boolean {
+    override hasTransition(): boolean {
         return this._playing;
     }
 

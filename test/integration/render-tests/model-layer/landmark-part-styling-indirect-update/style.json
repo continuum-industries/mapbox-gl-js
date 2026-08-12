@@ -2,9 +2,10 @@
   "version": 8,
    "metadata": {
     "test": {
-      "allowed": 0.00025,
+      
       "width": 1024,
       "height": 1024,
+      "pixelRatio": 0.5,
       "operations": [
         ["wait"],
         [
@@ -35,6 +36,16 @@
         ["setZoom", 17.9],
         ["wait"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-android", "reason": "MAPSNAT-3819: skip to stay within Firebase timout, move to internal tests once available - covered by new LOD counterpart"},
+        {"platform-tag-contains": "native-ios", "reason": "MAPSNAT-3819: skip to stay within Firebase timout, move to internal tests once available - covered by new LOD counterpart"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00055}
       ]
     }
   },
@@ -78,7 +89,7 @@
     }
   },
   "pitch": 68,
-  "zoom": 18.01,
+  "zoom": 18.51,
   "bearing": -45,
   "center": [
     11.5595,

@@ -3,6 +3,8 @@ import type {Expression, SerializedExpression} from '../expression';
 import type ParsingContext from '../parsing_context';
 import type EvaluationContext  from '../evaluation_context';
 
+const INVALID_VAR_CHAR_RE = /[^a-zA-Z0-9_]/;
+
 class Let implements Expression {
     type: Type;
     bindings: Array<[string, Expression]>;
@@ -10,10 +12,11 @@ class Let implements Expression {
 
     constructor(bindings: Array<[string, Expression]>, result: Expression) {
         this.type = result.type;
-        this.bindings = [].concat(bindings);
+        this.bindings = ([] as Array<[string, Expression]>).concat(bindings);
         this.result = result;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     evaluate(ctx: EvaluationContext): any {
         return this.result.evaluate(ctx);
     }
@@ -25,9 +28,8 @@ class Let implements Expression {
         fn(this.result);
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Let | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Let | null | void {
         if (args.length < 4)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Let'.
             return context.error(`Expected at least 3 arguments, but found ${args.length - 1} instead.`);
 
         const bindings: Array<[string, Expression]> = [];
@@ -35,12 +37,10 @@ class Let implements Expression {
             const name = args[i];
 
             if (typeof name !== 'string') {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Let'.
                 return context.error(`Expected string, but found ${typeof name} instead.`, i);
             }
 
-            if (/[^a-zA-Z0-9_]/.test(name)) {
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Let'.
+            if (INVALID_VAR_CHAR_RE.test(name)) {
                 return context.error(`Variable names must contain only alphanumeric characters or '_'.`, i);
             }
 
@@ -50,7 +50,7 @@ class Let implements Expression {
             bindings.push([name, value]);
         }
 
-        const result = context.parse(args[args.length - 1], args.length - 1, context.expectedType, bindings);
+        const result = context.parse(args.at(-1), args.length - 1, context.expectedType, bindings);
         if (!result) return null;
 
         return new Let(bindings, result);
@@ -61,12 +61,10 @@ class Let implements Expression {
     }
 
     serialize(): SerializedExpression {
-        const serialized = ["let"];
+        const serialized: SerializedExpression[] = ["let"];
         for (const [name, expr] of this.bindings) {
-            // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
             serialized.push(name, expr.serialize());
         }
-        // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
         serialized.push(this.result.serialize());
         return serialized;
     }

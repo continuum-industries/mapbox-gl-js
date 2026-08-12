@@ -1,7 +1,7 @@
-import type Point from '@mapbox/point-geometry';
 import quickselect from 'quickselect';
+import Point from '@mapbox/point-geometry';
 
-type GeoJSONPosition = [number, number] | [number, number, number];
+type Ring = Point[] & {area?: number};
 
 // minX, minY, maxX, maxY
 export type BBox = [number, number, number, number];
@@ -11,48 +11,64 @@ export type BBox = [number, number, number, number];
  * have a clockwise winding.  Negative areas are interior rings and have a counter clockwise
  * ordering.
  */
-function calculateSignedArea(ring: Array<Point>): number {
+export function calculateSignedArea(ring: Ring): number {
     let sum = 0;
-    for (let i = 0, len = ring.length, j = len - 1, p1, p2; i < len; j = i++) {
-        p1 = ring[i];
-        p2 = ring[j];
+    for (let i = 0, len = ring.length, j = len - 1, p1: Point, p2: Point; i < len; j = i++) {
+        p1 = ring[i]!;
+        p2 = ring[j]!;
         sum += (p2.x - p1.x) * (p1.y + p2.y);
     }
     return sum;
 }
 
-function compareAreas(a: {
-    area: number;
-}, b: {
-    area: number;
-}) {
-    return b.area - a.area;
+function compareAreas(a: Ring, b: Ring): number {
+    return (b.area!) - (a.area!);
+}
+
+// Whether every point of the ring lies on a single line, i.e. the ring has no real area
+// regardless of winding
+function isCollinear(ring: Ring): boolean {
+    const len = ring.length;
+    if (len < 3) return true;
+
+    const p0 = ring[0]!;
+    let dx = 0, dy = 0, i = 1;
+    for (; i < len; i++) {
+        dx = ring[i]!.x - p0.x;
+        dy = ring[i]!.y - p0.y;
+        if (dx !== 0 || dy !== 0) break;
+    }
+    if (i === len) return true; // every point coincides with p0
+
+    for (; i < len; i++) {
+        const px = ring[i]!.x - p0.x;
+        const py = ring[i]!.y - p0.y;
+        if (dx * py - dy * px !== 0) return false;
+    }
+    return true;
 }
 
 // classifies an array of rings into polygons with outer rings and holes
-export function classifyRings(rings: Array<Array<Point>>, maxRings: number): Array<Array<Array<Point>>> {
+export function classifyRings(rings: Array<Ring>, maxRings: number): Array<Array<Ring>> {
     const len = rings.length;
 
-    if (len <= 1) return [rings];
-
-    const polygons = [];
-    let polygon,
-        ccw;
+    const polygons: Array<Array<Ring>> = [];
+    let polygon: Array<Ring> | undefined,
+        ccw: boolean | undefined;
 
     for (let i = 0; i < len; i++) {
-        const area = calculateSignedArea(rings[i]);
-        if (area === 0) continue;
+        const area = calculateSignedArea(rings[i]!);
+        if (area === 0 && isCollinear(rings[i]!)) continue;
 
-        (rings[i] as any).area = Math.abs(area);
+        (rings[i]!).area = Math.abs(area);
 
         if (ccw === undefined) ccw = area < 0;
 
         if (ccw === area < 0) {
             if (polygon) polygons.push(polygon);
-            polygon = [rings[i]];
-
+            polygon = [rings[i]!];
         } else {
-            (polygon).push(rings[i]);
+            (polygon!).push(rings[i]!);
         }
     }
     if (polygon) polygons.push(polygon);
@@ -61,9 +77,10 @@ export function classifyRings(rings: Array<Array<Point>>, maxRings: number): Arr
     // reason, we limit strip out all but the `maxRings` largest rings.
     if (maxRings > 1) {
         for (let j = 0; j < polygons.length; j++) {
-            if (polygons[j].length <= maxRings) continue;
-            quickselect(polygons[j], maxRings, 1, polygons[j].length - 1, compareAreas);
-            polygons[j] = polygons[j].slice(0, maxRings);
+            const currentPolygon = polygons[j]!;
+            if (currentPolygon.length <= maxRings) continue;
+            quickselect(currentPolygon, maxRings, 1, currentPolygon.length - 1, compareAreas);
+            polygons[j] = currentPolygon.slice(0, maxRings);
         }
     }
 
@@ -71,10 +88,10 @@ export function classifyRings(rings: Array<Array<Point>>, maxRings: number): Arr
 }
 
 export function updateBBox(bbox: BBox, coord: GeoJSON.Position) {
-    bbox[0] = Math.min(bbox[0], coord[0]);
-    bbox[1] = Math.min(bbox[1], coord[1]);
-    bbox[2] = Math.max(bbox[2], coord[0]);
-    bbox[3] = Math.max(bbox[3], coord[1]);
+    bbox[0] = Math.min(bbox[0], coord[0]!);
+    bbox[1] = Math.min(bbox[1], coord[1]!);
+    bbox[2] = Math.max(bbox[2], coord[0]!);
+    bbox[3] = Math.max(bbox[3], coord[1]!);
 }
 
 export function boxWithinBox(bbox1: BBox, bbox2: BBox): boolean {
@@ -86,15 +103,15 @@ export function boxWithinBox(bbox1: BBox, bbox2: BBox): boolean {
 }
 
 function onBoundary(p: GeoJSON.Position, p1: GeoJSON.Position, p2: GeoJSON.Position) {
-    const x1 = p[0] - p1[0];
-    const y1 = p[1] - p1[1];
-    const x2 = p[0] - p2[0];
-    const y2 = p[1] - p2[1];
+    const x1 = (p[0]!) - (p1[0]!);
+    const y1 = (p[1]!) - (p1[1]!);
+    const x2 = (p[0]!) - (p2[0]!);
+    const y2 = (p[1]!) - (p2[1]!);
     return (x1 * y2 - x2 * y1 === 0) && (x1 * x2 <= 0) && (y1 * y2 <= 0);
 }
 
 function rayIntersect(p: GeoJSON.Position, p1: GeoJSON.Position, p2: GeoJSON.Position) {
-    return ((p1[1] > p[1]) !== (p2[1] > p[1])) && (p[0] < (p2[0] - p1[0]) * (p[1] - p1[1]) / (p2[1] - p1[1]) + p1[0]);
+    return (((p1[1]!) > (p[1]!)) !== ((p2[1]!) > (p[1]!))) && ((p[0]!) < ((p2[0]!) - (p1[0]!)) * ((p[1]!) - (p1[1]!)) / ((p2[1]!) - (p1[1]!)) + (p1[0]!));
 }
 
 // ray casting algorithm for detecting if point is in polygon
@@ -105,10 +122,10 @@ export function pointWithinPolygon(
 ): boolean {
     let inside = false;
     for (let i = 0, len = rings.length; i < len; i++) {
-        const ring = rings[i];
+        const ring = rings[i]!;
         for (let j = 0, len2 = ring.length, k = len2 - 1; j < len2; k = j++) {
-            const q1 = ring[k];
-            const q2 = ring[j];
+            const q1 = ring[k]!;
+            const q2 = ring[j]!;
             if (onBoundary(point, q1, q2)) return trueOnBoundary;
             if (rayIntersect(point, q1, q2)) inside = !inside;
         }
@@ -117,18 +134,18 @@ export function pointWithinPolygon(
 }
 
 function perp(v1: GeoJSON.Position, v2: GeoJSON.Position) {
-    return v1[0] * v2[1] - v1[1] * v2[0];
+    return (v1[0]!) * (v2[1]!) - (v1[1]!) * (v2[0]!);
 }
 
 // check if p1 and p2 are in different sides of line segment q1->q2
 function twoSided(p1: GeoJSON.Position, p2: GeoJSON.Position, q1: GeoJSON.Position, q2: GeoJSON.Position) {
     // q1->p1 (x1, y1), q1->p2 (x2, y2), q1->q2 (x3, y3)
-    const x1 = p1[0] - q1[0];
-    const y1 = p1[1] - q1[1];
-    const x2 = p2[0] - q1[0];
-    const y2 = p2[1] - q1[1];
-    const x3 = q2[0] - q1[0];
-    const y3 = q2[1] - q1[1];
+    const x1 = (p1[0]!) - (q1[0]!);
+    const y1 = (p1[1]!) - (q1[1]!);
+    const x2 = (p2[0]!) - (q1[0]!);
+    const y2 = (p2[1]!) - (q1[1]!);
+    const x3 = (q2[0]!) - (q1[0]!);
+    const y3 = (q2[1]!) - (q1[1]!);
     const det1 = x1 * y3 - x3 * y1;
     const det2 = x2 * y3 - x3 * y2;
     if ((det1 > 0 && det2 < 0) || (det1 < 0 && det2 > 0)) return true;
@@ -144,8 +161,8 @@ export function segmentIntersectSegment(
     // check if two segments are parallel or not
     // precondition is end point a, b is inside polygon, if line a->b is
     // parallel to polygon edge c->d, then a->b won't intersect with c->d
-    const vectorP = [b[0] - a[0], b[1] - a[1]];
-    const vectorQ = [d[0] - c[0], d[1] - c[1]];
+    const vectorP = [(b[0]!) - (a[0]!), (b[1]!) - (a[1]!)];
+    const vectorQ = [(d[0]!) - (c[0]!), (d[1]!) - (c[1]!)];
     if (perp(vectorQ, vectorP) === 0) return false;
 
     // If lines are intersecting with each other, the relative location should be:
@@ -155,3 +172,21 @@ export function segmentIntersectSegment(
     return false;
 }
 
+export interface Bounds {
+    min: Point;
+    max: Point;
+}
+
+export function computeBounds(points: Point[][]): Bounds {
+    const min = new Point(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+    const max = new Point(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+
+    for (const point of points[0]!) {
+        if (min.x > point.x) min.x = point.x;
+        if (min.y > point.y) min.y = point.y;
+        if (max.x < point.x) max.x = point.x;
+        if (max.y < point.y) max.y = point.y;
+    }
+
+    return {min, max};
+}

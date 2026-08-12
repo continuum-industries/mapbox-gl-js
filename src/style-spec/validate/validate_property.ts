@@ -1,36 +1,79 @@
 import validate from './validate';
 import {default as ValidationError, ValidationWarning} from '../error/validation_error';
-import getType from '../util/get_type';
+import {isString} from '../util/get_type';
 import {isFunction} from '../function/index';
 import {unbundle, deepUnbundle} from '../util/unbundle_jsonlint';
-import {supportsLightExpression, supportsPropertyExpression, supportsZoomExpression} from '../util/properties';
+import {supportsLightExpression, supportsPropertyExpression, supportsZoomExpression, TRANSITION_KEY_RE, USE_THEME_KEY_RE} from '../util/properties';
 import {isGlobalPropertyConstant, isFeatureConstant, isStateConstant} from '../expression/is_constant';
+import {createPropertyExpression, isExpression} from '../expression/index';
 
-import type {ValidationOptions} from './validate';
-import {createPropertyExpression} from '../expression/index';
+import type {Expression} from '../expression/expression';
+import type {StyleReference} from '../reference/latest';
+import type {StylePropertySpecification} from '../style-spec';
+import type {StyleSpecification, LayerSpecification} from '../types';
 
-export type PropertyValidationOptions = ValidationOptions & {
-    objectKey: string;
+const TOKEN_PATTERN_RE = /^{([^}]+)}$/;
+
+export type PropertyValidatorOptions = {
+    key: string;
+    value: unknown;
+    valueSpec?: StylePropertySpecification;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
+    objectKey?: string;
     layerType: string;
-    layer: any;
+    layer?: Partial<LayerSpecification>;
 };
 
-export default function validateProperty(options: PropertyValidationOptions, propertyType: string): Array<ValidationError> {
+export default function validateProperty(options: PropertyValidatorOptions, propertyType: string): ValidationError[] {
     const key = options.key;
     const style = options.style;
     const layer = options.layer;
     const styleSpec = options.styleSpec;
     const value = options.value;
-    const propertyKey = options.objectKey;
-    const layerSpec = styleSpec[`${propertyType}_${options.layerType}`];
+    const propertyKey = options.objectKey!;
+    const layerSpec = styleSpec[`${propertyType}_${options.layerType}`] as Record<string, StylePropertySpecification> | undefined;
 
     if (!layerSpec) return [];
 
-    const transitionMatch = propertyKey.match(/^(.*)-transition$/);
-    if (propertyType === 'paint' && transitionMatch && layerSpec[transitionMatch[1]] && layerSpec[transitionMatch[1]].transition) {
+    const useThemeMatch = propertyKey.match(USE_THEME_KEY_RE);
+    if (useThemeMatch && layerSpec[useThemeMatch[1]!]) {
+        if (isExpression(deepUnbundle(value))) {
+            const errors: ValidationError[] = [];
+            return errors.concat(validate({
+                key,
+                value,
+                valueSpec: {
+                    type: 'string',
+                    expression: {
+                        interpolated: false,
+                        parameters: ['zoom', 'feature']
+                    },
+                    'property-type': 'data-driven'
+                },
+                style,
+                styleSpec,
+                expressionContext: 'property',
+                propertyType,
+                propertyKey
+            }));
+        }
+
         return validate({
             key,
             value,
+            valueSpec: {type: 'string'},
+            style,
+            styleSpec
+        });
+    }
+
+    const transitionMatch = propertyKey.match(TRANSITION_KEY_RE);
+    if (propertyType === 'paint' && transitionMatch && layerSpec[transitionMatch[1]!] && layerSpec[transitionMatch[1]!]!.transition) {
+        return validate({
+            key,
+            value,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             valueSpec: styleSpec.transition,
             style,
             styleSpec
@@ -42,9 +85,8 @@ export default function validateProperty(options: PropertyValidationOptions, pro
         return [new ValidationWarning(key, value, `unknown property "${propertyKey}"`)];
     }
 
-    // @ts-expect-error - TS2702 - 'RegExp' only refers to a type, but is being used as a namespace here.
-    let tokenMatch: RegExp.matchResult | null | undefined;
-    if (getType(value) === 'string' && supportsPropertyExpression(valueSpec) && !valueSpec.tokens && (tokenMatch = /^{([^}]+)}$/.exec(value))) {
+    let tokenMatch: RegExpExecArray | null | undefined;
+    if (isString(value) && supportsPropertyExpression(valueSpec) && !valueSpec.tokens && (tokenMatch = TOKEN_PATTERN_RE.exec(value))) {
         const example = `\`{ "type": "identity", "property": ${tokenMatch ? JSON.stringify(tokenMatch[1]) : '"_"'} }\``;
         return [new ValidationError(
             key, value,
@@ -52,20 +94,23 @@ export default function validateProperty(options: PropertyValidationOptions, pro
                 `Use an identity property function instead: ${example}.`)];
     }
 
-    const errors = [];
+    const errors: ValidationError[] = [];
 
     if (options.layerType === 'symbol') {
         if (propertyKey === 'text-field' && style && !style.glyphs && !style.imports) {
             errors.push(new ValidationError(key, value, 'use of "text-field" requires a style "glyphs" property'));
         }
-        if (propertyKey === 'text-font' && isFunction(deepUnbundle(value)) && unbundle(value.type) === 'identity') {
+        if (propertyKey === 'text-font' && isFunction(deepUnbundle(value)) && unbundle((value as {type: unknown}).type) === 'identity') {
             errors.push(new ValidationError(key, value, '"text-font" does not support identity functions'));
         }
-    } else if (options.layerType === 'model' && propertyType === 'paint' && layer && layer.layout && layer.layout.hasOwnProperty('model-id')) {
+    } else if (options.layerType === 'model' && propertyType === 'paint' && layer && layer.layout && Object.hasOwn(layer.layout, 'model-id')) {
         if (supportsPropertyExpression(valueSpec) && (supportsLightExpression(valueSpec) || supportsZoomExpression(valueSpec))) {
             // Performance related style spec limitation: zoom and light expressions are not allowed for e.g. trees.
             const expression = createPropertyExpression(deepUnbundle(value), valueSpec);
-            const expressionObj = (expression.value as any).expression || (expression.value as any)._styleExpression.expression;
+
+            const expressionValue = expression.value as {expression?: Expression} | {_styleExpression?: {expression?: Expression}};
+            const expressionObj = ('expression' in expressionValue && expressionValue.expression) ||
+                                  ('_styleExpression' in expressionValue && expressionValue._styleExpression && expressionValue._styleExpression.expression);
 
             if (expressionObj && !isGlobalPropertyConstant(expressionObj, ['measure-light'])) {
                 if (propertyKey !== 'model-emissive-strength' || (!isFeatureConstant(expressionObj) || !isStateConstant(expressionObj))) {
@@ -81,7 +126,6 @@ export default function validateProperty(options: PropertyValidationOptions, pro
         valueSpec,
         style,
         styleSpec,
-        // @ts-expect-error - TS2353 - Object literal may only specify known properties, and 'expressionContext' does not exist in type 'ValidationOptions'.
         expressionContext: 'property',
         propertyType,
         propertyKey

@@ -1,14 +1,15 @@
 import StyleLayer from '../style_layer';
-import FillExtrusionBucket, {ELEVATION_SCALE, ELEVATION_OFFSET, fillExtrusionHeightLift, resampleFillExtrusionPolygonsForGlobe} from '../../data/bucket/fill_extrusion_bucket';
+import FillExtrusionBucket, {ELEVATION_SCALE, ELEVATION_OFFSET, fillExtrusionHeightLift, resampleFillExtrusionPolygonsForGlobe, HIDDEN_BY_CLIP} from '../../data/bucket/fill_extrusion_bucket';
 import {polygonIntersectsPolygon, polygonIntersectsMultiPolygon} from '../../util/intersection_tests';
 import {translateDistance, tilespaceTranslate} from '../query_utils';
-import properties from './fill_extrusion_style_layer_properties';
-import {Transitionable, Transitioning, PossiblyEvaluated} from '../properties';
+import {getLayoutProperties, getPaintProperties} from './fill_extrusion_style_layer_properties';
 import Point from '@mapbox/point-geometry';
 import {vec3, vec4} from 'gl-matrix';
 import EXTENT from '../../style-spec/data/extent';
-import {CanonicalTileID} from '../../source/tile_id';
+import {Point3D} from '../../util/line_clipping';
 
+import type {Layout, Transitionable, Transitioning, PossiblyEvaluated, ConfigOptions} from '../properties';
+import type {CanonicalTileID} from '../../source/tile_id';
 import type {FeatureState} from '../../style-spec/expression/index';
 import type {BucketParameters} from '../../data/bucket';
 import type {PaintProps, LayoutProps} from './fill_extrusion_style_layer_properties';
@@ -18,55 +19,60 @@ import type {TilespaceQueryGeometry} from '../query_geometry';
 import type {DEMSampler} from '../../terrain/elevation';
 import type {vec2} from 'gl-matrix';
 import type {VectorTileFeature} from '@mapbox/vector-tile';
-import type {ConfigOptions} from '../properties';
-import {Point3D} from '../../util/polygon_clipping';
 import type {LUT} from "../../../src/util/lut";
+import type {ProgramName} from '../../../src/render/program';
 
 class FillExtrusionStyleLayer extends StyleLayer {
-    _transitionablePaint: Transitionable<PaintProps>;
-    _transitioningPaint: Transitioning<PaintProps>;
-    paint: PossiblyEvaluated<PaintProps>;
-    layout: PossiblyEvaluated<LayoutProps>;
+    override type!: 'fill-extrusion';
+
+    override _unevaluatedLayout!: Layout<LayoutProps>;
+    override layout!: PossiblyEvaluated<LayoutProps>;
+
+    override _transitionablePaint!: Transitionable<PaintProps>;
+    override _transitioningPaint!: Transitioning<PaintProps>;
+    override paint!: PossiblyEvaluated<PaintProps>;
 
     constructor(layer: LayerSpecification, scope: string, lut: LUT | null, options?: ConfigOptions | null) {
+        const properties = {
+            layout: getLayoutProperties(),
+            paint: getPaintProperties()
+        };
         super(layer, properties, scope, lut, options);
-        this._stats = {numRenderedVerticesInShadowPass : 0, numRenderedVerticesInTransparentPass: 0};
+        this._stats = {numRenderedVerticesInShadowPass: 0, numRenderedVerticesInTransparentPass: 0};
     }
 
-    createBucket(parameters: BucketParameters<FillExtrusionStyleLayer>): FillExtrusionBucket {
+    override createBucket(parameters: BucketParameters<this>): FillExtrusionBucket {
         return new FillExtrusionBucket(parameters);
     }
 
-    queryRadius(): number {
-
+    override queryRadius(): number {
         return translateDistance(this.paint.get('fill-extrusion-translate'));
     }
 
-    is3D(): boolean {
+    override is3D(terrainEnabled?: boolean): boolean {
         return true;
     }
 
-    hasShadowPass(): boolean {
-        return true;
+    override hasShadowPass(): boolean {
+        return this.paint.get('fill-extrusion-cast-shadows');
     }
 
-    cutoffRange(): number {
-
+    override cutoffRange(): number {
         return this.paint.get('fill-extrusion-cutoff-fade-range');
     }
 
-    canCastShadows(): boolean {
+    override canCastShadows(): boolean {
         return true;
     }
 
-    getProgramIds(): string[] {
+    override getProgramIds(): ProgramName[] {
         const patternProperty = this.paint.get('fill-extrusion-pattern');
 
-        const image = patternProperty.constantOr((1 as any));
+        const image = patternProperty.constantOr(1);
         return [image ? 'fillExtrusionPattern' : 'fillExtrusion'];
     }
 
-    queryIntersectsFeature(
+    override queryIntersectsFeature(
         queryGeometry: TilespaceQueryGeometry,
         feature: VectorTileFeature,
         featureState: FeatureState,
@@ -77,28 +83,29 @@ class FillExtrusionStyleLayer extends StyleLayer {
         elevationHelper: DEMSampler | null | undefined,
         layoutVertexArrayOffset: number,
     ): boolean | number {
-
         const translation = tilespaceTranslate(this.paint.get('fill-extrusion-translate'),
                                 this.paint.get('fill-extrusion-translate-anchor'),
                                 transform.angle,
                                 queryGeometry.pixelToTileUnitsFactor);
-        // @ts-expect-error - TS2339 - Property 'evaluate' does not exist on type 'unknown'.
         const height = this.paint.get('fill-extrusion-height').evaluate(feature, featureState);
-        // @ts-expect-error - TS2339 - Property 'evaluate' does not exist on type 'unknown'.
         const base = this.paint.get('fill-extrusion-base').evaluate(feature, featureState);
 
-        const centroid = [0, 0];
+        const centroid: [number, number] = [0, 0];
         const terrainVisible = elevationHelper && transform.elevation;
         const exaggeration = transform.elevation ? transform.elevation.exaggeration() : 1;
         const bucket = queryGeometry.tile.getBucket(this);
-        if (terrainVisible && bucket instanceof FillExtrusionBucket) {
-            const centroidVertexArray = bucket.centroidVertexArray;
+        if (bucket instanceof FillExtrusionBucket) {
+            const centroidData = bucket.centroidData.find(d => layoutVertexArrayOffset >= d.vertexArrayOffset && layoutVertexArrayOffset < d.vertexArrayOffset + d.vertexCount);
+            if (centroidData && (centroidData.flags & HIDDEN_BY_CLIP)) return false;
+            if (terrainVisible) {
+                const centroidVertexArray = bucket.centroidVertexArray;
 
-            // See FillExtrusionBucket#encodeCentroid(), centroid is inserted at vertexOffset + 1
-            const centroidOffset = layoutVertexArrayOffset + 1;
-            if (centroidOffset < centroidVertexArray.length) {
-                centroid[0] = centroidVertexArray.geta_centroid_pos0(centroidOffset);
-                centroid[1] = centroidVertexArray.geta_centroid_pos1(centroidOffset);
+                // See FillExtrusionBucket#encodeCentroid(), centroid is inserted at vertexOffset + 1
+                const centroidOffset = layoutVertexArrayOffset + 1;
+                if (centroidOffset < centroidVertexArray.length) {
+                    centroid[0] = centroidVertexArray.geta_centroid_pos0(centroidOffset);
+                    centroid[1] = centroidVertexArray.geta_centroid_pos1(centroidOffset);
+                }
             }
         }
 
@@ -109,18 +116,17 @@ class FillExtrusionStyleLayer extends StyleLayer {
         if (transform.projection.name === 'globe') {
             // Fill extrusion geometry has to be resampled so that large planar polygons
             // can be rendered on the curved surface
-            const bounds = [new Point(0, 0), new Point(EXTENT, EXTENT)];
-            // @ts-expect-error - TS2345 - Argument of type 'Point[]' is not assignable to parameter of type '[Point, Point]'.
+            const bounds: [Point, Point] = [new Point(0, 0), new Point(EXTENT, EXTENT)];
             const resampledGeometry = resampleFillExtrusionPolygonsForGlobe([geometry], bounds, queryGeometry.tileID.canonical);
             geometry = resampledGeometry.map(clipped => clipped.polygon).flat();
         }
 
         const demSampler = terrainVisible ? elevationHelper : null;
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec2'.
         const [projectedBase, projectedTop] = projectExtrusion(transform, geometry, base, height, translation, pixelPosMatrix, demSampler, centroid, exaggeration, transform.center.lat, queryGeometry.tileID.canonical);
 
         const screenQuery = queryGeometry.queryGeometry;
         const projectedQueryGeometry = screenQuery.isPointQuery() ? screenQuery.screenBounds : screenQuery.screenGeometry;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return checkIntersection(projectedBase, projectedTop, projectedQueryGeometry);
     }
 }
@@ -143,7 +149,7 @@ export function getIntersectionDistance(projectedQueryGeometry: Array<Point>, pr
         // Check whether points are coincident and use other points if they are.
         let i = 0;
         const a = projectedFace[i++];
-        let b;
+        let b: Point3D | undefined;
         while (!b || a.equals(b)) {
             b = projectedFace[i++];
             if (!b) return Infinity;
@@ -160,8 +166,10 @@ export function getIntersectionDistance(projectedQueryGeometry: Array<Point>, pr
             const ap = p.sub(a);
 
             const dotABAB = dot(ab, ab);
+
             const dotABAC = dot(ab, ac);
             const dotACAC = dot(ac, ac);
+
             const dotAPAB = dot(ap, ab);
             const dotAPAC = dot(ap, ac);
             const denom = dotABAB * dotACAC - dotABAC * dotABAC;
@@ -192,7 +200,7 @@ export function getIntersectionDistance(projectedQueryGeometry: Array<Point>, pr
     }
 }
 
-function checkIntersection(projectedBase: Array<Array<Point3D>>, projectedTop: Array<Array<Point3D>>, projectedQueryGeometry: Array<Point>) {
+export function checkIntersection(projectedBase: Array<Array<Point3D>>, projectedTop: Array<Array<Point3D>>, projectedQueryGeometry: Array<Point>) {
     let closestDistance = Infinity;
 
     if (polygonIntersectsMultiPolygon(projectedQueryGeometry, projectedTop)) {
@@ -217,7 +225,7 @@ function checkIntersection(projectedBase: Array<Array<Point3D>>, projectedTop: A
     return closestDistance === Infinity ? false : closestDistance;
 }
 
-function projectExtrusion(tr: Transform, geometry: Array<Array<Point>>, zBase: number, zTop: number, translation: Point, m: Float32Array, demSampler: DEMSampler | null | undefined, centroid: vec2, exaggeration: number, lat: number, tileID: CanonicalTileID) {
+export function projectExtrusion(tr: Transform, geometry: Array<Array<Point>>, zBase: number, zTop: number, translation: Point, m: Float32Array, demSampler: DEMSampler | null | undefined, centroid: vec2, exaggeration: number, lat: number, tileID: CanonicalTileID) {
     if (tr.projection.name === 'globe') {
         return projectExtrusionGlobe(tr, geometry, zBase, zTop, translation, m, demSampler, centroid, exaggeration, lat, tileID);
     } else {
@@ -233,8 +241,8 @@ function projectExtrusionGlobe(tr: Transform, geometry: Array<Array<Point>>, zBa
     const projectedBase = [];
     const projectedTop = [];
     const elevationScale = tr.projection.upVectorScale(tileID, tr.center.lat, tr.worldSize).metersToTile;
-    const basePoint = [0, 0, 0, 1];
-    const topPoint = [0, 0, 0, 1];
+    const basePoint: [number, number, number, number] = [0, 0, 0, 1];
+    const topPoint: [number, number, number, number] = [0, 0, 0, 1];
 
     const setPoint = (point: Array<number>, x: number, y: number, z: number) => {
         point[0] = x;
@@ -288,10 +296,8 @@ function projectExtrusionGlobe(tr: Transform, geometry: Array<Array<Point>>, zBa
                 reproj.y + dir[1] * elevationScale * zTopPoint,
                 reproj.z + dir[2] * elevationScale * zTopPoint);
 
-            // @ts-expect-error - TS2345 - Argument of type '[number, number, number, number]' is not assignable to parameter of type 'vec3'.
-            vec3.transformMat4(basePoint as [number, number, number, number], basePoint as [number, number, number, number], m);
-            // @ts-expect-error - TS2345 - Argument of type '[number, number, number, number]' is not assignable to parameter of type 'vec3'.
-            vec3.transformMat4(topPoint as [number, number, number, number], topPoint as [number, number, number, number], m);
+            vec3.transformMat4(basePoint, basePoint, m);
+            vec3.transformMat4(topPoint, topPoint, m);
 
             ringBase.push(new Point3D(basePoint[0], basePoint[1], basePoint[2]));
             ringTop.push(new Point3D(topPoint[0], topPoint[1], topPoint[2]));
@@ -380,7 +386,7 @@ function projectExtrusion3D(geometry: Array<Array<Point>>, zBase: number, zTop: 
             v[1] = y;
             v[2] = heightOffset.base;
             v[3] = 1;
-            vec4.transformMat4(v as [number, number, number, number], v as [number, number, number, number], m);
+            vec4.transformMat4(v, v, m);
             v[3] = Math.max(v[3], 0.00001);
             const base = new Point3D(v[0] / v[3], v[1] / v[3], v[2] / v[3]);
 
@@ -388,7 +394,7 @@ function projectExtrusion3D(geometry: Array<Array<Point>>, zBase: number, zTop: 
             v[1] = y;
             v[2] = heightOffset.top;
             v[3] = 1;
-            vec4.transformMat4(v as [number, number, number, number], v as [number, number, number, number], m);
+            vec4.transformMat4(v, v, m);
             v[3] = Math.max(v[3], 0.00001);
             const top = new Point3D(v[0] / v[3], v[1] / v[3], v[2] / v[3]);
 
@@ -418,8 +424,7 @@ function getTerrainHeightOffset(
     const flatRoof = centroid[0] !== 0;
     const centroidElevation = flatRoof ? centroid[1] === 0 ? exaggeration * elevationFromUint16(centroid[0]) : exaggeration * flatElevation(demSampler, centroid, lat) : ele;
     return {
-        // @ts-expect-error - TS2365 - Operator '+' cannot be applied to types 'number' and 'boolean'.
-        base: ele + (zBase === 0) ? -1 : zBase, // Use -1 instead of -5 in shader to prevent picking underground
+        base: ele + ((zBase === 0) ? -1 : zBase), // Use -1 instead of -5 in shader to prevent picking underground
         top: flatRoof ? Math.max(centroidElevation + zTop, ele + zBase + 2) : ele + zTop
     };
 }

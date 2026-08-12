@@ -1,8 +1,5 @@
-import {PerformanceUtils} from './util/performance';
-
-import assert from 'assert';
-import {supported} from '@mapbox/mapbox-gl-supported';
-
+import assert from './style-spec/util/assert';
+import {isSupported as supported} from '@mapbox/mapbox-gl-supported';
 import {version} from '../package.json';
 import {Map} from './ui/map';
 import NavigationControl from './ui/control/navigation_control';
@@ -10,6 +7,7 @@ import GeolocateControl from './ui/control/geolocate_control';
 import AttributionControl from './ui/control/attribution_control';
 import ScaleControl from './ui/control/scale_control';
 import FullscreenControl from './ui/control/fullscreen_control';
+import IndoorControl from './ui/control/indoor_control';
 import Popup from './ui/popup';
 import Marker from './ui/marker';
 import Style from './style/style';
@@ -17,33 +15,61 @@ import LngLat, {LngLatBounds} from './geo/lng_lat';
 import Point from '@mapbox/point-geometry';
 import MercatorCoordinate from './geo/mercator_coordinate';
 import {Evented} from './util/evented';
-import config from './util/config';
-import {Debug} from './util/debug';
-import {isSafari} from './util/util';
+import config, {setAccessToken, setBaseApiUrl, setMaxParallelImageRequests, getDracoUrl, setDracoUrl, getMeshoptUrl, setMeshoptUrl, getBuildingGenUrl, setBuildingGenUrl} from './util/config';
 import {setRTLTextPlugin, getRTLTextPluginStatus} from './source/rtl_text_plugin';
-import WorkerPool from './util/worker_pool';
+import {addTileProvider} from './source/tile_provider';
+import {getWorkerCount, setWorkerCount} from './util/worker_pool';
 import WorkerClass from './util/worker_class';
-import {prewarm, clearPrewarmedResources} from './util/global_worker_pool';
+import {prewarm, clearPrewarmedResources} from './util/worker_pool_factory';
 import {clearTileCache} from './util/tile_request_cache';
-import {WorkerPerformanceUtils} from './util/worker_performance_utils';
 import {FreeCameraOptions} from './ui/free_camera';
-import {getDracoUrl, setDracoUrl, setMeshoptUrl, getMeshoptUrl} from '../3d-style/util/loaders';
 import browser from './util/browser';
+import {isMapboxHTTPCDNURL} from './util/mapbox_url';
+import {setSdkInfo, setBundleDistribution} from './util/mapbox';
+
+import type {Class} from './types/class';
+
+// Detect whether this UMD/CSP bundle was served from the Mapbox CDN (telemetry only).
+// Classic scripts expose their URL via `document.currentScript`; the `typeof document`
+// guard keeps the bundle importable in Node/SSR.
+const currentScript = typeof document !== 'undefined' ? document.currentScript as HTMLScriptElement | null : null;
+setBundleDistribution(currentScript && currentScript.src && isMapboxHTTPCDNURL(currentScript.src) ? 'cdn' : 'other');
 
 // Explicit type re-exports
 export type * from './ui/events';
 export type * from './style-spec/types';
 export type * from './source/source_types';
 export type * from './types/deprecated-aliases';
-export type {Anchor} from './ui/anchor';
+
 export type {PointLike} from './types/point-like';
-export type {PopupOptions} from './ui/popup';
 export type {PluginStatus} from './source/rtl_text_plugin';
-export type {PaddingOptions} from './geo/edge_insets';
+
 export type {Event, ErrorEvent} from './util/evented';
-export type {MapOptions, IControl} from './ui/map';
+export type {GeoJSONFeature, TargetFeature} from './util/vectortile_to_geojson';
+export type {InteractionEvent} from './ui/interactions';
+export type {PaddingOptions} from './geo/edge_insets';
+export type {RequestParameters, RequestTransformFunction, ResourceType} from './util/ajax';
 export type {LngLatLike, LngLatBoundsLike} from './geo/lng_lat';
-export type {AnimationOptions, CameraOptions} from './ui/camera';
+
+export type {FeatureSelector} from './style/style';
+export type {StyleImageInterface} from './style/style_image';
+export type {CustomLayerInterface} from './style/style_layer/custom_style_layer';
+export type {CustomSourceInterface} from './source/custom_source';
+export type {CanvasSourceSpecification} from './source/canvas_source';
+export type {TileProvider, TileDataResponse} from './source/tile_provider';
+export type {TileJSON} from './types/tilejson';
+
+export type {Anchor} from './ui/anchor';
+export type {PopupOptions} from './ui/popup';
+export type {MarkerOptions} from './ui/marker';
+export type {ScaleControlOptions} from './ui/control/scale_control';
+export type {GeolocateControlOptions} from './ui/control/geolocate_control';
+export type {NavigationControlOptions} from './ui/control/navigation_control';
+export type {FullscreenControlOptions} from './ui/control/fullscreen_control';
+export type {AttributionControlOptions} from './ui/control/attribution_control';
+export type {MapOptions, IControl, ControlPosition} from './ui/map';
+export type {FontstackCompositing} from './style/glyph_loader';
+export type {AnimationOptions, CameraOptions, EasingOptions} from './ui/camera';
 
 export type {
     Map,
@@ -65,12 +91,15 @@ const exported = {
     supported,
     setRTLTextPlugin,
     getRTLTextPluginStatus,
+    setSdkInfo,
+    addTileProvider,
     Map,
     NavigationControl,
     GeolocateControl,
     AttributionControl,
     ScaleControl,
     FullscreenControl,
+    IndoorControl,
     Popup,
     Marker,
     Style,
@@ -107,7 +136,7 @@ const exported = {
      */
     prewarm,
     /**
-     * Clears up resources that have previously been created by [`mapboxgl.prewarm()](https://docs.mapbox.com/mapbox-gl-js/api/properties/#prewarm)`.
+     * Clears up resources that have previously been created by [`mapboxgl.prewarm()`](https://docs.mapbox.com/mapbox-gl-js/api/properties/#prewarm).
      * Note that this is typically not necessary. You should only call this function
      * if you expect the user of your app to not return to a Map view at any point
      * in your application.
@@ -132,7 +161,7 @@ const exported = {
     },
 
     set accessToken(token: string) {
-        config.ACCESS_TOKEN = token;
+        setAccessToken(token);
     },
 
     /**
@@ -148,7 +177,7 @@ const exported = {
     },
 
     set baseApiUrl(url: string) {
-        config.API_URL = url;
+        setBaseApiUrl(url);
     },
 
     /**
@@ -162,11 +191,11 @@ const exported = {
      * mapboxgl.workerCount = 4;
      */
     get workerCount(): number {
-        return WorkerPool.workerCount;
+        return getWorkerCount();
     },
 
     set workerCount(count: number) {
-        WorkerPool.workerCount = count;
+        setWorkerCount(count);
     },
 
     /**
@@ -183,7 +212,7 @@ const exported = {
     },
 
     set maxParallelImageRequests(numRequests: number) {
-        config.MAX_PARALLEL_IMAGE_REQUESTS = numRequests;
+        setMaxParallelImageRequests(numRequests);
     },
 
     /**
@@ -203,7 +232,7 @@ const exported = {
      * @example
      * mapboxgl.clearStorage();
      */
-    clearStorage(callback?: (err?: Error | null | undefined) => void) {
+    clearStorage(callback?: (err?: Error | null) => void) {
         clearTileCache(callback);
     },
     /**
@@ -212,7 +241,7 @@ const exported = {
      * This is useful if your site needs to operate in a strict CSP (Content Security Policy) environment
      * wherein you are not allowed to load JavaScript code from a [`Blob` URL](https://developer.mozilla.org/en-US/docs/Web/API/URL/createObjectURL), which is default behavior.
      *
-     * See our documentation on [CSP Directives](https://docs.mapbox.com/mapbox-gl-js/api/#csp-directives) for more details.
+     * See our documentation on [CSP Directives](https://docs.mapbox.com/mapbox-gl-js/guides/browsers/#csp-directives) for more details.
      *
      * @var {string} workerUrl
      * @returns {string} A URL hosting a JavaScript bundle for mapbox-gl's WebWorker.
@@ -245,20 +274,12 @@ const exported = {
      *
      * mapboxgl.workerClass = MapboxGLWorker;
      */
-    get workerClass(): any {
+    get workerClass(): Class<Worker> {
         return WorkerClass.workerClass;
     },
 
-    set workerClass(klass: any) {
+    set workerClass(klass: Class<Worker>) {
         WorkerClass.workerClass = klass;
-    },
-
-    get workerParams(): any {
-        return WorkerClass.workerParams;
-    },
-
-    set workerParams(params: any) {
-        WorkerClass.workerParams = params;
     },
 
     /**
@@ -267,7 +288,7 @@ const exported = {
      * This is useful if your site needs to operate in a strict CSP (Content Security Policy) environment
      * wherein you are not allowed to load JavaScript code from a [`Blob` URL](https://developer.mozilla.org/en-US/docs/Web/API/URL/createObjectURL), which is default behavior.
      *
-     * See our documentation on [CSP Directives](https://docs.mapbox.com/mapbox-gl-js/api/#csp-directives) for more details.
+     * See our documentation on [CSP Directives](https://docs.mapbox.com/mapbox-gl-js/guides/browsers/#csp-directives) for more details.
      *
      * @var {string} dracoUrl
      * @returns {string} A URL hosting Google Draco decoding library (`draco_wasm_wrapper_gltf.js` and `draco_decoder_gltf.wasm`).
@@ -286,12 +307,37 @@ const exported = {
         setDracoUrl(url);
     },
 
+    /**
+     * Gets and sets the URL for the Meshopt decoder WASM module.
+     * By default, this is loaded from the Mapbox API CDN relative to
+     * [`baseApiUrl`](https://docs.mapbox.com/mapbox-gl-js/api/properties/#baseapiurl).
+     * The SIMD-optimized variant is automatically selected when supported.
+     *
+     * @var {string} meshoptUrl
+     * @returns {string} The current Meshopt WASM URL.
+     */
     get meshoptUrl(): string {
         return getMeshoptUrl();
     },
 
     set meshoptUrl(url: string) {
         setMeshoptUrl(url);
+    },
+
+    /**
+     * Gets and sets the URL for the building generation WASM module (building_gen.wasm).
+     * By default, this is loaded from the Mapbox API CDN relative to
+     * [`baseApiUrl`](https://docs.mapbox.com/mapbox-gl-js/api/properties/#baseapiurl).
+     *
+     * @var {string} buildingGenUrl
+     * @returns {string} The current building generation WASM URL.
+     */
+    get buildingGenUrl(): string {
+        return getBuildingGenUrl();
+    },
+
+    set buildingGenUrl(url: string) {
+        setBuildingGenUrl(url);
     },
 
     /**
@@ -306,9 +352,6 @@ const exported = {
      */
     restoreNow: browser.restoreNow
 };
-
-//This gets automatically stripped out in production builds.
-Debug.extend(exported, {isSafari, getPerformanceMetrics: PerformanceUtils.getPerformanceMetrics, getPerformanceMetricsAsync: WorkerPerformanceUtils.getPerformanceMetricsAsync});
 
 /**
  * Gets the version of Mapbox GL JS in use as specified in `package.json`,
@@ -328,7 +371,7 @@ Debug.extend(exported, {isSafari, getPerformanceMetrics: PerformanceUtils.getPer
  * the function will return `false` if the performance of Mapbox GL JS would
  * be dramatically worse than expected (for example, a software WebGL renderer
  * would be used).
- * @return {boolean}
+ * @returns {boolean}
  * @example
  * // Show an alert if the browser does not support Mapbox GL
  * if (!mapboxgl.supported()) {
@@ -347,19 +390,19 @@ Debug.extend(exported, {isSafari, getPerformanceMetrics: PerformanceUtils.getPer
  * @param {boolean} lazy If set to `true`, MapboxGL will defer loading the plugin until right-to-left text is encountered, and
  * right-to-left text will be rendered only after the plugin finishes loading.
  * @example
- * mapboxgl.setRTLTextPlugin('https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.2.0/mapbox-gl-rtl-text.js');
+ * mapboxgl.setRTLTextPlugin('https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.4.0/mapbox-gl-rtl-text.js');
  * @see [Example: Add support for right-to-left scripts](https://www.mapbox.com/mapbox-gl-js/example/mapbox-gl-rtl-text/)
  */
 
 /**
-  * Gets the map's [RTL text plugin](https://www.mapbox.com/mapbox-gl-js/plugins/#mapbox-gl-rtl-text) status.
-  * The status can be `unavailable` (not requested or removed), `loading`, `loaded`, or `error`.
-  * If the status is `loaded` and the plugin is requested again, an error will be thrown.
-  *
-  * @function getRTLTextPluginStatus
-  * @example
-  * const pluginStatus = mapboxgl.getRTLTextPluginStatus();
-  */
+ * Gets the map's [RTL text plugin](https://www.mapbox.com/mapbox-gl-js/plugins/#mapbox-gl-rtl-text) status.
+ * The status can be `unavailable` (not requested or removed), `loading`, `loaded`, or `error`.
+ * If the status is `loaded` and the plugin is requested again, an error will be thrown.
+ *
+ * @function getRTLTextPluginStatus
+ * @example
+ * const pluginStatus = mapboxgl.getRTLTextPluginStatus();
+ */
 
 export default exported;
 

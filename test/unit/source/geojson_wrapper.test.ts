@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import Wrapper from '../../../src/source/geojson_wrapper';
@@ -10,13 +11,13 @@ describe('geojsonwrapper', () => {
             tags: {hello: 'world'}
         }];
 
-        const wrap = new Wrapper(features);
-        const feature = wrap.feature(0);
+        const wrap = new Wrapper({test: features});
+        const feature = wrap.layers.test.feature(0);
 
         expect(feature).toBeTruthy();
         expect(feature.loadGeometry()).toEqual([[{x: 0, y: 0}, {x: 10, y: 10}]]);
         expect(feature.type).toEqual(2);
-        expect(feature.properties).toEqual({hello:'world'});
+        expect(feature.properties).toEqual({hello: 'world'});
     });
 
     test('point', () => {
@@ -26,8 +27,8 @@ describe('geojsonwrapper', () => {
             tags: {}
         }];
 
-        const wrap = new Wrapper(features);
-        const feature = wrap.feature(0);
+        const wrap = new Wrapper({test: features});
+        const feature = wrap.layers.test.feature(0);
         expect(feature.loadGeometry()).toEqual([[{x: 0, y: 1}]]);
     });
 });

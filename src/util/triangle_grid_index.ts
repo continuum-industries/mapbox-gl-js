@@ -76,7 +76,7 @@ class TriangleGridIndex {
         this.xScale = 1.0 / cellSize;
         this.yScale = 1.0 / cellSize;
 
-        const associatedTriangles = [];
+        const associatedTriangles: Array<{cellIdx: number; triIdx: number}> = [];
 
         // For each triangle find all intersecting cells
         for (let t = 0; t < this.triangleCount; t++) {
@@ -123,7 +123,7 @@ class TriangleGridIndex {
         let idx = 0;
         while (idx < associatedTriangles.length) {
             const cellIdx = associatedTriangles[idx].cellIdx;
-            const cell = {start: this.payload.length, len:0};
+            const cell = {start: this.payload.length, len: 0};
 
             // Find all triangles belonging to the current cell
             while (idx < associatedTriangles.length && associatedTriangles[idx].cellIdx === cellIdx) {
@@ -170,11 +170,11 @@ class TriangleGridIndex {
             const byte = Math.floor(triIdx / 8);
             const bit = 1 << (triIdx % 8);
 
-            if ((this.lookup as any)[byte] & bit) {
+            if (this.lookup[byte] & bit) {
                 continue;
             }
 
-            (this.lookup as any)[byte] |= bit;
+            this.lookup[byte] |= bit;
             out.push(triIdx);
 
             if (out.length === this.triangleCount) {
@@ -218,11 +218,11 @@ class TriangleGridIndex {
                     const byte = Math.floor(triIdx / 8);
                     const bit = 1 << (triIdx % 8);
 
-                    if ((this.lookup as any)[byte] & bit) {
+                    if (this.lookup[byte] & bit) {
                         continue;
                     }
 
-                    (this.lookup as any)[byte] |= bit;
+                    this.lookup[byte] |= bit;
                     out.push(triIdx);
 
                     if (out.length === this.triangleCount) {

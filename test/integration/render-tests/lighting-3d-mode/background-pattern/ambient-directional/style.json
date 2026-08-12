@@ -2,9 +2,15 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.002,
+      
       "width": 64,
-      "height": 64
+      "height": 64,
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00514}
+      ]
     }
   },
   "lights": [
@@ -13,7 +19,7 @@
       "id": "test_ambient",
       "properties": {
         "color": "rgba(0, 255, 0, 1)",
-        "intensity": 1.0
+        "intensity": 1
       }
     },
     {
@@ -21,7 +27,7 @@
       "id": "test_directional",
       "properties": {
         "color": "rgba(0, 0, 255, 1)",
-        "intensity": 1.0,
+        "intensity": 1,
         "direction": [
           100,
           30
@@ -32,13 +38,13 @@
   "zoom": 2,
   "pitch": 40,
   "sources": {},
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
       "type": "background",
       "paint": {
-        "background-pattern": "cemetery_icon"
+        "background-pattern": "cemetery"
       }
     }
   ]

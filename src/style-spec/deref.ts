@@ -3,21 +3,25 @@ import refProperties from './util/ref_properties';
 import type {LayerSpecification} from './types';
 
 function deref(layer: LayerSpecification, parent: LayerSpecification): LayerSpecification {
-    const result: Record<string, any> = {};
+    const result = {} as LayerSpecification;
 
-    for (const k in layer) {
+    const layerRec = layer as Record<string, unknown>;
+    const parentRec = parent as Record<string, unknown>;
+    const resultRec = result as Record<string, unknown>;
+
+    for (const k in layerRec) {
         if (k !== 'ref') {
-            result[k] = layer[k];
+            resultRec[k] = layerRec[k];
         }
     }
 
     refProperties.forEach((k) => {
-        if (k in parent) {
-            result[k] = (parent as any)[k];
+        if (k in parentRec) {
+            resultRec[k] = parentRec[k];
         }
     });
 
-    return result as LayerSpecification;
+    return result;
 }
 
 /**
@@ -36,14 +40,17 @@ function deref(layer: LayerSpecification, parent: LayerSpecification): LayerSpec
 export default function derefLayers(layers: Array<LayerSpecification>): Array<LayerSpecification> {
     layers = layers.slice();
 
-    const map: any = Object.create(null);
-    for (let i = 0; i < layers.length; i++) {
-        map[layers[i].id] = layers[i];
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const map: Record<string, LayerSpecification> = Object.create(null);
+    for (const layer of layers) {
+        map[layer.id] = layer;
     }
 
     for (let i = 0; i < layers.length; i++) {
-        if ('ref' in layers[i]) {
-            layers[i] = deref(layers[i], map[(layers[i] as any).ref]);
+        const layer = layers[i];
+        if (layer && 'ref' in layer) {
+            const parent = map[(layer as LayerSpecification & {ref: string}).ref];
+            if (parent) layers[i] = deref(layer, parent);
         }
     }
 

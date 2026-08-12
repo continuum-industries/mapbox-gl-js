@@ -1,24 +1,5 @@
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import Point from '@mapbox/point-geometry';
-import {number as interpolate} from '../style-spec/util/interpolate';
-
-export class Point3D extends Point {
-    z: number;
-
-    constructor(x: number, y: number, z: number) {
-        super(x, y);
-        this.z = z;
-    }
-}
-
-export class Point4D extends Point3D {
-    w: number; // used for line progress and interpolated on clipping
-
-    constructor(x: number, y: number, z: number, w: number) {
-        super(x, y, z);
-        this.w = w;
-    }
-}
 
 export type ClippedPolygon = {
     polygon: Array<Array<Point>>;
@@ -35,21 +16,21 @@ function clipPolygon(polygons: PolygonArray, clipAxis1: number, clipAxis2: numbe
         ring.push(new Point(ax + (bx - ax) * ((y - ay) / (by - ay)), y));
     };
 
-    const polygonsClipped = [];
+    const polygonsClipped: PolygonArray = [];
     const intersect = axis === 0 ? intersectX : intersectY;
     for (const polygon of polygons) {
-        const polygonClipped = [];
+        const polygonClipped: Array<Array<Point>> = [];
         for (const ring of polygon) {
             if (ring.length <= 2) {
                 continue;
             }
 
-            const clipped = [];
+            const clipped: Array<Point> = [];
             for (let i = 0; i < ring.length - 1; i++) {
-                const ax = ring[i].x;
-                const ay = ring[i].y;
-                const bx = ring[i + 1].x;
-                const by = ring[i + 1].y;
+                const ax = ring[i]!.x;
+                const ay = ring[i]!.y;
+                const bx = ring[i + 1]!.x;
+                const by = ring[i + 1]!.y;
                 const a = axis === 0 ? ax : ay;
                 const b = axis === 0 ? bx : by;
                 if (a < clipAxis1) {
@@ -61,7 +42,7 @@ function clipPolygon(polygons: PolygonArray, clipAxis1: number, clipAxis2: numbe
                         intersect(clipped, ax, ay, bx, by, clipAxis2);
                     }
                 } else {
-                    clipped.push(ring[i]);
+                    clipped.push(ring[i]!);
                 }
                 if (b < clipAxis1 && a >= clipAxis1) {
                     intersect(clipped, ax, ay, bx, by, clipAxis1);
@@ -71,15 +52,15 @@ function clipPolygon(polygons: PolygonArray, clipAxis1: number, clipAxis2: numbe
                 }
             }
 
-            let last = ring[ring.length - 1];
+            let last = ring.at(-1)!;
             const a = axis === 0 ? last.x : last.y;
             if (a >= clipAxis1 && a <= clipAxis2) {
                 clipped.push(last);
             }
             if (clipped.length) {
-                last = clipped[clipped.length - 1];
-                if (clipped[0].x !== last.x || clipped[0].y !== last.y) {
-                    clipped.push(clipped[0]);
+                last = clipped.at(-1)!;
+                if (clipped[0]!.x !== last.x || clipped[0]!.y !== last.y) {
+                    clipped.push(clipped[0]!);
                 }
                 polygonClipped.push(clipped);
             }
@@ -92,15 +73,15 @@ function clipPolygon(polygons: PolygonArray, clipAxis1: number, clipAxis2: numbe
     return polygonsClipped;
 }
 
-export function subdividePolygons(
+export function gridSubdivision(
     polygons: PolygonArray,
     bounds: [Point, Point],
     gridSizeX: number,
     gridSizeY: number,
     padding: number | null | undefined = 0.0,
-    splitFn: any,
+    splitFn: ((axis: number, min: number, max: number) => number) | null,
 ): Array<ClippedPolygon> {
-    const outPolygons = [];
+    const outPolygons: Array<ClippedPolygon> = [];
 
     if (!polygons.length || !gridSizeX || !gridSizeY) {
         return outPolygons;
@@ -117,7 +98,7 @@ export function subdividePolygons(
 
     const initialSplits = hSplits - vSplits;
 
-    const splits = [];
+    const splits: Array<number> = [];
     for (let i = 0; i < Math.abs(initialSplits); i++) {
         splits.push(initialSplits > 0 ? 0 : 1);
     }
@@ -129,14 +110,14 @@ export function subdividePolygons(
 
     let split = polygons;
 
-    split = clipPolygon(split, bounds[0].y - padding, bounds[1].y + padding, 1);
-    split = clipPolygon(split, bounds[0].x - padding, bounds[1].x + padding, 0);
+    split = clipPolygon(split, bounds[0].y - padding!, bounds[1].y + padding!, 1);
+    split = clipPolygon(split, bounds[0].x - padding!, bounds[1].x + padding!, 0);
 
     if (!split.length) {
         return outPolygons;
     }
 
-    const stack = [];
+    const stack: Array<{polygons: PolygonArray; bounds: [Point, Point]; depth: number}> = [];
     if (splits.length) {
         stack.push({polygons: split, bounds, depth: 0});
     } else {
@@ -144,12 +125,12 @@ export function subdividePolygons(
     }
 
     while (stack.length) {
-        const frame = stack.pop();
+        const frame = stack.pop()!;
 
         assert(frame.polygons.length > 0);
 
         const depth = frame.depth;
-        const axis = splits[depth];
+        const axis = splits[depth]!;
 
         const bboxMin = frame.bounds[0];
         const bboxMax = frame.bounds[1];
@@ -159,8 +140,8 @@ export function subdividePolygons(
 
         const splitMid = splitFn ? splitFn(axis, splitMin, splitMax) : 0.5 * (splitMin + splitMax);
 
-        const lclip = clipPolygon(frame.polygons, splitMin - padding, splitMid + padding, axis);
-        const rclip = clipPolygon(frame.polygons, splitMid - padding, splitMax + padding, axis);
+        const lclip = clipPolygon(frame.polygons, splitMin - padding!, splitMid + padding!, axis);
+        const rclip = clipPolygon(frame.polygons, splitMid - padding!, splitMax + padding!, axis);
 
         if (lclip.length) {
             const bbMaxX = axis === 0 ? splitMid : bboxMax.x;
@@ -168,12 +149,11 @@ export function subdividePolygons(
 
             const bbMax = new Point(bbMaxX, bbMaxY);
 
-            const lclipBounds = [bboxMin, bbMax];
+            const lclipBounds: [Point, Point] = [bboxMin, bbMax];
 
             if (splits.length > depth + 1) {
                 stack.push({polygons: lclip, bounds: lclipBounds, depth: depth + 1});
             } else {
-                // @ts-expect-error - TS2345 - Argument of type 'any[]' is not assignable to parameter of type '[Point, Point]'.
                 addResult(lclip, lclipBounds);
             }
         }
@@ -184,12 +164,11 @@ export function subdividePolygons(
 
             const bbMin = new Point(bbMinX, bbMinY);
 
-            const rclipBounds = [bbMin, bboxMax];
+            const rclipBounds: [Point, Point] = [bbMin, bboxMax];
 
             if (splits.length > depth + 1) {
                 stack.push({polygons: rclip, bounds: rclipBounds, depth: depth + 1});
             } else {
-                // @ts-expect-error - TS2345 - Argument of type 'any[]' is not assignable to parameter of type '[Point, Point]'.
                 addResult(rclip, rclipBounds);
             }
         }
@@ -198,35 +177,3 @@ export function subdividePolygons(
     return outPolygons;
 }
 
-function clipFirst(a: Point, b: Point, axis: string, clip: number): void {
-    const axis1 = axis === 'x' ? 'y' : 'x';
-    const ratio = (clip - a[axis]) / (b[axis] - a[axis]);
-    a[axis1] = a[axis1] + (b[axis1] - a[axis1]) * ratio;
-    a[axis] = clip;
-    if (a.hasOwnProperty('z')) {
-        a['z'] = interpolate(a['z'], b['z'], ratio);
-    }
-    if (a.hasOwnProperty('w')) {
-        a['w'] = interpolate(a['w'], b['w'], ratio);
-    }
-}
-
-export function clipLine(p0: Point, p1: Point, boundsMin: number, boundsMax: number): void {
-    const clipAxis1 = boundsMin;
-    const clipAxis2 = boundsMax;
-    for (const axis of ["x", "y"]) {
-        let a = p0;
-        let b = p1;
-        if (a[axis] >= b[axis]) {
-            a = p1;
-            b = p0;
-        }
-
-        if (a[axis] < clipAxis1 && b[axis] > clipAxis1) {
-            clipFirst(a, b, axis, clipAxis1);
-        }
-        if (a[axis] < clipAxis2 && b[axis] > clipAxis2) {
-            clipFirst(b, a, axis, clipAxis2);
-        }
-    }
-}

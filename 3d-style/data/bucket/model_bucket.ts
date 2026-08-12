@@ -3,21 +3,24 @@ import {register} from '../../../src/util/web_worker_transfer';
 import loadGeometry from '../../../src/data/load_geometry';
 import toEvaluationFeature from '../../../src/data/evaluation_feature';
 import EvaluationParameters from '../../../src/style/evaluation_parameters';
-import Point from '@mapbox/point-geometry';
 import {vec3} from 'gl-matrix';
 import {InstanceVertexArray} from '../../../src/data/array_types';
-import assert from 'assert';
+import assert from '../../../src/style-spec/util/assert';
 import {warnOnce} from '../../../src/util/util';
 import {rotationScaleYZFlipMatrix} from '../../util/model_util';
 import {tileToMeter} from '../../../src/geo/mercator_coordinate';
 import {instanceAttributes} from '../model_attributes';
-import {ReplacementSource, regionsEquals, transformPointToTile, pointInFootprint} from '../../../3d-style/source/replacement_source';
+import {regionsEquals, transformPointToTile, pointInFootprint, skipClipping} from '../../../3d-style/source/replacement_source';
 import {LayerTypeMask} from '../../../3d-style/util/conflation';
+import {type FeatureState, type GlobalProperties} from '../../../src/style-spec/expression/index';
+import Point from '@mapbox/point-geometry';
+import {getElevationFeature} from '../../elevation/get_elevation_feature';
 
+import type {ElevationFeature} from '../../elevation/elevation_feature';
 import type ModelStyleLayer from '../../style/style_layer/model_style_layer';
-import {isValidUrl} from '../../../src/style-spec/validate/validate_model';
+import type {ReplacementSource, Region} from '../../../3d-style/source/replacement_source';
 import type {EvaluationFeature} from '../../../src/data/evaluation_feature';
-import type {mat4} from 'gl-matrix';
+import type {mat3, mat4} from 'gl-matrix';
 import type {CanonicalTileID, OverscaledTileID, UnwrappedTileID} from '../../../src/source/tile_id';
 import type {
     Bucket,
@@ -26,7 +29,6 @@ import type {
     IndexedFeature,
     PopulateParameters
 } from '../../../src/data/bucket';
-
 import type Context from '../../../src/gl/context';
 import type VertexBuffer from '../../../src/gl/vertex_buffer';
 import type {FeatureStates} from '../../../src/source/source_state';
@@ -35,15 +37,18 @@ import type {ProjectionSpecification} from '../../../src/style-spec/types';
 import type {TileTransform} from '../../../src/geo/projection/tile_transform';
 import type {VectorTileLayer} from '@mapbox/vector-tile';
 import type {TileFootprint} from '../../../3d-style/util/conflation';
+import type {ImageId} from '../../../src/style-spec/expression/types/image_id';
+import type {StyleModelMap} from '../../../src/style/style_mode';
 
 class ModelFeature {
     feature: EvaluationFeature;
+    featureStates: FeatureState;
     instancedDataOffset: number;
     instancedDataCount: number;
 
-    rotation: Array<number>;
-    scale: Array<number>;
-    translation: Array<number>;
+    rotation: vec3;
+    scale: vec3;
+    translation: vec3;
 
     constructor(feature: EvaluationFeature, offset: number) {
         this.feature = feature;
@@ -58,11 +63,14 @@ class ModelFeature {
 class PerModelAttributes {
     // If node has meshes, instancedDataArray gets an entry for each feature instance (used for all meshes or the node).
     instancedDataArray: InstanceVertexArray;
-    instancedDataBuffer: VertexBuffer;
+    instancedDataBuffer!: VertexBuffer;
     instancesEvaluatedElevation: Array<number>; // Gets added to DEM elevation of the instance to produce value in instancedDataArray.
+    instancesRoadElevation: Array<number> | undefined;
 
     features: Array<ModelFeature>;
     idToFeaturesIndex: Partial<Record<string | number, number>>; // via this.features, enable lookup instancedDataArray based on feature ID.
+    maxScale: number = 1;
+    maxXYTranslationDistance: number = 0;
 
     constructor() {
         this.instancedDataArray = new InstanceVertexArray();
@@ -70,25 +78,85 @@ class PerModelAttributes {
         this.features = [];
         this.idToFeaturesIndex = {};
     }
+
+    colorForInstance(index: number): [number, number, number, number] {
+        const offset = index * 16;
+        const va = this.instancedDataArray.float32;
+
+        // Decompose: Math.round(100.0 * color.a) + color.b / 1.05;
+        let a = Math.floor(va[offset + 2]);
+        const b = (va[offset + 2] - a) * 1.05;
+        a /= 100.0;
+        // 0 & 1: tile coordinates stored in integer part of float, R and G color components,
+        // originally in range [0..1], scaled to range [0..0.952(arbitrary, just needs to be
+        // under 1)].
+        const r = (va[offset] % 1) * 1.05;
+        const g = (va[offset + 1] % 1) * 1.05;
+        return [r, g, b, a];
+    }
+
+    tileCoordinatesForInstance(index: number): Point {
+        const offset = index * 16;
+        const va = this.instancedDataArray.float32;
+        let x_ = va[offset + 0];
+        const wasHidden = x_ > EXTENT;
+        x_ = wasHidden ? x_ - EXTENT : x_;
+        // Position is stored in integer part of value, fractional part is used for color
+        const x = Math.trunc(x_);
+        const y = Math.trunc(va[offset + 1]);
+        return new Point(x, y);
+    }
+
+    translationForInstance(index: number): vec3 {
+        const offset = index * 16;
+        const va = this.instancedDataArray.float32;
+        return [va[offset + 4], va[offset + 5], va[offset + 6]];
+    }
+
+    rotationScaleForInstance(index: number): mat3 {
+        const offset = index * 16;
+        const va = this.instancedDataArray.float32;
+        return [va[offset + 7],
+            va[offset + 8],
+            va[offset + 9],
+            va[offset + 10],
+            va[offset + 11],
+            va[offset + 12],
+            va[offset + 13],
+            va[offset + 14],
+            va[offset + 15]];
+    }
+
+    transformForInstance(index: number): mat4 {
+        const offset = index * 16;
+        const va = this.instancedDataArray.float32;
+        return [
+            va[offset + 7], va[offset + 8], va[offset + 9], va[offset + 4],
+            va[offset + 10], va[offset + 11], va[offset + 12], va[offset + 5],
+            va[offset + 13], va[offset + 14], va[offset + 15], va[offset + 6],
+            0, 0, 0, 1.0];
+    }
 }
 
 class ModelBucket implements Bucket {
+    requiresStandardRuntime = true;
+
     zoom: number;
     index: number;
     canonical: CanonicalTileID;
+    overscaledZ: number;
     layers: Array<ModelStyleLayer>;
     layerIds: Array<string>;
-    stateDependentLayers: Array<ModelStyleLayer>;
+    stateDependentLayers!: Array<ModelStyleLayer>;
     stateDependentLayerIds: Array<string>;
     hasPattern: boolean;
+    worldview: string | undefined;
 
-    instancesPerModel: {
-        string: PerModelAttributes;
-    };
+    instancesPerModel: Record<string, PerModelAttributes>;
 
-    uploaded: boolean;
+    uploaded!: boolean;
 
-    tileToMeter: number;
+    tileToMeter!: number;
     projection: ProjectionSpecification;
 
     // elevation is baked into vertex buffer together with evaluated instance translation
@@ -100,7 +168,7 @@ class ModelBucket implements Bucket {
     maxVerticalOffset: number; // for tile AABB calculation
     maxScale: number; // across all dimensions, for tile AABB calculation
     maxHeight: number; // calculated from previous two, during rendering, when models are available.
-    isInsideFirstShadowMapFrustum: boolean; // evaluated during first shadows pass and cached here for the second shadow pass.
+    isInsideFirstShadowMapFrustum!: boolean; // evaluated during first shadows pass and cached here for the second shadow pass.
     lookup: Uint8Array | null | undefined;
     lookupDim: number;
     instanceCount: number;
@@ -112,30 +180,36 @@ class ModelBucket implements Bucket {
     modelUris: Array<string>;
     modelsRequested: boolean;
 
-    activeReplacements: Array<any>;
+    activeReplacements: Array<Region>;
     replacementUpdateTime: number;
+    styleDefinedModelURLs: StyleModelMap;
+    hasAppearances: boolean | null;
 
     constructor(options: BucketParameters<ModelStyleLayer>) {
         this.zoom = options.zoom;
         this.canonical = options.canonical;
+        this.overscaledZ = this.canonical.z + Math.log2(options.overscaling);
         this.layers = options.layers;
         this.layerIds = this.layers.map(layer => layer.fqid);
         this.projection = options.projection;
         this.index = options.index;
+        this.worldview = options.worldview;
 
         this.hasZoomDependentProperties = this.layers[0].isZoomDependent();
 
         this.stateDependentLayerIds = this.layers.filter((l) => l.isStateDependent()).map((l) => l.id);
         this.hasPattern = false;
-        // @ts-expect-error - TS2741 - Property 'string' is missing in type '{}' but required in type '{ string: PerModelAttributes; }'.
         this.instancesPerModel = {};
         this.validForExaggeration = 0;
         this.maxVerticalOffset = 0;
         this.maxScale = 0;
         this.maxHeight = 0;
         // reduce density, more on lower zooms and almost no reduction in overscale range.
-        // Heuristics is related to trees performance.
-        this.lookupDim = this.zoom > this.canonical.z ? 256 : this.zoom > 15 ? 75 : 100;
+        // Heuristics is related to trees performance. Disable density check after maxZoom + 2.
+        // For vector tiles this means:
+        // z15 and lower: lookup grid of size 75x75 per tile
+        // z16: 100x100, z17: 256x256, z18: no density reduction.
+        this.lookupDim = this.zoom > (this.canonical.z + 1) ? 0 : (this.zoom > this.canonical.z ? 256 : this.zoom > 15 ? 75 : 100);
         this.instanceCount = 0;
 
         this.terrainElevationMin = 0;
@@ -145,9 +219,18 @@ class ModelBucket implements Bucket {
         this.modelsRequested = false;
         this.activeReplacements = [];
         this.replacementUpdateTime = 0;
+        this.styleDefinedModelURLs = options.styleDefinedModelURLs;
+        this.hasAppearances = null;
     }
 
     updateFootprints(_id: UnwrappedTileID, _footprints: Array<TileFootprint>) {
+    }
+
+    updateAppearances(_canonical?: CanonicalTileID, _featureState?: FeatureStates, _availableImages?: Array<ImageId>, _globalProperties?: GlobalProperties) {
+        return {
+            hasLayoutChanges: false,
+            hasUboChanges: false
+        };
     }
 
     populate(features: Array<IndexedFeature>, options: PopulateParameters, canonical: CanonicalTileID, tileTransform: TileTransform) {
@@ -155,47 +238,75 @@ class ModelBucket implements Bucket {
         const needGeometry = this.layers[0]._featureFilter.needGeometry;
         this.lookup = new Uint8Array(this.lookupDim * this.lookupDim);
 
+        // Only use elevation features when model-elevation-reference is set to hd-road-markup
+        const usesHdRoadMarkupElevation = this.layers[0].paint.get('model-elevation-reference') === 'hd-road-markup';
+        const elevationFeatures = usesHdRoadMarkupElevation ? options.elevationFeatures : undefined;
+
         for (const {feature, id, index, sourceLayerIndex} of features) {
             // use non numeric id, if in properties, too.
-            const featureId = (id != null) ? id :
-                (feature.properties && feature.properties.hasOwnProperty("id")) ? feature.properties["id"] : undefined;
+            const featureId = id ?? ((feature.properties && Object.hasOwn(feature.properties, "id")) ? feature.properties["id"] : undefined);
             const evaluationFeature = toEvaluationFeature(feature, needGeometry);
 
-            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom), evaluationFeature, canonical))
+            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom, {worldview: this.worldview, activeFloors: options.activeFloors}), evaluationFeature, canonical))
                 continue;
 
             const bucketFeature: BucketFeature = {
-                id: featureId,
+                id: featureId as number,
                 sourceLayerIndex,
                 index,
-                // @ts-expect-error - TS2345 - Argument of type 'VectorTileFeature' is not assignable to parameter of type 'FeatureWithGeometry'.
                 geometry: needGeometry ? evaluationFeature.geometry : loadGeometry(feature, canonical, tileTransform),
                 properties: feature.properties,
-                // @ts-expect-error - TS2322 - Type '0 | 2 | 1 | 3' is not assignable to type '2 | 1 | 3'.
                 type: feature.type,
                 patterns: {}
             };
 
-            const modelId = this.addFeature(bucketFeature, bucketFeature.geometry, evaluationFeature);
+            const modelId = this.addFeature(bucketFeature, bucketFeature.geometry, evaluationFeature, elevationFeatures, canonical);
 
             if (modelId) {
                 // Since 3D model geometry extends over footprint or point geometry, it is important
                 // to add some padding to envelope calculated for grid index lookup, in order to
                 // prevent false negatives in FeatureIndex's coarse check.
                 // Envelope padding is a half of featureIndex.grid cell size.
+
+                // Padding is just and estimated suitable for models only covering <= 1/16 of tile EXTENTS.
+                // Actual model bounds are not yet available at this stage. To compensate for larger models,
+                // 'maxFeatureQueryRadius()' is used to query largest model bounds
                 options.featureIndex.insert(feature, bucketFeature.geometry, index, sourceLayerIndex, this.index, this.instancesPerModel[modelId].instancedDataArray.length, EXTENT / 32);
             }
         }
         this.lookup = null;
     }
 
-    // eslint-disable-next-line no-unused-vars
-    update(states: FeatureStates, vtLayer: VectorTileLayer, availableImages: Array<string>, imagePositions: SpritePositions) {
+    evaluateQueryRenderedFeaturePadding() {
+        const modelManager = this.layers[0].modelManager;
+        const scope = this.layers[0].scope;
+
+        let maxQueryRadius = 0;
+
+        for (const modelId of this.modelUris) {
+            const model = modelManager.getModel(modelId, scope);
+            if (!model) {
+                continue;
+            }
+
+            // Use max scaling of any instance of this model to ensure full extent is covered
+            const modelInstances = this.instancesPerModel[modelId];
+            if (modelInstances) {
+                const radius = vec3.distance(model.aabb.max, model.aabb.min) * 0.5 * modelInstances.maxScale + modelInstances.maxXYTranslationDistance;
+                const radiusInTileUnits = Math.min(EXTENT, Math.max(radius / this.tileToMeter, EXTENT / 32));
+
+                maxQueryRadius = Math.max(radiusInTileUnits, maxQueryRadius);
+            }
+        }
+        return maxQueryRadius;
+    }
+
+    update(states: FeatureStates, vtLayer: VectorTileLayer, availableImages: ImageId[], imagePositions: SpritePositions) {
         // called when setFeature state API is used
         for (const modelId in this.instancesPerModel) {
             const instances: PerModelAttributes = this.instancesPerModel[modelId];
             for (const id in states) {
-                if (instances.idToFeaturesIndex.hasOwnProperty(id)) {
+                if (Object.hasOwn(instances.idToFeaturesIndex, id)) {
                     const feature = instances.features[instances.idToFeaturesIndex[id]];
                     this.evaluate(feature, states[id], instances, true);
                     this.uploaded = false;
@@ -236,7 +347,7 @@ class ModelBucket implements Bucket {
         return reuploadNeeded;
     }
 
-    updateReplacement(coord: OverscaledTileID, source: ReplacementSource, layerIndex: number): boolean {
+    updateReplacement(coord: OverscaledTileID, source: ReplacementSource, layerIndex: number, scope: string): boolean {
         // Replacement has to be re-checked if the source has been updated since last time
         if (source.updateTime === this.replacementUpdateTime) {
             return false;
@@ -248,10 +359,10 @@ class ModelBucket implements Bucket {
         if (regionsEquals(this.activeReplacements, newReplacements)) {
             return false;
         }
+
         this.activeReplacements = newReplacements;
 
         let reuploadNeeded = false;
-
         for (const modelId in this.instancesPerModel) {
             const perModelVertexArray: PerModelAttributes = this.instancesPerModel[modelId];
             const va = perModelVertexArray.instancedDataArray;
@@ -264,26 +375,27 @@ class ModelBucket implements Bucket {
                     const i16 = (i + offset) * 16;
 
                     let x_ = va.float32[i16 + 0];
-                    x_ = x_ > EXTENT ? x_ - EXTENT : x_;
+                    const wasHidden = x_ > EXTENT;
+                    x_ = wasHidden ? x_ - EXTENT : x_;
                     const x = Math.floor(x_);
-                    const y = va.float32[i16 + 1];
+                    const y = Math.floor(va.float32[i16 + 1]);
 
                     let hidden = false;
                     for (const region of this.activeReplacements) {
-                        if (region.order < layerIndex || region.order === Infinity || !(region.clipMask & LayerTypeMask.Model)) continue;
+                        if (skipClipping(region, layerIndex, LayerTypeMask.Model, scope)) continue;
 
                         if (region.min.x > x || x > region.max.x || region.min.y > y || y > region.max.y) {
                             continue;
                         }
 
                         const p = transformPointToTile(x, y, coord.canonical, region.footprintTileId.canonical);
-                        hidden = pointInFootprint(p, region);
+                        hidden = pointInFootprint(p, region.footprint);
 
                         if (hidden) break;
                     }
 
                     va.float32[i16] = hidden ? x_ + EXTENT : x_;
-                    reuploadNeeded = reuploadNeeded || hidden;
+                    reuploadNeeded = reuploadNeeded || (hidden !== wasHidden);
                 }
             }
         }
@@ -321,7 +433,7 @@ class ModelBucket implements Bucket {
         this.uploaded = true;
     }
 
-    destroy() {
+    destroy(reload?: boolean) {
         for (const modelId in this.instancesPerModel) {
             const perModelAttributes: PerModelAttributes = this.instancesPerModel[modelId];
             if (perModelAttributes.instancedDataArray.length === 0) continue;
@@ -330,9 +442,9 @@ class ModelBucket implements Bucket {
             }
         }
         const modelManager = this.layers[0].modelManager;
-        if (modelManager && this.modelUris) {
+        if (reload && modelManager && this.modelUris && this.modelsRequested) {
             for (const modelUri of this.modelUris) {
-                modelManager.removeModel(modelUri, "");
+                modelManager.removeModel(modelUri, "", true);
             }
         }
     }
@@ -341,24 +453,21 @@ class ModelBucket implements Bucket {
         feature: BucketFeature,
         geometry: Array<Array<Point>>,
         evaluationFeature: EvaluationFeature,
+        elevationFeatures?: ElevationFeature[],
+        canonical?: CanonicalTileID,
     ): string {
         const layer = this.layers[0];
         const modelIdProperty = layer.layout.get('model-id');
+        const modelAllowDensityReductionProperty = layer.layout.get('model-allow-density-reduction');
         assert(modelIdProperty);
 
         const modelId = modelIdProperty.evaluate(evaluationFeature, {}, this.canonical);
-
         if (!modelId) {
             warnOnce(`modelId is not evaluated for layer ${layer.id} and it is not going to get rendered.`);
             return modelId;
         }
-        // check if it's a valid model (absolute) URL
-        // otherwise it is considered as a style defined model, and hence we don't need to
-        // load it here.
-        if (isValidUrl(modelId, false)) {
-            if (!this.modelUris.includes(modelId)) {
-                this.modelUris.push(modelId);
-            }
+        if ((modelId.includes('://') || this.styleDefinedModelURLs[modelId]) && !this.modelUris.includes(modelId)) {
+            this.modelUris.push(modelId);
         }
         if (!this.instancesPerModel[modelId]) {
             this.instancesPerModel[modelId] = new PerModelAttributes();
@@ -368,23 +477,41 @@ class ModelBucket implements Bucket {
         const instancedDataArray = perModelVertexArray.instancedDataArray;
 
         const modelFeature = new ModelFeature(evaluationFeature, instancedDataArray.length);
+
+        // Query elevation feature once per feature
+        let tiledElevation: ElevationFeature | undefined;
+        if (elevationFeatures) {
+            const tiledResult = getElevationFeature(feature, elevationFeatures, undefined, canonical);
+            tiledElevation = tiledResult ? tiledResult.feature : undefined;
+        }
+
         for (const geometries of geometry) {
             for (const point of geometries) {
                 if (point.x < 0 || point.x >= EXTENT || point.y < 0 || point.y >= EXTENT) {
                     continue; // Clip on tile borders to prevent duplicates
                 }
                 // reduce density
-                const tileToLookup = (this.lookupDim - 1.0) / EXTENT;
-                const lookupIndex = this.lookupDim * ((point.y * tileToLookup) | 0) + (point.x * tileToLookup) | 0;
-                if (this.lookup) {
-                    if (this.lookup[lookupIndex] !== 0) {
-                        continue;
+                if (this.lookupDim !== 0 && modelAllowDensityReductionProperty) {
+                    const tileToLookup = (this.lookupDim - 1.0) / EXTENT;
+                    const lookupIndex = this.lookupDim * ((point.y * tileToLookup) | 0) + (point.x * tileToLookup) | 0;
+                    if (this.lookup) {
+                        if (this.lookup[lookupIndex] !== 0) {
+                            continue;
+                        }
+                        this.lookup[lookupIndex] = 1;
                     }
-                    this.lookup[lookupIndex] = 1;
                 }
                 this.instanceCount++;
                 const i = instancedDataArray.length;
                 instancedDataArray.resize(i + 1);
+
+                if (elevationFeatures) {
+                    if (!perModelVertexArray.instancesRoadElevation) {
+                        perModelVertexArray.instancesRoadElevation = [];
+                    }
+                    const roadElevation = tiledElevation ? tiledElevation.pointElevation(new Point(point.x, point.y)) : 0;
+                    perModelVertexArray.instancesRoadElevation.push(roadElevation);
+                }
                 perModelVertexArray.instancesEvaluatedElevation.push(0);
                 instancedDataArray.float32[i * 16] = point.x;
                 instancedDataArray.float32[i * 16 + 1] = point.y;
@@ -405,7 +532,7 @@ class ModelBucket implements Bucket {
         return this.modelUris;
     }
 
-    evaluate(feature: ModelFeature, featureState: FeatureStates, perModelVertexArray: PerModelAttributes, update: boolean) {
+    evaluate(feature: ModelFeature, featureState: FeatureState, perModelVertexArray: PerModelAttributes, update: boolean) {
         const layer = this.layers[0];
         const evaluationFeature = feature.feature;
         const canonical = this.canonical;
@@ -416,12 +543,19 @@ class ModelBucket implements Bucket {
 
         const translation = feature.translation = layer.paint.get('model-translation').evaluate(evaluationFeature, featureState, canonical);
 
-        const color = layer.paint.get('model-color').evaluate(evaluationFeature, featureState, canonical);
+        // When layer.paint.get('model-color') is constant, evaluate returns the object defined in the spec.
+        // If we don't create a new object here we would be updating that, causing problems afterwards
+        const {r, g, b} = layer.paint.get('model-color').evaluate(evaluationFeature, featureState, canonical);
+        const a = layer.paint.get('model-color-mix-intensity').evaluate(evaluationFeature, featureState, canonical);
 
-        color.a = layer.paint.get('model-color-mix-intensity').evaluate(evaluationFeature, featureState, canonical);
-        // @ts-expect-error - TS2322 - Type '[]' is not assignable to type 'mat4'.
         const rotationScaleYZFlip: mat4 = [];
         if (this.maxVerticalOffset < translation[2]) this.maxVerticalOffset = translation[2];
+
+        // Track per model and per bucket maximum scaling as well as per instance translation
+        const translationDistanceXYSq = translation[0] * translation[0] + translation[1] * translation[1];
+        const translationDistanceXY = translationDistanceXYSq > 0 ? Math.sqrt(translationDistanceXYSq) : 0;
+        perModelVertexArray.maxScale = Math.max(Math.max(perModelVertexArray.maxScale, scale[0]), Math.max(scale[1], scale[2]));
+        perModelVertexArray.maxXYTranslationDistance = Math.max(perModelVertexArray.maxXYTranslationDistance, translationDistanceXY);
         this.maxScale = Math.max(Math.max(this.maxScale, scale[0]), Math.max(scale[1], scale[2]));
 
         rotationScaleYZFlipMatrix(rotationScaleYZFlip, rotation, scale);
@@ -430,7 +564,7 @@ class ModelBucket implements Bucket {
         const constantTileToMeterAcrossTile = 10;
         assert(perModelVertexArray.instancedDataArray.bytesPerElement === 64);
 
-        const vaOffset2 = Math.round(100.0 * color.a) + color.b / 1.05;
+        const vaOffset2 = Math.round(100.0 * a) + b / 1.05;
 
         for (let i = 0; i < feature.instancedDataCount; ++i) {
             const instanceOffset = feature.instancedDataOffset + i;
@@ -449,18 +583,19 @@ class ModelBucket implements Bucket {
             // originally in range [0..1], scaled to range [0..0.952(arbitrary, just needs to be
             // under 1)].
             const pointY = va[offset + 1] | 0; // point.y stored in integer part
-            va[offset]      = (va[offset] | 0) + color.r / 1.05; // point.x stored in integer part
-            va[offset + 1]  = pointY + color.g / 1.05;
+            va[offset] = (va[offset] | 0) + r / 1.05; // point.x stored in integer part
+            va[offset + 1] = pointY + g / 1.05;
             // Element 2: packs color's alpha (as integer part) and blue component in fractional part.
-            va[offset + 2]  = vaOffset2;
+            va[offset + 2] = vaOffset2;
             // tileToMeter is taken at center of tile. Prevent recalculating it over again for
             // thousands of trees.
             // Element 3: tileUnitsToMeter conversion.
-            va[offset + 3]  = 1.0 / (canonical.z > constantTileToMeterAcrossTile ? this.tileToMeter : tileToMeter(canonical, pointY));
+            va[offset + 3] = 1.0 / (canonical.z > constantTileToMeterAcrossTile ? this.tileToMeter : tileToMeter(canonical, pointY));
             // Elements [4..6]: translation evaluated for the feature.
-            va[offset + 4]  = translation[0];
-            va[offset + 5]  = translation[1];
-            va[offset + 6]  = translation[2] + terrainElevationContribution;
+            va[offset + 4] = translation[0];
+            va[offset + 5] = translation[1];
+            const roadElevationContribution = perModelVertexArray.instancesRoadElevation ? perModelVertexArray.instancesRoadElevation[instanceOffset] : 0;
+            va[offset + 6] = translation[2] + roadElevationContribution + terrainElevationContribution;
             // Elements [7..16] Instance modelMatrix holds combined rotation and scale 3x3,
             va[offset + 7]  = rotationScaleYZFlip[0];
             va[offset + 8]  = rotationScaleYZFlip[1];

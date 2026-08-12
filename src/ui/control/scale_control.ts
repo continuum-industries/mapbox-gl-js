@@ -1,16 +1,16 @@
 import * as DOM from '../../util/dom';
-import {extend, bindAll} from '../../util/util';
+import {bindAll} from '../../util/util';
 
-import type {Map, ControlPosition} from '../map';
+import type {Map, IControl, ControlPosition} from '../map';
 
 type Unit = 'imperial' | 'metric' | 'nautical';
 
-type Options = {
+export type ScaleControlOptions = {
     maxWidth?: number;
     unit?: Unit;
 };
 
-const defaultOptions: Options = {
+const defaultOptions: ScaleControlOptions = {
     maxWidth: 100,
     unit: 'metric'
 };
@@ -40,19 +40,14 @@ const unitAbbr = {
  *
  * scale.setUnit('metric');
  */
-class ScaleControl {
-    _map: Map;
-    _container: HTMLElement;
-    _language: string | null | undefined | string[];
-    _isNumberFormatSupported: boolean;
-    options: Options;
+class ScaleControl implements IControl {
+    _map!: Map;
+    _container!: HTMLElement;
+    _language?: string | string[];
+    options: ScaleControlOptions;
 
-    constructor(options?: Options) {
-        this.options = extend({}, defaultOptions, options);
-
-        // Some old browsers (e.g., Safari < 14.1) don't support the "unit" style in NumberFormat.
-        // This is a workaround to display the scale without proper internationalization support.
-        this._isNumberFormatSupported = isNumberFormatSupported();
+    constructor(options: ScaleControlOptions = {}) {
+        this.options = {...defaultOptions, ...options};
 
         bindAll([
             '_update',
@@ -104,7 +99,7 @@ class ScaleControl {
             const distance = getRoundNum(maxDistance);
             const ratio = distance / maxDistance;
 
-            if (this._isNumberFormatSupported && unit !== 'nautical-mile') {
+            if (unit !== 'nautical-mile') {
                 this._container.innerHTML = new Intl.NumberFormat(this._language, {style: 'unit', unitDisplay: 'short', unit}).format(distance);
             } else {
                 this._container.innerHTML = `${distance}&nbsp;${unitAbbr[unit]}`;
@@ -129,10 +124,10 @@ class ScaleControl {
     onRemove() {
         this._container.remove();
         this._map.off('move', this._update);
-        this._map = (undefined as any);
+        this._map = undefined;
     }
 
-    _setLanguage(language: string) {
+    _setLanguage(language?: string | string[]) {
         this._language = language;
         this._update();
     }
@@ -149,15 +144,6 @@ class ScaleControl {
 }
 
 export default ScaleControl;
-
-function isNumberFormatSupported() {
-    try {
-        new Intl.NumberFormat('en', {style: 'unit', unitDisplay: 'short', unit: 'meter'});
-        return true;
-    } catch (_: any) {
-        return false;
-    }
-}
 
 function getDecimalRoundNum(d: number) {
     const multiplier = Math.pow(10, Math.ceil(-Math.log(d) / Math.LN10));

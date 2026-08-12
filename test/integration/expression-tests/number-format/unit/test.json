@@ -2,10 +2,7 @@
   "expression": [
     "number-format",
     123456.789,
-    {
-        "locale": ["get", "locale"],
-        "unit": ["get", "unit"]
-    }
+    {"locale": ["get", "locale"], "unit": ["get", "unit"]}
   ],
   "inputs": [
     [{}, {"properties": {"locale": "en-US", "unit": "hectare"}}],
@@ -23,9 +20,16 @@
       "number-format",
       123456.789,
       {
-          "locale": ["string", ["get", "locale"]],
-          "unit": ["string", ["get", "unit"]]
+        "locale": ["string", ["get", "locale"]],
+        "unit": ["string", ["get", "unit"]]
       }
     ]
+  },
+  "metadata": {
+    "test": {
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "ignore - not implemented in gl-native"}
+      ]
+    }
   }
 }

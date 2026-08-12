@@ -2,20 +2,18 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 </head>
 
 <body>
 
 <iframe width="800" height="600"></iframe>
-<script>
-const mapboxgl = {};
-</script>
-<script src='../debug/access_token_generated.js'></script>
-<script>
+<script type="module">
+import {getAccessToken} from './access_token_generated.js';
+
 const js = document.createElement("a");
-js.href = "../dist/mapbox-gl-dev.js";
+js.href = "../dist/esm-dev/mapbox-gl.js";
 const css = document.createElement("a");
 css.href = "../dist/mapbox-gl.css";
 document.querySelector('iframe').src = URL.createObjectURL(new Blob([ `
@@ -25,7 +23,7 @@ document.querySelector('iframe').src = URL.createObjectURL(new Blob([ `
     <title>Mapbox GL JS debug page<\/title>
     <meta charset='utf-8'>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='${css.href}' />
+    <link rel="stylesheet" href="${css.href}" />
     <style>
         body { margin: 0; padding: 0; }
         html, body, #map { height: 100%; }
@@ -33,12 +31,11 @@ document.querySelector('iframe').src = URL.createObjectURL(new Blob([ `
 </head>
 
 <body>
-<div id='map'></div>
-
-<script src='${js.href}'><\/script>
-<script>
-mapboxgl.accessToken = '${mapboxgl.accessToken}';
+<div id="map"></div>
+<script type="module">
+import * as mapboxgl from '${js.href}';
 var map = window.map = new mapboxgl.Map({
+    accessToken: "${getAccessToken()}",
     container: 'map',
     devtools: true,
     zoom: 12.5,

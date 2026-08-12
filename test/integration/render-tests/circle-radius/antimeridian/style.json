@@ -3,7 +3,11 @@
   "metadata": {
     "test": {
       "width": 514,
-      "height": 514
+      "height": 514,
+      "pixelRatio": 0.25,
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "skip - https://mapbox.atlassian.net/browse/MAPSNAT-2041"}
+      ]
     }
   },
   "center": [

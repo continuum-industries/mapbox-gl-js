@@ -1,5 +1,4 @@
 import Queue from 'tinyqueue';
-
 import Point from '@mapbox/point-geometry';
 import {distToSegmentSquared} from './intersection_tests';
 
@@ -13,7 +12,7 @@ import {distToSegmentSquared} from './intersection_tests';
  * @returns Pole of Inaccessibility.
  * @private
  */
-export default function(
+export default function (
     polygonRings: Array<Array<Point>>,
     precision: number = 1,
     debug: boolean = false,

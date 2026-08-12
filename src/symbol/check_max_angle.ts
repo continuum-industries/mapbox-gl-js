@@ -46,7 +46,7 @@ function checkMaxAngle(
     index++;
 
     // store recent corners and their total angle difference
-    const recentCorners = [];
+    const recentCorners: Array<{distance: number; angleDelta: number}> = [];
     let recentAngleDelta = 0;
 
     // move forwards by the length of the label and check angles along the way

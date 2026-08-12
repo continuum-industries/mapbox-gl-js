@@ -3,7 +3,11 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "image-threshold": [
+        {"platform-tag-contains": "native", "threshold": 0.0018},
+        {"platform-tag-contains": "native-android-gl-mali", "threshold": 0.003}
+      ]
     }
   },
   "sources": {
@@ -18,14 +22,14 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "symbol",
       "type": "symbol",
       "source": "geojson",
       "layout": {
-        "icon-image": "generic_icon",
+        "icon-image": "information",
         "icon-size": 2
       }
     }

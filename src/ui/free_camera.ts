@@ -2,9 +2,9 @@ import MercatorCoordinate, {mercatorZfromAltitude, latFromMercatorY} from '../ge
 import {degToRad, wrap, getColumn, setColumn} from '../util/util';
 import {vec3, quat, mat4} from 'gl-matrix';
 
+import type {vec4} from 'gl-matrix';
 import type {Elevation} from '../terrain/elevation';
 import type {LngLatLike} from '../geo/lng_lat';
-import type {vec4} from 'gl-matrix';
 
 function updateTransformOrientation(matrix: mat4, orientation: quat) {
     // Take temporary copy of position to prevent it from being overwritten
@@ -22,12 +22,15 @@ function updateTransformPosition(matrix: mat4, position: vec3) {
 function orientationFromPitchBearing(pitch: number, bearing: number): quat {
     // Both angles are considered to define CW rotation around their respective axes.
     // Values have to be negated to achieve the proper quaternion in left handed coordinate space
-    const orientation = quat.identity([] as any);
+    const orientation = quat.identity([]);
     quat.rotateZ(orientation, orientation, -bearing);
     quat.rotateX(orientation, orientation, -pitch);
     return orientation;
 }
 
+/**
+ * @private
+ */
 export function orientationFromFrame(forward: vec3, up: vec3): quat | null | undefined {
     // Find right-vector of the resulting coordinate frame. Up-vector has to be
     // sanitized first in order to remove the roll component from the orientation
@@ -36,17 +39,17 @@ export function orientationFromFrame(forward: vec3, up: vec3): quat | null | und
 
     const epsilon = 1e-15;
 
-    if (vec3.length(xyForward as [number, number, number]) >= epsilon) {
+    if (vec3.length(xyForward) >= epsilon) {
         // Roll rotation can be seen as the right vector not being on the xy-plane, ie. right[2] != 0.0.
         // It can be negated by projecting the up vector on top of the forward vector.
-        const xyDir = vec3.normalize([] as any, xyForward as [number, number, number]);
-        vec3.scale(xyUp as [number, number, number], xyDir, vec3.dot(xyUp as [number, number, number], xyDir));
+        const xyDir = vec3.normalize([], xyForward);
+        vec3.scale(xyUp, xyDir, vec3.dot(xyUp, xyDir));
 
         up[0] = xyUp[0];
         up[1] = xyUp[1];
     }
 
-    const right = vec3.cross([] as any, up, forward);
+    const right = vec3.cross([], up, forward);
     if (vec3.len(right) < epsilon) {
         return null;
     }
@@ -77,7 +80,7 @@ export function orientationFromFrame(forward: vec3, up: vec3): quat | null | und
           right    [1, 0, 0]
         Orientation can be set freely but certain constraints still apply:
          - Orientation must be representable with only pitch and bearing.
-         - Pitch has an upper limit
+         - Pitch has an upper limit.
  * @example
  * const camera = map.getFreeCameraOptions();
  *
@@ -90,12 +93,12 @@ export function orientationFromFrame(forward: vec3, up: vec3): quat | null | und
  * map.setFreeCameraOptions(camera);
  * @see [Example: Animate the camera around a point in 3D terrain](https://docs.mapbox.com/mapbox-gl-js/example/free-camera-point/)
  * @see [Example: Animate the camera along a path](https://docs.mapbox.com/mapbox-gl-js/example/free-camera-path/)
-*/
+ */
 class FreeCameraOptions {
     orientation: quat | null | undefined;
     _position: MercatorCoordinate | null | undefined;
     _elevation: Elevation | null | undefined;
-    _renderWorldCopies: boolean;
+    _renderWorldCopies!: boolean;
 
     constructor(position?: MercatorCoordinate | null, orientation?: quat | null) {
         this.position = position;
@@ -123,8 +126,8 @@ class FreeCameraOptions {
      * on the map.
      *
      * @param {LngLatLike} location Location of the focus point on the map.
-     * @param {vec3?} up Up vector of the camera is necessary in certain scenarios where bearing can't be deduced
-     *      from the viewing direction.
+     * @param {vec3?} up Up vector of the camera is necessary in certain scenarios where bearing can't be deduced from the viewing direction.
+     * @param {number?} altitude Altitude of the focus point on the map. By default ground level is used.
      * @example
      * const camera = map.getFreeCameraOptions();
      *
@@ -136,23 +139,22 @@ class FreeCameraOptions {
      * // Apply camera changes
      * map.setFreeCameraOptions(camera);
      */
-    lookAtPoint(location: LngLatLike, up?: vec3) {
+    lookAtPoint(location: LngLatLike, up?: vec3, altitude?: number) {
         this.orientation = null;
         if (!this.position) {
             return;
         }
 
         const pos: MercatorCoordinate = this.position;
-        const altitude = this._elevation ? this._elevation.getAtPointOrZero(MercatorCoordinate.fromLngLat(location)) : 0;
-        const target = MercatorCoordinate.fromLngLat(location, altitude);
-        const forward = [target.x - pos.x, target.y - pos.y, target.z - pos.z];
+        const targetAltitude = altitude ? altitude : (this._elevation ? this._elevation.getAtPointOrZero(MercatorCoordinate.fromLngLat(location)) : 0);
+        const target = MercatorCoordinate.fromLngLat(location, targetAltitude);
+        const forward: vec3 = [target.x - pos.x, target.y - pos.y, target.z - pos.z];
         if (!up)
             up = [0, 0, 1];
 
         // flip z-component if the up vector is pointing downwards
         up[2] = Math.abs(up[2]);
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
         this.orientation = orientationFromFrame(forward, up);
     }
 
@@ -187,10 +189,10 @@ class FreeCameraOptions {
 
 class FreeCamera {
     _transform: mat4;
-    _orientation: quat;
+    _orientation!: quat;
 
     constructor(position?: vec3 | null, orientation?: quat | null) {
-        this._transform = mat4.identity([] as any);
+        this._transform = mat4.identity([]);
         this.orientation = orientation;
         this.position = position;
     }
@@ -216,16 +218,13 @@ class FreeCamera {
     }
 
     set orientation(value: quat | null | undefined) {
-        this._orientation = value || quat.identity([] as any);
+        this._orientation = value || quat.identity([]);
         if (value) {
             updateTransformOrientation(this._transform, this._orientation);
         }
     }
 
-    getPitchBearing(): {
-        pitch: number;
-        bearing: number;
-        } {
+    getPitchBearing(): {pitch: number; bearing: number} {
         const f = this.forward();
         const r = this.right();
 
@@ -257,9 +256,8 @@ class FreeCamera {
         return [col[0], col[1], col[2]];
     }
 
-    getCameraToWorld(worldSize: number, pixelsPerMeter: number): Float64Array {
+    getCameraToWorld(worldSize: number, pixelsPerMeter: number): mat4 {
         const cameraToWorld = new Float64Array(16);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.invert(cameraToWorld, this.getWorldToCamera(worldSize, pixelsPerMeter));
         return cameraToWorld;
     }
@@ -268,14 +266,12 @@ class FreeCamera {
         return this._transform;
     }
 
-    getWorldToCameraPosition(worldSize: number, pixelsPerMeter: number, uniformScale: number): Float64Array {
+    getWorldToCameraPosition(worldSize: number, pixelsPerMeter: number, uniformScale: number): mat4 {
         const invPosition = this.position;
 
         vec3.scale(invPosition, invPosition, -worldSize);
         const matrix = new Float64Array(16);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.fromScaling(matrix, [uniformScale, uniformScale, uniformScale]);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.translate(matrix, matrix, invPosition);
 
         // Adjust scale on z (3rd column 3rd row)
@@ -284,7 +280,7 @@ class FreeCamera {
         return matrix;
     }
 
-    getWorldToCamera(worldSize: number, pixelsPerMeter: number): Float64Array {
+    getWorldToCamera(worldSize: number, pixelsPerMeter: number): mat4 {
         // transformation chain from world space to camera space:
         // 1. Height value (z) of renderables is in meters. Scale z coordinate by pixelsPerMeter
         // 2. Transform from pixel coordinates to camera space with cameraMatrix^-1
@@ -298,14 +294,9 @@ class FreeCamera {
         const invOrientation = new Float64Array(4);
         const invPosition = this.position;
 
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'quat'.
         quat.conjugate(invOrientation, this._orientation);
         vec3.scale(invPosition, invPosition, -worldSize);
-
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.fromQuat(matrix, invOrientation);
-
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.translate(matrix, matrix, invPosition);
 
         // Pre-multiply y (2nd row)
@@ -323,9 +314,8 @@ class FreeCamera {
         return matrix;
     }
 
-    getCameraToClipPerspective(fovy: number, aspectRatio: number, nearZ: number, farZ: number): Float64Array {
+    getCameraToClipPerspective(fovy: number, aspectRatio: number, nearZ: number, farZ: number): mat4 {
         const matrix = new Float64Array(16);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.perspective(matrix, fovy, aspectRatio, nearZ, farZ);
         return matrix;
     }
@@ -337,9 +327,8 @@ class FreeCamera {
         top: number,
         nearZ: number,
         farZ: number,
-    ): Float64Array {
+    ): mat4 {
         const matrix = new Float64Array(16);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         mat4.ortho(matrix, left, right, bottom, top, nearZ, farZ);
         return matrix;
     }
@@ -354,8 +343,7 @@ class FreeCamera {
     }
 
     clone(): FreeCamera {
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
-        return new FreeCamera([...this.position], [...this.orientation]);
+        return new FreeCamera([...this.position] as vec3, [...this.orientation] as quat);
     }
 }
 

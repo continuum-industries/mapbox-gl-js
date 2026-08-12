@@ -14,12 +14,14 @@ export default class NumberFormat implements Expression {
     minFractionDigits: Expression | null; // Default 0
     maxFractionDigits: Expression | null; // Default 3
 
-    constructor(number: Expression,
-                locale: Expression | null,
-                currency: Expression | null,
-                unit: Expression | null,
-                minFractionDigits: Expression | null,
-                maxFractionDigits: Expression | null) {
+    constructor(
+        number: Expression,
+        locale: Expression | null,
+        currency: Expression | null,
+        unit: Expression | null,
+        minFractionDigits: Expression | null,
+        maxFractionDigits: Expression | null
+    ) {
         this.type = StringType;
         this.number = number;
         this.locale = locale;
@@ -29,46 +31,44 @@ export default class NumberFormat implements Expression {
         this.maxFractionDigits = maxFractionDigits;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | void {
         if (args.length !== 3)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return context.error(`Expected two arguments.`);
 
         const number = context.parse(args[1], 1, NumberType);
         if (!number) return null;
 
-        const options = (args[2] as any);
+        const options = args[2] as Record<string, unknown>;
         if (typeof options !== "object" || Array.isArray(options))
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return context.error(`NumberFormat options argument must be an object.`);
 
-        let locale = null;
+        let locale: Expression | null | void = null;
         if (options['locale']) {
-            locale = context.parse(options['locale'], 1, StringType);
+            locale = context.parseObjectValue(options['locale'], 2, 'locale', StringType);
             if (!locale) return null;
         }
 
-        let currency = null;
+        let currency: Expression | null | void = null;
         if (options['currency']) {
-            currency = context.parse(options['currency'], 1, StringType);
+            currency = context.parseObjectValue(options['currency'], 2, 'currency', StringType);
             if (!currency) return null;
         }
 
-        let unit = null;
+        let unit: Expression | null | void = null;
         if (options['unit']) {
-            unit = context.parse(options['unit'], 1, StringType);
+            unit = context.parseObjectValue(options['unit'], 2, 'unit', StringType);
             if (!unit) return null;
         }
 
-        let minFractionDigits = null;
-        if (options['min-fraction-digits']) {
-            minFractionDigits = context.parse(options['min-fraction-digits'], 1, NumberType);
+        let minFractionDigits: Expression | null | void = null;
+        if (options['min-fraction-digits'] !== undefined) {
+            minFractionDigits = context.parseObjectValue(options['min-fraction-digits'], 2, 'min-fraction-digits', NumberType);
             if (!minFractionDigits) return null;
         }
 
-        let maxFractionDigits = null;
-        if (options['max-fraction-digits']) {
-            maxFractionDigits = context.parse(options['max-fraction-digits'], 1, NumberType);
+        let maxFractionDigits: Expression | null | void = null;
+        if (options['max-fraction-digits'] !== undefined) {
+            maxFractionDigits = context.parseObjectValue(options['max-fraction-digits'], 2, 'max-fraction-digits', NumberType);
             if (!maxFractionDigits) return null;
         }
 
@@ -76,16 +76,22 @@ export default class NumberFormat implements Expression {
     }
 
     evaluate(ctx: EvaluationContext): string {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         return new Intl.NumberFormat(this.locale ? this.locale.evaluate(ctx) : [],
             {
                 style:
                     (this.currency && "currency") ||
                     (this.unit && "unit") ||
                     "decimal",
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 currency: this.currency ? this.currency.evaluate(ctx) : undefined,
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 unit: this.unit ? this.unit.evaluate(ctx) : undefined,
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 minimumFractionDigits: this.minFractionDigits ? this.minFractionDigits.evaluate(ctx) : undefined,
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 maximumFractionDigits: this.maxFractionDigits ? this.maxFractionDigits.evaluate(ctx) : undefined,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             }).format(this.number.evaluate(ctx));
     }
 
@@ -113,6 +119,7 @@ export default class NumberFormat implements Expression {
     }
 
     serialize(): SerializedExpression {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const options: Record<string, any> = {};
         if (this.locale) {
             options['locale'] = this.locale.serialize();

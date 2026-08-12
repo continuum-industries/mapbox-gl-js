@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi, createMap} from '../../../util/vitest';
 import simulate from '../../../util/simulate_interaction';
@@ -13,16 +14,19 @@ test('BoxZoomHandler fires boxzoomstart and boxzoomend events at appropriate tim
     map.on('boxzoomstart', boxzoomstart);
     map.on('boxzoomend',   boxzoomend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
     expect(boxzoomstart).toHaveBeenCalledTimes(1);
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
     expect(boxzoomstart).toHaveBeenCalledTimes(1);
@@ -40,10 +44,12 @@ test('BoxZoomHandler fires boxzoomcancel events at the appropriate time', () => 
 
     map.on('boxzoomcancel', boxzoomcancel);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomcancel).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(window.document, {shiftKey: false, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomcancel).toHaveBeenCalledTimes(1);
@@ -73,16 +79,19 @@ test('BoxZoomHandler avoids conflicts with DragPanHandler when disabled and reen
     map.on('drag',      drag);
     map.on('dragend',   dragend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
     expect(boxzoomstart).toHaveBeenCalledTimes(1);
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
     expect(boxzoomstart).toHaveBeenCalledTimes(1);
@@ -108,12 +117,15 @@ test('BoxZoomHandler does not begin a box zoom if preventDefault is called on th
     map.on('boxzoomstart', boxzoomstart);
     map.on('boxzoomend',   boxzoomend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(window.document, {shiftKey: true, clientX: 5, clientY: 5});
     map._renderTaskQueue.run();
 
@@ -136,18 +148,21 @@ test('BoxZoomHandler cancels a box zoom on spurious mousemove events', () => {
     map.on('boxzoomend',   boxzoomend);
     map.on('boxzoomcancel', boxzoomcancel);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
     expect(boxzoomcancel).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
     expect(boxzoomcancel).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mouseup(window.document, {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
@@ -169,16 +184,19 @@ test('BoxZoomHandler does not begin a box zoom until mouse move is larger than c
     map.on('boxzoomstart', boxzoomstart);
     map.on('boxzoomend',   boxzoomend);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousedown(map.getCanvas(), {shiftKey: true, clientX: 0, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 3, clientY: 0});
     map._renderTaskQueue.run();
     expect(boxzoomstart).not.toHaveBeenCalled();
     expect(boxzoomend).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     simulate.mousemove(window.document, {shiftKey: true, clientX: 0, clientY: 4});
     map._renderTaskQueue.run();
     expect(boxzoomstart).toHaveBeenCalledTimes(1);

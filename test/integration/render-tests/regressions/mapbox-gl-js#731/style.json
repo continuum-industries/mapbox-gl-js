@@ -2,7 +2,13 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.0005
+      
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0005}
+      ]
     }
   },
   "zoom": 5.5,
@@ -14,7 +20,6 @@
   "projection": {
     "name": "globe"
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "background",

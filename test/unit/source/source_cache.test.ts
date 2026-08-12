@@ -1,7 +1,9 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
-import {describe, test, expect, waitFor, vi} from '../../util/vitest';
+import {describe, test, expect, waitFor, vi, beforeAll} from '../../util/vitest';
 import SourceCache from '../../../src/source/source_cache';
 import {create, setType} from '../../../src/source/source';
+import {ensureSourceType} from '../../../src/source/lazy_source_types';
 import Tile from '../../../src/source/tile';
 import {QueryGeometry} from '../../../src/style/query_geometry';
 import {OverscaledTileID} from '../../../src/source/tile_id';
@@ -9,8 +11,11 @@ import Transform from '../../../src/geo/transform';
 import LngLat from '../../../src/geo/lng_lat';
 import Point from '@mapbox/point-geometry';
 import {Event, ErrorEvent, Evented} from '../../../src/util/evented';
-import {extend} from '../../../src/util/util';
 import browser from '../../../src/util/browser';
+import RasterArrayTileSource from '../../../src/source/raster_array_tile_source.js';
+
+import type Dispatcher from '../../../src/util/dispatcher';
+import type {Map as MapboxMap} from '../../../src/ui/map';
 
 // Add a mocked source type for use in these tests
 function MockSourceType(id, sourceOptions, _dispatcher, eventedParent) {
@@ -19,29 +24,40 @@ function MockSourceType(id, sourceOptions, _dispatcher, eventedParent) {
     class SourceMock extends Evented {
         constructor() {
             super();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this.id = id;
             this.minzoom = 0;
             this.maxzoom = 22;
-            extend(this, sourceOptions);
+            Object.assign(this, sourceOptions);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             this.setEventedParent(eventedParent);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (sourceOptions.hasTile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 this.hasTile = sourceOptions.hasTile;
             }
         }
         loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (sourceOptions.expires) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 tile.setExpiryData({
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                     expires: sourceOptions.expires
                 });
             }
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             setTimeout(callback, 0);
         }
         loaded() {
             return true;
         }
         onAdd() {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (sourceOptions.noLoad) return;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             if (sourceOptions.error) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 this.fire(new ErrorEvent(sourceOptions.error));
             } else {
                 this.fire(new Event('data', {dataType: 'source', sourceDataType: 'metadata'}));
@@ -59,19 +75,50 @@ function MockSourceType(id, sourceOptions, _dispatcher, eventedParent) {
 setType('mock-source-type', MockSourceType);
 
 export function createSourceCache(options, used) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const spec = options || {};
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     spec['minzoom'] = spec['minzoom'] || 0;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     spec['maxzoom'] = spec['maxzoom'] || 14;
 
     const eventedParent = new Evented();
-    const sc = new SourceCache('id', create('id', extend({
-        tileSize: 512,
-        type: 'mock-source-type'
-    }, spec), /* dispatcher */ {}, eventedParent));
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+    const sc = new SourceCache('id', create('id', {tileSize: 512,
+        type: 'mock-source-type', ...spec}, /* dispatcher */ {}, eventedParent));
     sc.used = typeof used === 'boolean' ? used : true;
     sc.transform = new Transform();
     sc.map = {painter: {transform: sc.transform}};
     return {sourceCache: sc, eventedParent};
+}
+
+function createRasterArrayTileSource() {
+    const source = new RasterArrayTileSource(
+        'test-id',
+        {type: 'raster-array', tileSize: 512},
+        {send() {}, getActor() { return {send() {}}; }} as unknown as Dispatcher,
+        new Evented()
+    );
+
+    source.map = {
+        triggerRepaint: vi.fn(),
+        painter: {_terrain: null},
+        style: {getSourceCache: () => null},
+    } as unknown as MapboxMap;
+
+    return source;
+}
+
+function createRasterArrayTileSourceCache(used) {
+
+    const source = createRasterArrayTileSource();
+    const sc = new SourceCache('test-id', source);
+
+    sc.used = typeof used === 'boolean' ? used : true;
+    sc.transform = new Transform();
+    sc.map = {painter: {transform: sc.transform}};
+    return sc;
+
 }
 
 describe('SourceCache#addTile', () => {
@@ -79,7 +126,9 @@ describe('SourceCache#addTile', () => {
         const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
         const {sourceCache} = createSourceCache({
             loadTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID).toEqual(tileID);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.uses).toEqual(0);
             }
         });
@@ -93,7 +142,9 @@ describe('SourceCache#addTile', () => {
 
         await new Promise(resolve => {
             eventedParent.on("dataloading", (data) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(data.tile.tileID).toEqual(tileID);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(data.tile.uses).toEqual(1);
                 resolve();
             });
@@ -109,13 +160,15 @@ describe('SourceCache#addTile', () => {
         await new Promise(resolve => {
 
             const {sourceCache, eventedParent} = createSourceCache({
-                async loadTile(tile, callback) {
+                loadTile(tile, callback) {
                     eventedParent.on('data', () => {
                         expect(updateFeaturesSpy).toHaveBeenCalledTimes(1);
                         resolve();
                     });
-                    updateFeaturesSpy = vi.spyOn(tile, 'setFeatureState');
+                    updateFeaturesSpy = vi.spyOn(tile, 'refreshFeatureState');
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     tile.state = 'loaded';
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                     callback();
                 }
             });
@@ -124,15 +177,17 @@ describe('SourceCache#addTile', () => {
         });
     });
 
-    test('uses cached tile', async () => {
+    test('uses cached tile', () => {
         const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
         let load = 0,
             add = 0;
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
                 load++;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -156,7 +211,9 @@ describe('SourceCache#addTile', () => {
 
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -167,7 +224,7 @@ describe('SourceCache#addTile', () => {
         sourceCache.updateCacheSize(tr);
 
         const tile = sourceCache._addTile(tileID);
-        const updateFeaturesSpy = vi.spyOn(tile, 'setFeatureState');
+        const updateFeaturesSpy = vi.spyOn(tile, 'refreshFeatureState');
 
         sourceCache._removeTile(tileID.key);
         sourceCache._addTile(tileID);
@@ -216,15 +273,17 @@ describe('SourceCache#addTile', () => {
         expect(sourceCache._cache.has(tileID)).toBeFalsy();
     });
 
-    test('does not reuse wrapped tile', async () => {
+    test('does not reuse wrapped tile', () => {
         const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
         let load = 0,
             add = 0;
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
                 load++;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -277,6 +336,7 @@ describe('SourceCache#removeTile', () => {
         const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
         const {sourceCache} = createSourceCache({
             loadTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
             },
             unloadTile() {
@@ -300,10 +360,12 @@ describe('SourceCache#removeTile', () => {
 
         const {sourceCache} = createSourceCache({
             abortTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID).toEqual(tileID);
                 abort++;
             },
             unloadTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID).toEqual(tileID);
                 unload++;
             }
@@ -323,6 +385,7 @@ describe('SourceCache#removeTile', () => {
             loadTile(tile, callback) {
                 // tile.added = t.notOk();
                 sourceCache._removeTile(tileID.key);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -377,7 +440,7 @@ describe('SourceCache / Source lifecycle', () => {
         });
     });
 
-    test('suppress 404 errors', async () => {
+    test('suppress 404 errors', () => {
         const {sourceCache, eventedParent} = createSourceCache({status: 404, message: 'Not found'});
         eventedParent.on('error', expect.unreachable);
         sourceCache.getSource().onAdd();
@@ -394,12 +457,13 @@ describe('SourceCache / Source lifecycle', () => {
         });
     });
 
-    test('loaded() true after tile error', async () => {
+    test('loaded() true after tile error', () => {
         const transform = new Transform();
         transform.resize(511, 511);
         transform.zoom = 0;
         const {sourceCache, eventedParent} = createSourceCache({
-            loadTile (tile, callback) {
+            loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback("error");
             }
         });
@@ -423,9 +487,12 @@ describe('SourceCache / Source lifecycle', () => {
         expect.assertions(expected.length);
 
         const {sourceCache, eventedParent} = createSourceCache({
-            async loadTile(tile, callback) {
+            loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID.key).toBe(expected.shift());
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -443,16 +510,18 @@ describe('SourceCache / Source lifecycle', () => {
         });
     });
 
-    test('does not reload errored tiles', async () => {
+    test('does not reload errored tiles', () => {
         const transform = new Transform();
         transform.resize(511, 511);
         transform.zoom = 1;
 
         const {sourceCache, eventedParent} = createSourceCache({
-            loadTile (tile, callback) {
+            loadTile(tile, callback) {
                 // this transform will try to load the four tiles at z1 and a single z0 tile
                 // we only expect _reloadTile to be called with the 'loaded' z0 tile
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = tile.tileID.canonical.z === 1 ? 'errored' : 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -516,6 +585,7 @@ describe('SourceCache#update', () => {
         transform.zoom = 1;
 
         const {sourceCache, eventedParent} = createSourceCache({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             hasTile: (coord) => (coord.canonical.x !== 0)
         });
         await new Promise(resolve => {
@@ -540,7 +610,9 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile: (tile, callback) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback(null);
             }
         });
@@ -576,7 +648,9 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = (tile.tileID.key === new OverscaledTileID(0, 0, 0, 0, 0).key) ? 'loaded' : 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -611,7 +685,8 @@ describe('SourceCache#update', () => {
         transform.center = new LngLat(360, 0);
 
         const {sourceCache, eventedParent} = createSourceCache({
-            async loadTile(tile) {
+            loadTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = (tile.tileID.key === new OverscaledTileID(0, 1, 0, 0, 0).key) ? 'loaded' : 'loading';
             }
         });
@@ -646,14 +721,19 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.timeAdded = Infinity;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 tile.registerFadeDuration(100);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
 
         sourceCache._source.type = 'raster';
+        sourceCache._supportsFading = true;
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
                 if (e.sourceDataType === 'metadata') {
@@ -688,14 +768,19 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.timeAdded = Infinity;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 tile.registerFadeDuration(100);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
 
         sourceCache._source.type = 'raster';
+        sourceCache._supportsFading = true;
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
                 if (e.sourceDataType === 'metadata') {
@@ -714,7 +799,7 @@ describe('SourceCache#update', () => {
                     transform.center = new LngLat(0, -0.005);
                     sourceCache.update(transform);
 
-                    expect(sourceCache.getRenderableIds().length).toEqual(10);
+                    expect(sourceCache.getRenderableIds().length).toEqual(8);
                     resolve();
                 }
             });
@@ -729,14 +814,19 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.timeAdded = Infinity;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 tile.registerFadeDuration(100);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
 
         sourceCache._source.type = 'raster';
+        sourceCache._supportsFading = true;
 
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
@@ -764,13 +854,17 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.timeAdded = Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
 
         sourceCache._source.type = 'raster';
+        sourceCache._supportsFading = true;
 
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
@@ -801,14 +895,19 @@ describe('SourceCache#update', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.timeAdded = browser.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.fadeEndTime = browser.now() + fadeTime;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
 
         sourceCache._source.type = 'raster';
+        sourceCache._supportsFading = true;
 
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
@@ -847,7 +946,9 @@ describe('SourceCache#update', () => {
         const {sourceCache, eventedParent} = createSourceCache({
             reparseOverscaled: true,
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = tile.tileID.overscaledZ === 16 ? 'loaded' : 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -914,7 +1015,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
         const stateCache: Record<string, any> = {};
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 tile.state = stateCache[tile.tileID.key] || 'errored';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -930,7 +1033,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('retains all loaded children ', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'errored';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -970,7 +1075,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
             minzoom: 2,
             maxzoom: 5,
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'errored';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1040,7 +1147,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
         const stateCache: Record<string, any> = {};
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 tile.state = stateCache[tile.tileID.key] || 'errored';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1074,7 +1183,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('don\'t use wrong parent tile', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'errored';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1111,7 +1222,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('use parent tile when ideal tile is not loaded', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1134,9 +1247,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
 
         expect(retained).toEqual({
             // parent of ideal tile 0/0/0
-            '0' : new OverscaledTileID(0, 0, 0, 0, 0),
+            '0': new OverscaledTileID(0, 0, 0, 0, 0),
             // ideal tile id 1/0/1
-            '1040' : new OverscaledTileID(1, 0, 1, 0, 1)
+            '1040': new OverscaledTileID(1, 0, 1, 0, 1)
         });
 
         addTileSpy.mockClear();
@@ -1149,7 +1262,7 @@ describe('SourceCache#_updateRetainedTiles', () => {
         expect(getTileSpy).not.toHaveBeenCalled();
         expect(retainedLoaded).toEqual({
             // only ideal tile retained
-            '1040' : new OverscaledTileID(1, 0, 1, 0, 1)
+            '1040': new OverscaledTileID(1, 0, 1, 0, 1)
         });
 
         addTileSpy.mockRestore();
@@ -1159,7 +1272,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('don\'t load parent if all immediate children are loaded', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1181,7 +1296,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('prefer loaded child tiles to parent tiles', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1202,9 +1319,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
         expect(retained).toEqual({
             // parent of ideal tile (0, 0, 0) (only partially covered by loaded child
             // tiles, so we still need to load the parent)
-            '0' : new OverscaledTileID(0, 0, 0, 0, 0),
+            '0': new OverscaledTileID(0, 0, 0, 0, 0),
             // ideal tile id (1, 0, 0)
-            '16' : new OverscaledTileID(1, 0, 1, 0, 0),
+            '16': new OverscaledTileID(1, 0, 1, 0, 0),
             // loaded child tile (2, 0, 0)
             '32': new OverscaledTileID(2, 0, 2, 0, 0)
         });
@@ -1217,16 +1334,18 @@ describe('SourceCache#_updateRetainedTiles', () => {
         expect(retained).toEqual({
             // parent of ideal tile (0, 0, 0) (only partially covered by loaded child
             // tiles, so we still need to load the parent)
-            '0' : new OverscaledTileID(0, 0, 0, 0, 0),
+            '0': new OverscaledTileID(0, 0, 0, 0, 0),
             // ideal tile id (1, 0, 0)
-            '16' : new OverscaledTileID(1, 0, 1, 0, 0)
+            '16': new OverscaledTileID(1, 0, 1, 0, 0)
         });
     });
 
     test('don\'t use tiles below minzoom', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             },
             minzoom: 2
@@ -1245,7 +1364,7 @@ describe('SourceCache#_updateRetainedTiles', () => {
 
         expect(retained).toEqual({
             // ideal tile id (2, 0, 0)
-            '32' : new OverscaledTileID(2, 0, 2, 0, 0)
+            '32': new OverscaledTileID(2, 0, 2, 0, 0)
         });
 
         getTileSpy.mockRestore();
@@ -1254,7 +1373,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('use overzoomed tile above maxzoom', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             },
             maxzoom: 2
@@ -1274,7 +1395,7 @@ describe('SourceCache#_updateRetainedTiles', () => {
 
         expect(retained).toEqual({
             // ideal tile id (2, 0, 0)
-            '32' : new OverscaledTileID(2, 0, 2, 0, 0)
+            '32': new OverscaledTileID(2, 0, 2, 0, 0)
         });
 
         getTileSpy.mockRestore();
@@ -1283,7 +1404,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('dont\'t ascend multiple times if a tile is not found', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1326,7 +1449,9 @@ describe('SourceCache#_updateRetainedTiles', () => {
     test('adds correct leaded parent tiles for overzoomed tiles', () => {
         const {sourceCache} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loading';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             },
             maxzoom: 7
@@ -1357,10 +1482,12 @@ describe('SourceCache#clearTiles', () => {
 
         const {sourceCache} = createSourceCache({
             abortTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID).toEqual(coord);
                 abort++;
             },
             unloadTile(tile) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID).toEqual(coord);
                 unload++;
             }
@@ -1390,7 +1517,9 @@ describe('SourceCache#tilesIn', () => {
 
     function round(queryGeometry) {
         return {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             min: queryGeometry.min.round(),
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             max: queryGeometry.max.round()
         };
     }
@@ -1403,8 +1532,11 @@ describe('SourceCache#tilesIn', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.additionalRadius = 0;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             }
         });
@@ -1430,11 +1562,11 @@ describe('SourceCache#tilesIn', () => {
 
                     expect(tiles[0].tile.tileID.key).toEqual(16);
                     expect(tiles[0].tile.tileSize).toEqual(512);
-                    expect(round(tiles[0].bufferedTilespaceBounds)).toStrictEqual({min: {x: 4080, y: 4034}, max: {x:8192, y: 8162}});
+                    expect(round(tiles[0].bufferedTilespaceBounds)).toStrictEqual({min: new Point(4080, 4034), max: new Point(8192, 8162)});
 
                     expect(tiles[1].tile.tileID.key).toEqual(528);
                     expect(tiles[1].tile.tileSize).toEqual(512);
-                    expect(round(tiles[1].bufferedTilespaceBounds)).toStrictEqual({min: {x: 0, y: 4034}, max: {x: 4112, y: 8162}});
+                    expect(round(tiles[1].bufferedTilespaceBounds)).toStrictEqual({min: new Point(0, 4034), max: new Point(4112, 8162)});
 
                     resolve();
                 }
@@ -1446,8 +1578,11 @@ describe('SourceCache#tilesIn', () => {
     test('reparsed overscaled tiles', async () => {
         const {sourceCache, eventedParent} = createSourceCache({
             loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.additionalRadius = 0;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback();
             },
             reparseOverscaled: true,
@@ -1481,11 +1616,11 @@ describe('SourceCache#tilesIn', () => {
 
                     expect(tiles[0].tile.tileID.key).toEqual(17);
                     expect(tiles[0].tile.tileSize).toEqual(1024);
-                    expect(round(tiles[0].bufferedTilespaceBounds)).toStrictEqual({min: {x: 4088, y: 4042}, max: {x:8192, y: 8154}});
+                    expect(round(tiles[0].bufferedTilespaceBounds)).toStrictEqual({min: new Point(4088, 4042), max: new Point(8192, 8154)});
 
                     expect(tiles[1].tile.tileID.key).toEqual(529);
                     expect(tiles[1].tile.tileSize).toEqual(1024);
-                    expect(round(tiles[1].bufferedTilespaceBounds)).toStrictEqual({min: {x: 0, y: 4042}, max: {x: 4104, y: 8154}});
+                    expect(round(tiles[1].bufferedTilespaceBounds)).toStrictEqual({min: new Point(0, 4042), max: new Point(4104, 8154)});
 
                     resolve();
                 }
@@ -1496,6 +1631,7 @@ describe('SourceCache#tilesIn', () => {
 
     test('overscaled tiles', async () => {
         const {sourceCache, eventedParent} = createSourceCache({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
             loadTile(tile, callback) { tile.state = 'loaded'; callback(); },
             reparseOverscaled: false,
             minzoom: 1,
@@ -1522,7 +1658,9 @@ describe('SourceCache#tilesIn', () => {
 test('SourceCache#loaded (no errors)', async () => {
     const {sourceCache, eventedParent} = createSourceCache({
         loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             tile.state = 'loaded';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             callback();
         }
     });
@@ -1545,6 +1683,7 @@ test('SourceCache#loaded (no errors)', async () => {
 test('SourceCache#loaded (with errors)', async () => {
     const {sourceCache, eventedParent} = createSourceCache({
         loadTile(tile) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             tile.state = 'errored';
         }
     });
@@ -1633,9 +1772,11 @@ describe('SourceCache#findLoadedParent', () => {
 
         const mockTile = id => {
             const tile = {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 tileID: id,
                 hasData() { return true; }
             };
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             sourceCache._tiles[id.key] = tile;
         };
 
@@ -1768,9 +1909,9 @@ describe('SourceCache loads tiles recursively', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             maxzoom: 14,
-            loadTile (tile, callback) {
+            loadTile(tile: Tile, callback: (error: unknown, data?: {status: number}) => void) {
                 if (tile.tileID.canonical.z > maxAvailableZoom) {
-                    setTimeout(() => callback({status: 404}), 0);
+                    setTimeout(callback, 0, {status: 404});
                 } else {
                     tile.state = 'loaded';
                     callback(null);
@@ -1785,8 +1926,8 @@ describe('SourceCache loads tiles recursively', () => {
                     return;
                 }
 
-                if (e.tile) loadedTiles++;
-                if (loadedTiles === 4) setTimeout(() => assert(resolve), 0);
+                if (e.tile && e.sourceDataType !== 'error') loadedTiles++;
+                if (loadedTiles === 4) setTimeout(assert, 0, resolve);
             });
 
             sourceCache.getSource().onAdd();
@@ -1822,21 +1963,23 @@ describe('SourceCache loads tiles recursively', () => {
                 new OverscaledTileID(14, 0, 14, 8192, 8191).key,
                 new OverscaledTileID(14, 0, 14, 8191, 8191).key,
             ]);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             resolve();
         }
     });
 
-    test('fires `data` event with `error` sourceDataType if all tiles are 404', async () => {
+    test('fires `data` event with `error` sourceDataType if all tile is 404', async () => {
         const transform = new Transform();
         transform.resize(511, 511);
         transform.zoom = 1;
 
         const {sourceCache, eventedParent} = createSourceCache({
-            loadTile (tile, callback) {
-                setTimeout(() => callback({status: 404}), 0);
+            loadTile(tile: Tile, callback: (error: unknown, data?: {status: number}) => void) {
+                setTimeout(callback, 0, {status: 404});
             }
         });
 
+        let loadedTiles = 0;
         await new Promise(resolve => {
             eventedParent.on('data', (e) => {
                 if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
@@ -1844,19 +1987,18 @@ describe('SourceCache loads tiles recursively', () => {
                     return;
                 }
 
-                if (e.dataType === 'source' && e.sourceDataType === 'error') {
-                    expect(sourceCache.loaded()).toEqual(true);
-                    expect(sourceCache.getRenderableIds()).toStrictEqual([]);
-
-                    const tileStates = Object.values(sourceCache._tiles).map(t => t.state);
-                    expect(tileStates).toStrictEqual(Array(5).fill('errored'));
-
-                    resolve();
-                }
+                if (e.tile) loadedTiles++;
+                if (loadedTiles === 5) resolve(); // 4 tiles on zoom 1 and 1 parent tile on zoom 0
             });
 
             sourceCache.getSource().onAdd();
         });
+
+        expect(sourceCache.loaded()).toEqual(true);
+        expect(sourceCache.getRenderableIds()).toStrictEqual([]);
+
+        const tileStates = Object.values(sourceCache._tiles).map(t => t.state);
+        expect(tileStates).toStrictEqual(Array(5).fill('errored'));
     });
 });
 
@@ -1894,9 +2036,12 @@ describe('SourceCache#_preloadTiles', () => {
 
         const {sourceCache, eventedParent} = createSourceCache({
             reparseOverscaled: true,
-            loadTile (tile, callback) {
+            loadTile(tile, callback) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID.key).toEqual(expected.shift());
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 tile.state = 'loaded';
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call
                 callback(null);
             }
         });
@@ -1921,8 +2066,9 @@ describe('SourceCache#_preloadTiles', () => {
         transform.zoom = 0;
 
         const {sourceCache} = createSourceCache({
-            loadTile (tile) {
+            loadTile(tile) {
                 expect(sourceCache._sourceLoaded).toBeTruthy();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(tile.tileID.key).toEqual(new OverscaledTileID(0, 0, 0, 0, 0).key);
             }
         });
@@ -1947,7 +2093,9 @@ describe('Visible coords with shadows', () => {
     const {sourceCache, eventedParent} = createSourceCache({
         reparseOverscaled: true,
         loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             tile.state = 'loaded';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             callback(null);
         }
     });
@@ -1983,7 +2131,9 @@ test('sortCoordinatesByDistance', () => {
     const {sourceCache, eventedParent} = createSourceCache({
         reparseOverscaled: true,
         loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             tile.state = 'loaded';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             callback(null);
         }
     });
@@ -2041,6 +2191,15 @@ test('sortCoordinatesByDistance', () => {
     sourceCache.getSource().onAdd();
 });
 
+test('sortCoordinatesByDistance without transform', () => {
+    const {sourceCache} = createSourceCache({});
+    const coords = [
+        new OverscaledTileID(2, 0, 2, 1, 1),
+        new OverscaledTileID(2, 0, 2, 0, 0),
+    ];
+    expect(sourceCache.sortCoordinatesByDistance(coords)).toStrictEqual(coords);
+});
+
 describe('shadow caster tiles', () => {
     const transform = new Transform();
     transform.resize(512, 512);
@@ -2049,35 +2208,148 @@ describe('shadow caster tiles', () => {
     transform.pitch = 69;
     transform.bearing = 39.2;
 
-    const {sourceCache, eventedParent} = createSourceCache({
+    // for zoom below 16 tile cover is not extended for shadows
+    // create two source cache configurations
+    const sourceCacheMaxZ16 = createSourceCache({
         reparseOverscaled: true,
+        maxzoom: 16,
         loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             tile.state = 'loaded';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             callback(null);
         }
     });
+    sourceCacheMaxZ16.sourceCache.updateCacheSize(transform);
+    sourceCacheMaxZ16.sourceCache.castsShadows = true;
 
-    sourceCache.updateCacheSize(transform);
-    sourceCache.castsShadows = true;
-    test('getShadowCasterCoordinates', async () => {
+    const sourceCacheMaxZ14 = createSourceCache({
+        reparseOverscaled: true,
+        maxzoom: 14,
+        loadTile(tile, callback) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            tile.state = 'loaded';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            callback(null);
+        }
+    });
+    sourceCacheMaxZ14.sourceCache.updateCacheSize(transform);
+    sourceCacheMaxZ14.sourceCache.castsShadows = true;
+
+    test('getShadowCasterCoordinates(extended tile cover)', async () => {
         await new Promise(resolve => {
-            eventedParent.on('data', (e) => {
+            sourceCacheMaxZ16.eventedParent.on('data', (e) => {
                 if (e.sourceDataType === 'metadata') {
-                    sourceCache.update(transform, 512, false, [0.25, -0.433, -0.866]);
-                    expect(sourceCache.getShadowCasterCoordinates().length).toEqual(6);
-                    expect(sourceCache.getRenderableIds(false, true)).toStrictEqual([
-                        new OverscaledTileID(19, 0, 14, 10044, 8193).key,
-                        new OverscaledTileID(19, 0, 14, 10043, 8193).key,
-                        new OverscaledTileID(19, 0, 14, 10044, 8192).key,
-                        new OverscaledTileID(19, 0, 14, 10043, 8192).key,
-                        new OverscaledTileID(19, 0, 14, 10044, 8191).key,
-                        new OverscaledTileID(19, 0, 14, 10043, 8191).key,
+                    sourceCacheMaxZ16.sourceCache.update(transform, 512, false, [0.25, -0.433, -0.866]);
+                    expect(sourceCacheMaxZ16.sourceCache.getShadowCasterCoordinates().length).toEqual(6);
+                    expect(sourceCacheMaxZ16.sourceCache.getRenderableIds(false, true)).toStrictEqual([
+                        new OverscaledTileID(19, 0, 16, 40179, 32769).key,
+                        new OverscaledTileID(19, 0, 16, 40178, 32769).key,
+                        new OverscaledTileID(19, 0, 16, 40179, 32768).key,
+                        new OverscaledTileID(19, 0, 16, 40178, 32768).key,
+                        new OverscaledTileID(19, 0, 16, 40179, 32767).key,
+                        new OverscaledTileID(19, 0, 16, 40178, 32767).key,
                     ]);
                     resolve();
                 }
             });
-            sourceCache.getSource().onAdd();
+            sourceCacheMaxZ16.sourceCache.getSource().onAdd();
+        });
+    });
+
+    test('getShadowCasterCoordinates(non-extended)', async () => {
+        await new Promise(resolve => {
+            sourceCacheMaxZ14.eventedParent.on('data', (e) => {
+                if (e.sourceDataType === 'metadata') {
+                    sourceCacheMaxZ14.sourceCache.update(transform, 512, false, [0.25, -0.433, -0.866]);
+                    expect(sourceCacheMaxZ14.sourceCache.getShadowCasterCoordinates().length).toEqual(2);
+                    expect(sourceCacheMaxZ14.sourceCache.getRenderableIds(false, true)).toStrictEqual([
+                        new OverscaledTileID(19, 0, 14, 10044, 8192).key,
+                        new OverscaledTileID(19, 0, 14, 10044, 8191).key,
+                    ]);
+                    resolve();
+                }
+            });
+            sourceCacheMaxZ14.sourceCache.getSource().onAdd();
         });
     });
 });
 
+describe('SourceCache#_retainLoadedChildren', () => {
+    // Regression: when zooming back out, previously-created client-side overzoom
+    // raster-array tiles (cropped from the same parent) stayed retained as
+    // "loaded children" of the new lower-zoom ideal tile and got painted on top,
+    // causing raster-particle simulations to run multiple times in the same area
+    // (visible as a dense particle blob over the previously-zoomed region).
+    test('does not retain client-side overzoomed raster-array tiles as covering children', () => {
+        const sourceCache = createRasterArrayTileSourceCache();
+
+        const idealTileID = new OverscaledTileID(2, 0, 2, 1, 1);
+        const overzoomedID = new OverscaledTileID(10, 0, 10, 256, 256);
+
+        sourceCache._tiles[overzoomedID.key] = {
+            tileID: overzoomedID,
+            hasData: () => true,
+            parentTile: {tileID: new OverscaledTileID(0, 0, 0, 0, 0)},
+        };
+
+        const retain = {};
+        sourceCache._retainLoadedChildren({[idealTileID.key]: idealTileID}, 2, 10, retain);
+
+        expect(retain[overzoomedID.key]).toBeUndefined();
+    });
+
+    test('still retains authoritative loaded raster-array children (parentTile null)', () => {
+        const sourceCache = createRasterArrayTileSourceCache();
+
+        const idealTileID = new OverscaledTileID(2, 0, 2, 1, 1);
+        const childID = new OverscaledTileID(4, 0, 4, 4, 4);
+
+        sourceCache._tiles[childID.key] = {
+            tileID: childID,
+            hasData: () => true,
+            parentTile: null,
+        };
+
+        const retain = {};
+        sourceCache._retainLoadedChildren({[idealTileID.key]: idealTileID}, 2, 10, retain);
+
+        expect(retain[childID.key]).toEqual(childID);
+    });
+});
+
+describe('SourceCache#hasTransition', () => {
+    // raster-array is registered lazily (its class lives in a code-split module); register it
+    // up front so the synchronous `create()` below can resolve the type.
+    beforeAll(async () => {
+        await ensureSourceType('raster-array');
+    });
+
+    test('returns true for raster-array source with fading tile', () => {
+        const {sourceCache} = createSourceCache({
+            type: 'raster-array',
+            hasTransition: () => false
+        });
+
+        const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+        const tile = new Tile(tileID, 512, 0);
+        tile.fadeEndTime = browser.now() + 300;
+        sourceCache._tiles[tileID.key] = tile;
+
+        expect(sourceCache.hasTransition()).toBe(true);
+    });
+
+    test('returns false for raster-array source when fade is complete', () => {
+        const {sourceCache} = createSourceCache({
+            type: 'raster-array',
+            hasTransition: () => false
+        });
+
+        const tileID = new OverscaledTileID(0, 0, 0, 0, 0);
+        const tile = new Tile(tileID, 512, 0);
+        tile.fadeEndTime = browser.now() - 300;
+        sourceCache._tiles[tileID.key] = tile;
+
+        expect(sourceCache.hasTransition()).toBe(false);
+    });
+});

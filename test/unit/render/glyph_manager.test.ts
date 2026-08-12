@@ -1,19 +1,25 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {test, expect, vi} from '../../util/vitest';
 import parseGlyphPBF from '../../../src/style/parse_glyph_pbf';
 import GlyphManager, {LocalGlyphMode} from '../../../src/render/glyph_manager';
-// eslint-disable-next-line import/no-unresolved,import/extensions
+import {GlyphLoader} from '../../../src/style/glyph_loader';
+
+// eslint-disable-next-line import-x/extensions
 import glyphStub from '/test/fixtures/0-255.pbf?arraybuffer';
 
 const glyphData: Record<string, any> = {};
 glyphData.glyphs = [];
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 const data = parseGlyphPBF(glyphStub);
 glyphData.ascender = data.ascender;
 glyphData.descender = data.descender;
 for (const glyph of data.glyphs) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     glyphData.glyphs[glyph.id] = glyph;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const identityTransform = (url) => ({url});
 
 const TinySDF = class {
@@ -34,7 +40,7 @@ const TinySDF = class {
 };
 
 const createLoadGlyphRangeStub = () => {
-    return vi.spyOn(GlyphManager, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
+    return vi.spyOn(GlyphLoader, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
         expect(stack).toEqual('Arial Unicode MS');
         expect(range).toEqual(0);
         expect(urlTemplate).toEqual('https://localhost/fonts/v1/{fontstack}/{range}.pbf');
@@ -46,6 +52,7 @@ const createLoadGlyphRangeStub = () => {
 const createGlyphManager = (font, allGlyphs) => {
     const manager = new GlyphManager(identityTransform,
         font ? (allGlyphs ? LocalGlyphMode.all : LocalGlyphMode.ideographs) : LocalGlyphMode.none,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         font);
     manager.setURL('https://localhost/fonts/v1/{fontstack}/{range}.pbf');
     return manager;
@@ -56,7 +63,7 @@ test('GlyphManager requests 0-255 PBF', async () => {
     const manager = createGlyphManager();
 
     await new Promise(resolve => {
-        manager.getGlyphs({'Arial Unicode MS': [55]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [55]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs['55'].metrics.advance).toEqual(12);
             resolve();
@@ -69,7 +76,7 @@ test('GlyphManager doesn\'t request twice 0-255 PBF if a glyph is missing', asyn
     const manager = createGlyphManager();
 
     await new Promise(resolve => {
-        manager.getGlyphs({'Arial Unicode MS': [0.5]}, undefined, (err) => {
+        manager.getGlyphs({'Arial Unicode MS': [0.5]}, (err) => {
             expect(err).toBeFalsy();
             expect(manager.entries['Arial Unicode MS'].ranges[0]).toEqual(true);
             expect(stub).toHaveBeenCalledTimes(1);
@@ -77,7 +84,7 @@ test('GlyphManager doesn\'t request twice 0-255 PBF if a glyph is missing', asyn
             // We remove all requests as in getGlyphs code.
             delete manager.entries['Arial Unicode MS'].requests[0];
 
-            manager.getGlyphs({'Arial Unicode MS': [0.5]}, undefined, (err) => {
+            manager.getGlyphs({'Arial Unicode MS': [0.5]}, (err) => {
                 expect(err).toBeFalsy();
                 expect(manager.entries['Arial Unicode MS'].ranges[0]).toEqual(true);
                 expect(stub).toHaveBeenCalledTimes(1);
@@ -88,14 +95,14 @@ test('GlyphManager doesn\'t request twice 0-255 PBF if a glyph is missing', asyn
 });
 
 test('GlyphManager requests remote CJK PBF', async () => {
-    vi.spyOn(GlyphManager, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
+    vi.spyOn(GlyphLoader, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
         setTimeout(() => callback(null, glyphData));
     });
 
     const manager = createGlyphManager();
 
     await new Promise(resolve => {
-        manager.getGlyphs({'Arial Unicode MS': [0x5e73]}, undefined, (err, results) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x5e73]}, (err, results) => {
             expect(err).toBeFalsy();
             expect(results['Arial Unicode MS'].glyphs[0x5e73]).toEqual(null); // The fixture returns a PBF without the glyph we requested
             resolve();
@@ -104,14 +111,17 @@ test('GlyphManager requests remote CJK PBF', async () => {
 });
 
 test('GlyphManager does not cache CJK chars that should be rendered locally', async () => {
-    vi.spyOn(GlyphManager, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
+    vi.spyOn(GlyphLoader, 'loadGlyphRange').mockImplementation((stack, range, urlTemplate, transform, callback) => {
         const overlappingGlyphs: Record<string, any> = {};
         overlappingGlyphs.glyphs = [];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         overlappingGlyphs.ascender = glyphData.ascender;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         overlappingGlyphs.descender = glyphData.descender;
         const start = range * 256;
         const end = start + 256;
         for (let i = start, j = 0; i < end; i++, j++) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             overlappingGlyphs.glyphs[i] = glyphData.glyphs[j];
         }
         setTimeout(() => callback(null, overlappingGlyphs));
@@ -121,11 +131,11 @@ test('GlyphManager does not cache CJK chars that should be rendered locally', as
 
     await new Promise(resolve => {
         // Request char that overlaps Katakana range
-        manager.getGlyphs({'Arial Unicode MS': [0x3005]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x3005]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs[0x3005]).not.toEqual(null);
             // Request char from Katakana range (te)
-            manager.getGlyphs({'Arial Unicode MS': [0x30C6]}, undefined, (err, result) => {
+            manager.getGlyphs({'Arial Unicode MS': [0x30C6]}, (err, result) => {
                 expect(err).toBeFalsy();
                 const glyph = result['Arial Unicode MS'].glyphs[0x30c6];
                 // Ensure that te is locally generated.
@@ -144,7 +154,7 @@ test('GlyphManager generates CJK PBF locally', async () => {
     const manager = createGlyphManager('sans-serif');
 
     await new Promise(resolve => {
-        manager.getGlyphs({'Arial Unicode MS': [0x5e73]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x5e73]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs[0x5e73].metrics.advance).toEqual(24);
             resolve();
@@ -159,7 +169,7 @@ test('GlyphManager generates Katakana PBF locally', async () => {
 
     await new Promise(resolve => {
         // Katakana letter te
-        manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs[0x30c6].metrics.advance).toEqual(24);
             resolve();
@@ -174,7 +184,7 @@ test('GlyphManager generates Hiragana PBF locally', async () => {
 
     await new Promise(resolve => {
         // Hiragana letter te
-        manager.getGlyphs({'Arial Unicode MS': [0x3066]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x3066]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs[0x3066].metrics.advance).toEqual(24);
             resolve();
@@ -206,10 +216,10 @@ test('GlyphManager caches locally generated glyphs', async () => {
 
     await new Promise(resolve => {
         // Katakana letter te
-        manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, (err, result) => {
             expect(err).toBeFalsy();
             expect(result['Arial Unicode MS'].glyphs[0x30c6].metrics.advance).toEqual(24);
-            manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, undefined, () => {
+            manager.getGlyphs({'Arial Unicode MS': [0x30c6]}, () => {
                 expect(drawCallCount).toEqual(1);
                 resolve();
             });
@@ -238,7 +248,7 @@ test('GlyphManager locally generates latin glyphs', async () => {
     const manager = createGlyphManager('sans-serif', true);
 
     await new Promise(resolve => {
-        manager.getGlyphs({'Arial Unicode MS': [65]}, undefined, (err, result) => {
+        manager.getGlyphs({'Arial Unicode MS': [65]}, (err, result) => {
             expect(err).toBeFalsy();
             const glyphs = result['Arial Unicode MS'].glyphs;
             expect(glyphs[65].metrics.advance).toEqual(10);

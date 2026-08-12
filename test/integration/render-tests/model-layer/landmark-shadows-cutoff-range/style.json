@@ -2,8 +2,18 @@
   "version": 8,
    "metadata": {
     "test": {
-      "allowed": 0.0012,
-      "standardDerivatives": true
+      
+      "skip-test": [
+        {"platform-tag-contains": "native-android", "reason": "MAPSNAT-3819: skip to stay within Firebase timout, move to internal tests once available - covered by new LOD counterpart"},
+        {"platform-tag-contains": "native-ios", "reason": "MAPSNAT-3819: skip to stay within Firebase timout, move to internal tests once available - covered by new LOD counterpart"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0012},
+        {"platform-tag-contains": "native-android-gl-mali", "threshold": 0.003}
+      ]
     }
   },
   "lights": [
@@ -46,10 +56,10 @@
     }
   },
   "pitch": 70,
-  "zoom": 16,
+  "zoom": 15.9,
   "bearing": 180,
   "center": [
-    11.5745, 48.149
+    11.5749, 48.150
   ],
   "layers": [
     {
@@ -384,7 +394,7 @@
       "id": "road-label"
     },
     {
-      "minzoom": 14.0,
+      "minzoom": 14,
       "type": "model",
       "source": "file-system-tiles",
       "paint": {

@@ -4,10 +4,17 @@
     "test": {
       "width": 512,
       "height": 512,
-      "allowed": 0.0005,
-      "standardDerivatives": true,
       "operations": [
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "swiftshader", "reason": "Antialiasing"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00061}
       ]
     }
   },

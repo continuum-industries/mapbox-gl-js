@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mapbox GL JS debug page</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
+    <style>
+    body { margin: 0; padding: 0; }
+    html, body, #map { height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script type="module">
+    import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+    import {getAccessToken} from './access_token_generated.js';
+
+    var map = window.map = new mapboxgl.Map({
+        accessToken: getAccessToken(),
+        container: 'map',
+        style: 'mapbox://styles/mapbox/standard',
+        config: {
+            basemap: {
+                showIndoor: true
+            }
+        },
+        center: [2.36020, 48.72861],
+        zoom: 16.00,
+        bearing: 0.00,
+        pitch: 0.00,
+        hash: true
+    });
+
+    map.addControl(new mapboxgl.IndoorControl());
+    map.addControl(new mapboxgl.AttributionControl());
+
+    // Add navigation controls (optional)
+    map.addControl(new mapboxgl.NavigationControl());
+    </script>
+</body>
+</html>

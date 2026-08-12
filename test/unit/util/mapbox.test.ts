@@ -1,13 +1,13 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, beforeEach, afterEach, expect, vi, equalWithPrecision} from '../../util/vitest';
 import {getRequestBody} from '../../util/network';
 import * as mapbox from '../../../src/util/mapbox';
 import config from '../../../src/util/config';
-import webpSupported from '../../../src/util/webp_supported';
 import {uuid} from '../../../src/util/util';
 import {SKU_ID} from '../../../src/util/sku_token';
 import {version} from '../../../package.json';
-import assert from 'assert';
+import assert from '../../../src/style-spec/util/assert';
 
 const mapboxTileURLs = [
     'https://a.tiles.mapbox.com/v4/mapbox.mapbox-terrain-v2,mapbox.mapbox-streets-v7/{z}/{x}/{y}.vector.pbf',
@@ -21,6 +21,7 @@ const nonMapboxTileURLs = [
 
 function withFixedDate(now, fn) {
     const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     fn();
     dateNow.mockRestore();
 }
@@ -28,7 +29,7 @@ function withFixedDate(now, fn) {
 restore();
 
 function restore() {
-    window.useFakeXMLHttpRequest = function() {
+    window.useFakeXMLHttpRequest = function () {
         const spy = vi.spyOn(window, 'fetch').mockImplementation(() => {
             return Promise.resolve(new window.Response());
         });
@@ -36,9 +37,11 @@ function restore() {
             get requests() {
                 return spy.mock.calls.map(args => {
                     return {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                         get url() {
                             return args[0].url;
                         },
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                         get method() {
                             return args[0].method;
                         },
@@ -88,7 +91,44 @@ describe("mapbox", () => {
             );
         });
 
-        webpSupported.supported = false;
+        describe('.transformRequest', () => {
+            test('resolves {url} when no transform function is set', async () => {
+                const m = new mapbox.RequestManager();
+                expect(await m.transformRequest('http://example.com/x', 'Source')).toEqual({url: 'http://example.com/x'});
+            });
+
+            test('resolves a sync transform return value', async () => {
+                const m = new mapbox.RequestManager(url => ({url: `${url}?a=1`}));
+                expect(await m.transformRequest('http://example.com/x', 'Source')).toEqual({url: 'http://example.com/x?a=1'});
+            });
+
+            test('resolves an async transform return value', async () => {
+                // eslint-disable-next-line @typescript-eslint/require-await
+                const m = new mapbox.RequestManager(async url => ({url: `${url}?a=1`}));
+                expect(await m.transformRequest('http://example.com/x', 'Source')).toEqual({url: 'http://example.com/x?a=1'});
+            });
+
+            test('resolves {url} when the transform returns a falsy value', async () => {
+                const m = new mapbox.RequestManager(() => undefined);
+                expect(await m.transformRequest('http://example.com/x', 'Source')).toEqual({url: 'http://example.com/x'});
+            });
+
+            test('a sync-throwing transform rejects rather than throwing synchronously', async () => {
+                const m = new mapbox.RequestManager(() => { throw new Error('boom'); });
+                const promise = m.transformRequest('http://example.com/x', 'Source');
+                await expect(promise).rejects.toThrow('boom');
+            });
+
+            test('forwards the signal to the transform when passed, and omits it otherwise', async () => {
+                let seenOptions: {signal?: AbortSignal} | undefined;
+                const m = new mapbox.RequestManager((url, type, options) => { seenOptions = options; return {url}; });
+                const controller = new AbortController();
+                await m.transformRequest('http://example.com/x', 'Source', controller.signal);
+                expect(seenOptions.signal).toBe(controller.signal);
+                await m.transformRequest('http://example.com/x', 'Source');
+                expect(seenOptions.signal).toBeUndefined();
+            });
+        });
 
         describe('.normalizeStyleURL', () => {
             test(
@@ -378,44 +418,33 @@ describe("mapbox", () => {
         });
 
         describe('.normalizeTileURL', () => {
-            test('.normalizeTileURL does nothing on 1x devices', () => {
-                config.API_URL = 'http://path.png';
-                config.REQUIRE_ACCESS_TOKEN = false;
-                webpSupported.supported = false;
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png')).toEqual(`http://path.png/v4/tile.png`);
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png32')).toEqual(`http://path.png/v4/tile.png32`);
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.jpg70')).toEqual(`http://path.png/v4/tile.jpg70`);
-            });
-
             test('.normalizeTileURL inserts @2x if source requests it', () => {
                 config.API_URL = 'http://path.png';
                 config.REQUIRE_ACCESS_TOKEN = false;
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', true)).toEqual(`http://path.png/v4/tile@2x.png`);
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png32', true)).toEqual(`http://path.png/v4/tile@2x.png32`);
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.jpg70', true)).toEqual(`http://path.png/v4/tile@2x.jpg70`);
+                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', true)).toEqual(`http://path.png/v4/tile@2x.webp`);
+                expect(manager.normalizeTileURL('mapbox://path.png/tile.png32', true)).toEqual(`http://path.png/v4/tile@2x.webp`);
+                expect(manager.normalizeTileURL('mapbox://path.png/tile.jpg70', true)).toEqual(`http://path.png/v4/tile@2x.webp`);
                 expect(
                     manager.normalizeTileURL('mapbox://path.png/tile.png?access_token=foo', true)
-                ).toEqual(`http://path.png/v4/tile@2x.png?access_token=foo`);
+                ).toEqual(`http://path.png/v4/tile@2x.webp?access_token=foo`);
             });
 
             test('.normalizeTileURL inserts @2x for 512 raster tiles on v4 of the api', () => {
                 config.API_URL = 'http://path.png';
                 config.REQUIRE_ACCESS_TOKEN = false;
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', false, 256)).toEqual(`http://path.png/v4/tile.png`);
-                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', false, 512)).toEqual(`http://path.png/v4/tile@2x.png`);
-                expect(manager.normalizeTileURL("mapbox://raster/a.b/0/0/0.png", false, 256)).toEqual(`http://path.png/raster/v1/a.b/0/0/0.png`);
-                expect(manager.normalizeTileURL("mapbox://raster/a.b/0/0/0.png", false, 512)).toEqual(`http://path.png/raster/v1/a.b/0/0/0.png`);
+                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', false, 256)).toEqual(`http://path.png/v4/tile.webp`);
+                expect(manager.normalizeTileURL('mapbox://path.png/tile.png', false, 512)).toEqual(`http://path.png/v4/tile@2x.webp`);
+                expect(manager.normalizeTileURL("mapbox://raster/a.b/0/0/0.png", false, 256)).toEqual(`http://path.png/raster/v1/a.b/0/0/0.webp`);
+                expect(manager.normalizeTileURL("mapbox://raster/a.b/0/0/0.png", false, 512)).toEqual(`http://path.png/raster/v1/a.b/0/0/0.webp`);
             });
 
-            test('.normalizeTileURL replaces img extension with webp on supporting devices', () => {
-                webpSupported.supported = true;
+            test('.normalizeTileURL replaces img extension with webp', () => {
                 config.API_URL = 'http://path.png';
                 config.REQUIRE_ACCESS_TOKEN = false;
                 expect(manager.normalizeTileURL('mapbox://path.png/tile.png')).toEqual(`http://path.png/v4/tile.webp`);
                 expect(manager.normalizeTileURL('mapbox://path.png/tile.png32')).toEqual(`http://path.png/v4/tile.webp`);
                 expect(manager.normalizeTileURL('mapbox://path.png/tile.jpg70')).toEqual(`http://path.png/v4/tile.webp`);
                 expect(manager.normalizeTileURL('mapbox://path.png/tile.png?access_token=foo')).toEqual(`http://path.png/v4/tile.webp?access_token=foo`);
-                webpSupported.supported = false;
             });
 
             test('.normalizeTileURL ignores non-mapbox:// sources', () => {
@@ -463,16 +492,16 @@ describe("mapbox", () => {
                     `https://api.mapbox.com/v4/a.b/0/0/0.pbf?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("mapbox://tiles/a.b/0/0/0.png")).toEqual(
-                    `https://api.mapbox.com/v4/a.b/0/0/0.png?sku=${manager._skuToken}&access_token=key`
+                    `https://api.mapbox.com/v4/a.b/0/0/0.webp?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("mapbox://tiles/a.b/0/0/0@2x.png")).toEqual(
-                    `https://api.mapbox.com/v4/a.b/0/0/0@2x.png?sku=${manager._skuToken}&access_token=key`
+                    `https://api.mapbox.com/v4/a.b/0/0/0@2x.webp?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("mapbox://tiles/a.b,c.d/0/0/0.pbf")).toEqual(
                     `https://api.mapbox.com/v4/a.b,c.d/0/0/0.pbf?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("mapbox://raster/a.b/0/0/0.png")).toEqual(
-                    `https://api.mapbox.com/raster/v1/a.b/0/0/0.png?sku=${manager._skuToken}&access_token=key`
+                    `https://api.mapbox.com/raster/v1/a.b/0/0/0.webp?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("mapbox://rasterarrays/a.b/0/0/0.mrt")).toEqual(
                     `https://api.mapbox.com/rasterarrays/v1/a.b/0/0/0.mrt?sku=${manager._skuToken}&access_token=key`
@@ -483,19 +512,154 @@ describe("mapbox", () => {
 
                 config.API_URL = 'https://api.example.com/';
                 expect(manager.normalizeTileURL("mapbox://tiles/a.b/0/0/0.png")).toEqual(
-                    `https://api.example.com/v4/a.b/0/0/0.png?sku=${manager._skuToken}&access_token=key`
+                    `https://api.example.com/v4/a.b/0/0/0.webp?sku=${manager._skuToken}&access_token=key`
                 );
                 expect(manager.normalizeTileURL("http://path")).toEqual("http://path");
             });
         });
+    });
 
-        webpSupported.supported = true;
+    describe('TelemetryEvent', () => {
+        let event: mapbox.TelemetryEvent;
+        beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            event = new mapbox.TelemetryEvent();
+
+            vi.stubGlobal('localStorage', {
+                data: {},
+                setItem(this: {data: Record<string, string>}, id: string, val: string) {
+                    this.data[id] = String(val);
+                },
+                getItem(this: {data: Record<string, string>}, id: string) {
+                    return Object.hasOwn(this.data, id) ? this.data[id] : undefined;
+                },
+                removeItem(this: {data: Record<string, string>}, id: string) {
+                    if (Object.hasOwn(this, id)) delete this.data[id];
+                }
+            });
+        });
+
+        test('Does not refresh the uuid if exists and it was set less than 24h ago', () => {
+            const anonId = uuid();
+            window.localStorage.setItem(`mapbox.eventData.uuid:${config.ACCESS_TOKEN}`, anonId);
+            window.localStorage.setItem(`mapbox.eventData.uuidTimestamp:${config.ACCESS_TOKEN}`, Date.now().toString());
+
+            event.fetchEventData();
+
+            expect(event.anonId).toEqual(anonId);
+        });
+
+        test('Does refresh the uuid if exists and it was set more than 24h ago', () => {
+            const anonId = uuid();
+            window.localStorage.setItem(`mapbox.eventData.uuid:${config.ACCESS_TOKEN}`, anonId);
+            const yesterday = Date.now() - 25 * 60 * 60 * 1000;
+            window.localStorage.setItem(`mapbox.eventData.uuidTimestamp:${config.ACCESS_TOKEN}`, yesterday);
+
+            event.fetchEventData();
+
+            expect(event.anonId).not.toEqual(anonId);
+        });
+
+        test('Does refresh the uuid if it doesn\'t exist and it was set more than 24h ago', () => {
+            event.fetchEventData();
+
+            expect(event.anonId).not.toEqual(null);
+            expect(event.anonIdTimestamp).not.toEqual(null);
+        });
+
+        test('Does refresh the uuid if timestamp doesn\'t exist', () => {
+            const anonId = uuid();
+            window.localStorage.setItem(`mapbox.eventData.uuid:${config.ACCESS_TOKEN}`, anonId);
+
+            event.fetchEventData();
+
+            expect(event.anonId).not.toEqual(anonId);
+            expect(event.anonId).not.toEqual(null);
+            expect(event.anonIdTimestamp).not.toEqual(null);
+        });
+    });
+
+    describe('self-hosted telemetry suppression', () => {
+        function makeExpirationToken(expiration: number): string {
+            const header = btoa(JSON.stringify({typ: 'JWT', alg: 'ES256'}));
+            const payload = btoa(JSON.stringify({atlas: expiration}));
+            return `${header}.${payload}.signature`;
+        }
+
+        test('PerformanceEvent does not send telemetry for self-hosted deployment', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            config.API_URL = 'http://localhost:8080';
+            const event = new mapbox.PerformanceEvent();
+            event.postPerformanceEvent(makeExpirationToken(1774345201000), {
+                width: 100,
+                height: 100,
+                interactionRange: [0, 0],
+                projection: 'mercator'
+            });
+            expect(event.queue.length).toEqual(0);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(0);
+        });
+
+        test('StyleLoadEvent does not send telemetry for self-hosted deployment', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            config.API_URL = 'http://localhost:8080';
+            const event = new mapbox.StyleLoadEvent();
+            event.postStyleLoadEvent(makeExpirationToken(1774345201000), {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                map: {} as any,
+                style: 'mapbox://styles/mapbox/streets-v12',
+                importedStyles: []
+            });
+            expect(event.queue.length).toEqual(0);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(0);
+        });
+
+        test('MetricsEvent does not send telemetry for self-hosted deployment', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            config.API_URL = 'http://localhost:8080';
+            mapbox.postStyleWithAppearanceEvent(makeExpirationToken(1774345201000));
+            expect(mapbox.styleWithAppearanceEvent.queue.length).toEqual(0);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(0);
+        });
+
+        test('MapLoadEvent does not send for self-hosted deployment', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            config.API_URL = 'http://localhost:8080';
+            const event = new mapbox.MapLoadEvent();
+            const callback = vi.fn();
+            event.postMapLoadEvent(1, 'sku', makeExpirationToken(1774345201000), callback);
+            expect(event.queue.length).toEqual(0);
+            expect(callback).not.toHaveBeenCalled();
+        });
+
+        test('telemetry is suppressed for self-hosted deployment with expiration of 0', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            config.API_URL = 'http://localhost:8080';
+            const event = new mapbox.PerformanceEvent();
+            event.postPerformanceEvent(makeExpirationToken(0), {
+                width: 100,
+                height: 100,
+                interactionRange: [0, 0],
+                projection: 'mercator'
+            });
+            expect(event.queue.length).toEqual(0);
+        });
     });
 
     describe('PerformanceEvent', () => {
         let event: any;
 
         beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             window.useFakeXMLHttpRequest();
             event = new mapbox.PerformanceEvent();
         });
@@ -505,6 +669,7 @@ describe("mapbox", () => {
         });
 
         test('does not contains sku, skuId and userId', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postPerformanceEvent('token', {
                 width: 100,
                 height: 100,
@@ -512,16 +677,23 @@ describe("mapbox", () => {
                 projection: 'mercator'
             });
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             const performanceEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.event).toEqual('gljs.performance');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.skuId).toBeFalsy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.skuToken).toBeFalsy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.userId).toBeFalsy();
         });
 
         test('contains default payload', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postPerformanceEvent('token', {
                 width: 100,
                 height: 100,
@@ -529,14 +701,19 @@ describe("mapbox", () => {
                 projection: 'mercator'
             });
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             const performanceEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.event).toEqual('gljs.performance');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(!!performanceEvent.created).toBeTruthy();
         });
 
         test('metrics', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postPerformanceEvent('token', {
                 width: 100,
                 height: 50,
@@ -546,11 +723,15 @@ describe("mapbox", () => {
                 renderer: 'webgl renderer'
             });
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             const performanceEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
             const checkMetric = (data, metricName, metricValue) => {
                 for (const metric of data) {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                     if (metric.name === metricName) {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(metric.value).toEqual(metricValue);
                         return;
                     }
@@ -558,19 +739,32 @@ describe("mapbox", () => {
                 assert(false);
             };
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(performanceEvent.event).toEqual('gljs.performance');
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'sdkVersion', version);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'sdkIdentifier', 'mapbox-gl-js');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'devicePixelRatio', '1');
-            checkMetric(performanceEvent.metadata, 'windowWidth', '300');
-            checkMetric(performanceEvent.metadata, 'windowHeight', '150');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            checkMetric(performanceEvent.metadata, 'windowWidth', '414');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            checkMetric(performanceEvent.metadata, 'windowHeight', '896');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'mapWidth', '100');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'mapHeight', '50');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'webglVendor', 'webgl vendor');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.metadata, 'webglRenderer', 'webgl renderer');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.attributes, 'terrainEnabled', 'false');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.attributes, 'projection', 'mercator');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             checkMetric(performanceEvent.attributes, 'fogEnabled', 'false');
         });
     });
@@ -579,6 +773,7 @@ describe("mapbox", () => {
         const ms25Hours = (25 * 60 * 60 * 1000);
         let event: any;
         beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             window.useFakeXMLHttpRequest();
             event = new mapbox.TurnstileEvent();
         });
@@ -588,30 +783,50 @@ describe("mapbox", () => {
         });
 
         test('contains all payload including skuId', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(mapboxTileURLs);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const reqBody = await window.server.requests[0].requestBody;
             // reqBody is a string of an array containing the event object so pick out the stringified event object and convert to an object
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             const mapLoadEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.event).toEqual('appUserTurnstile');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.skuId).toEqual(SKU_ID);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.sdkIdentifier).toEqual('mapbox-gl-js');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.sdkVersion).toEqual(version);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent["enabled.telemetry"]).toEqual(false);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.version).toEqual('2.2');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(!!mapLoadEvent.userId).toBeTruthy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(!!mapLoadEvent.created).toBeTruthy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.bundleFormat).toEqual('unknown');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.bundleDistribution).toEqual('other');
         });
 
         test('does not POST when mapboxgl.ACCESS_TOKEN is not set', () => {
             config.ACCESS_TOKEN = null;
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(mapboxTileURLs);
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
         test('does not POST when url does not point to mapbox.com', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(nonMapboxTileURLs);
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
@@ -620,11 +835,13 @@ describe("mapbox", () => {
             vi.stubGlobal('caches', undefined);
             config.API_URL = 'https://api.mapbox.cn';
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(mapboxTileURLs);
 
             await new Promise(resolve => {
                 setTimeout(() => {
-                    expect(window.server.requests[0].url.indexOf('https://events.mapbox.cn') > -1).toBeTruthy();
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                    expect(window.server.requests[0].url.includes('https://events.mapbox.cn')).toBeTruthy();
                     resolve();
                 }, 0);
             });
@@ -632,13 +849,17 @@ describe("mapbox", () => {
 
         test('POSTs no event when API_URL unavailable', () => {
             config.API_URL = null;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(mapboxTileURLs);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
         test('POSTs no event when API_URL non-standard', () => {
             config.API_URL = 'https://api.example.com';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postTurnstileEvent(mapboxTileURLs);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
@@ -648,19 +869,20 @@ describe("mapbox", () => {
                 prevLocalStorage = window.localStorage;
                 vi.stubGlobal('localStorage', {
                     data: {},
-                    setItem (id, val) {
+                    setItem(this: {data: Record<string, string>}, id: string, val: string) {
                         this.data[id] = String(val);
                     },
-                    getItem (id) {
-                        return this.data.hasOwnProperty(id) ? this.data[id] : undefined;
+                    getItem(this: {data: Record<string, string>}, id: string) {
+                        return Object.hasOwn(this.data, id) ? this.data[id] : undefined;
                     },
-                    removeItem (id) {
-                        if (this.hasOwnProperty(id)) delete this[id];
+                    removeItem(this: {data: Record<string, string>}, id: string) {
+                        if (Object.hasOwn(this, id)) delete this.data[id];
                     }
                 });
             });
 
             afterEach(() => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 window.localStorage = prevLocalStorage;
             });
 
@@ -673,7 +895,9 @@ describe("mapbox", () => {
                 }));
 
                 // Post 5 seconds later
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now + 5, () => event.postTurnstileEvent(mapboxTileURLs));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toBeFalsy();
             });
 
@@ -684,13 +908,19 @@ describe("mapbox", () => {
                     lastSuccess: now
                 }));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now + ms25Hours, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.userId).not.toEqual('anonymous');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.skuId).toEqual(SKU_ID);
             });
 
@@ -702,59 +932,83 @@ describe("mapbox", () => {
                     lastSuccess: now + ms25Hours // 24-hours later
                 }));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.skuId).toEqual(SKU_ID);
             });
 
             test('does not POST appuserTurnstile event second time within same calendar day', async () => {
                 let now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
                 //Post second event
                 const firstEvent = now;
                 now += (60 * 1000); // A bit later
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             });
 
             test('does not POST appuserTurnstile event second time when clock goes backwards less than a day', async () => {
                 let now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
                 //Post second event
                 const firstEvent = now;
                 now -= (60 * 1000); // A bit earlier
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             });
 
             test('POSTs appuserTurnstile event when access token changes', () => {
                 config.ACCESS_TOKEN = 'pk.new.*';
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=pk.new.*`);
             });
         });
@@ -765,17 +1019,27 @@ describe("mapbox", () => {
             });
 
             test('POSTs appuserTurnstile event', async () => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
 
                 await new Promise((resolve) => {
+                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
                     setTimeout(async () => {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                         const req = window.server.requests[0];
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                         const reqBody = JSON.parse(await req.requestBody)[0];
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=key`);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.method).toEqual('POST');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.event).toEqual('appUserTurnstile');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.sdkVersion).toEqual(version);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.skuId).toEqual(SKU_ID);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.userId).toBeTruthy();
                         resolve();
                     }, 0);
@@ -785,74 +1049,111 @@ describe("mapbox", () => {
             test('does not POST appuserTurnstile event second time within same calendar day', async () => {
                 let now = +Date.now();
                 const firstEvent = now;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
                 //Post second event
                 now += (60 * 1000); // A bit later
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             });
 
             test('does not POST appuserTurnstile event second time when clock goes backwards less than a day', async () => {
                 let now = +Date.now();
                 const firstEvent = now;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
 
                 //Post second event
                 now -= (60 * 1000); // A bit earlier
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             });
 
             test('POSTs appuserTurnstile event when access token changes', async () => {
                 config.ACCESS_TOKEN = 'pk.new.*';
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=pk.new.*`);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.method).toEqual('POST');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.event).toEqual('appUserTurnstile');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.sdkVersion).toEqual(version);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.skuId).toEqual(SKU_ID);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.userId).toBeTruthy();
             });
 
             test('POSTs appUserTurnstile event on next calendar day', async () => {
                 const now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
                 // Add a day
                 const tomorrow = now + ms25Hours;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(tomorrow, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 let req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
                 await new Promise(resolve => {
+                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
                     setTimeout(async () => {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                         req = window.server.requests[1];
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                         const reqBody = JSON.parse(await req.requestBody)[0];
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=key`);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.method).toEqual('POST');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.event).toEqual('appUserTurnstile');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.sdkVersion).toEqual(version);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.skuId).toEqual(SKU_ID);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.userId).toBeTruthy();
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                         equalWithPrecision(new Date(reqBody.created).valueOf(), tomorrow, 100);
                         resolve();
                     }, 0);
@@ -863,23 +1164,35 @@ describe("mapbox", () => {
                 let now = Date.now();
 
                 const today = now;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postTurnstileEvent(mapboxTileURLs);
 
                 const laterToday = now + 1;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(laterToday, () => event.postTurnstileEvent(mapboxTileURLs));
 
                 const tomorrow = laterToday + ms25Hours; // Add a day
                 now = tomorrow;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(tomorrow, () => event.postTurnstileEvent(mapboxTileURLs));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const reqToday = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 reqToday.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 let reqBody = JSON.parse(await reqToday.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), today, 100);
+                await new Promise(r => { setTimeout(r, 0); });
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const reqTomorrow = window.server.requests[1];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 reqTomorrow.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 reqBody = JSON.parse(await reqTomorrow.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), tomorrow, 100);
             });
         });
@@ -890,6 +1203,7 @@ describe("mapbox", () => {
         let turnstileEvent: any;
         const skuToken = '1234567890123';
         beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             window.useFakeXMLHttpRequest();
             event = new mapbox.MapLoadEvent();
             turnstileEvent = new mapbox.TurnstileEvent();
@@ -900,46 +1214,118 @@ describe("mapbox", () => {
         });
 
         test('contains all payload including skuId and skuToken', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postMapLoadEvent(1, skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const reqBody = await window.server.requests[0].requestBody;
             // reqBody is a string of an array containing the event object so pick out the stringified event object and convert to an object
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             const mapLoadEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.event).toEqual('map.load');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.skuId).toEqual(SKU_ID);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.skuToken).toEqual(skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.sdkIdentifier).toEqual('mapbox-gl-js');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(mapLoadEvent.sdkVersion).toEqual(version);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(!!mapLoadEvent.userId).toBeTruthy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(!!mapLoadEvent.created).toBeTruthy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.version).toEqual('2.2');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.sdkInfo).toBeUndefined();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.bundleFormat).toEqual('unknown');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.bundleDistribution).toEqual('other');
+        });
+
+        test('drains the second queued event using its own access token, not the first event\'s stale token', async () => {
+            // Simulates two Map instances with different per-Map accessTokens posting
+            // telemetry through the shared MapLoadEvent singleton while a request is in flight.
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            event.postMapLoadEvent(1, skuToken, 'token-for-map-a', () => {});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            event.postMapLoadEvent(2, skuToken, 'token-for-map-b', () => {});
+
+            // Let the first request's promise chain settle, which triggers draining the
+            // second queued event.
+            await new Promise(resolve => { setTimeout(resolve, 0); });
+
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(2);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests[0].url).toContain('access_token=token-for-map-a');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests[1].url).toContain('access_token=token-for-map-b');
+        });
+
+        test('setSdkInfo ignores invalid values', async () => {
+            mapbox.setSdkInfo('not a valid value!');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            event.postMapLoadEvent(1, skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+            const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            const mapLoadEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.sdkInfo).toBeUndefined();
+        });
+
+        test('includes sdkInfo when set via setSdkInfo', async () => {
+            mapbox.setSdkInfo('FlutterPlugin/3.0.0-beta.1');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            event.postMapLoadEvent(1, skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+            const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            const mapLoadEvent = JSON.parse(reqBody.slice(1, reqBody.length - 1));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(mapLoadEvent.sdkInfo).toEqual('FlutterPlugin/3.0.0-beta.1');
         });
 
         test('does not POST when mapboxgl.ACCESS_TOKEN is not set', () => {
             config.ACCESS_TOKEN = null;
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postMapLoadEvent(1, skuToken, null, () => {});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
         test('POSTs cn event when API_URL changes to cn endpoint', () => {
             config.API_URL = 'https://api.mapbox.cn';
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postMapLoadEvent(1, skuToken);
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
             const req = window.server.requests[0];
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             req.respond(200);
 
-            expect(req.url.indexOf('https://events.mapbox.cn') > -1).toBeTruthy();
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            expect(req.url.includes('https://events.mapbox.cn')).toBeTruthy();
         });
 
         test('POSTs no event when API_URL unavailable', () => {
             config.API_URL = null;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postMapLoadEvent(1, skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
         test('POSTs no event when API_URL is non-standard', () => {
             config.API_URL = "https://api.example.com";
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             event.postMapLoadEvent(1, skuToken);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             expect(window.server.requests.length).toEqual(0);
         });
 
@@ -947,14 +1333,14 @@ describe("mapbox", () => {
             beforeEach(() => {
                 vi.stubGlobal('localStorage', {
                     data: {},
-                    setItem (id, val) {
+                    setItem(this: {data: Record<string, string>}, id: string, val: string) {
                         this.data[id] = String(val);
                     },
-                    getItem (id) {
-                        return this.data.hasOwnProperty(id) ? this.data[id] : undefined;
+                    getItem(this: {data: Record<string, string>}, id: string) {
+                        return Object.hasOwn(this.data, id) ? this.data[id] : undefined;
                     },
-                    removeItem (id) {
-                        if (this.hasOwnProperty(id)) delete this[id];
+                    removeItem(this: {data: Record<string, string>}, id: string) {
+                        if (Object.hasOwn(this, id)) delete this.data[id];
                     }
                 });
             });
@@ -964,48 +1350,67 @@ describe("mapbox", () => {
                     anonId: 'anonymous'
                 }));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.userId).not.toEqual('anonymous');
             });
 
             test('does not POST map.load event second time within same calendar day', async () => {
                 let now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
 
                 //Post second event
                 const firstEvent = now;
                 now += (60 * 1000); // A bit later
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             }
             );
 
             test('does not POST map.load event second time when clock goes backwards less than a day', async () => {
                 let now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
 
                 //Post second event
                 const firstEvent = now;
                 now -= (60 * 1000); // A bit earlier
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), firstEvent, 100);
             }
             );
@@ -1013,96 +1418,150 @@ describe("mapbox", () => {
             test('POSTs map.load event when access token changes', () => {
                 config.ACCESS_TOKEN = 'pk.new.*';
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=pk.new.*`);
             });
 
             test('uses the same uuid as TurnstileEvent', async () => {
                 const anonId = uuid();
                 window.localStorage.setItem(`mapbox.eventData.uuid:${config.ACCESS_TOKEN}`, anonId);
+                window.localStorage.setItem(`mapbox.eventData.uuidTimestamp:${config.ACCESS_TOKEN}`, Date.now().toString());
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 turnstileEvent.postTurnstileEvent(mapboxTileURLs);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const turnstileReq = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 turnstileReq.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const mapLoadReq = window.server.requests[1];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 mapLoadReq.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const turnstileBody = JSON.parse(await turnstileReq.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const loadBody = JSON.parse(await mapLoadReq.requestBody)[0];
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(turnstileBody.userId).toEqual(loadBody.userId);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(turnstileBody.userId).toEqual(anonId);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 const turnstileEventData = JSON.parse(window.localStorage.getItem(`mapbox.eventData:${config.ACCESS_TOKEN}`));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(turnstileEventData.lastSuccess).toBeTruthy();
             });
         });
 
         describe('when LocalStorage is not available', () => {
             test('POSTs map.load event', async () => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=key`);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.method).toEqual('POST');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.event).toEqual('map.load');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.sdkVersion).toEqual(version);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.userId).toBeTruthy();
             });
 
             test('does not POST map.load multiple times for the same map instance', async () => {
                 const now = Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now + 5, () => event.postMapLoadEvent(1, skuToken));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(window.server.requests.length).toEqual(1);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
             });
 
             test('POSTs map.load event when access token changes', async () => {
                 config.ACCESS_TOKEN = 'pk.new.*';
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const req = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 req.respond(200);
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 const reqBody = JSON.parse(await req.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=pk.new.*`);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(req.method).toEqual('POST');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.event).toEqual('map.load');
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.sdkVersion).toEqual(version);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 expect(reqBody.userId).toBeTruthy();
             });
 
             test('POSTs distinct map.load for multiple maps', async () => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 event.postMapLoadEvent(1, skuToken);
                 const now = +Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(2, skuToken));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 let req = window.server.requests[0];
 
                 await new Promise((resolve) => {
+                    // eslint-disable-next-line @typescript-eslint/no-misused-promises
                     setTimeout(async () => {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                         req = window.server.requests[1];
 
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                         const reqBody = JSON.parse(await req.requestBody)[0];
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.url).toEqual(`${config.EVENTS_URL}?access_token=key`);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(req.method).toEqual('POST');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.event).toEqual('map.load');
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.sdkVersion).toEqual(version);
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                         expect(reqBody.userId).toBeTruthy();
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                         equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
                         resolve();
                     }, 0);
@@ -1111,23 +1570,41 @@ describe("mapbox", () => {
 
             test('Queues and POSTs map.load events when triggerred in quick succession by different maps', async () => {
                 const now = Date.now();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(1, skuToken));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(2, skuToken));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 withFixedDate(now, () => event.postMapLoadEvent(3, skuToken));
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const reqOne = window.server.requests[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 reqOne.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 let reqBody = JSON.parse(await reqOne.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
+                // allow the Promise chain to settle so the next request is queued
+                await new Promise(r => { setTimeout(r, 0); });
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const reqTwo = window.server.requests[1];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 reqTwo.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 reqBody = JSON.parse(await reqTwo.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
+                await new Promise(r => { setTimeout(r, 0); });
 
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                 const reqThree = window.server.requests[2];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 reqThree.respond(200);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 reqBody = JSON.parse(await reqThree.requestBody)[0];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                 equalWithPrecision(new Date(reqBody.created).valueOf(), now, 100);
             });
         });
@@ -1137,6 +1614,7 @@ describe("mapbox", () => {
         let sessionAPI: any;
         const skuToken = '1234567890123';
         beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
             window.useFakeXMLHttpRequest();
             vi.stubGlobal('caches', undefined);
             sessionAPI = new mapbox.MapSessionAPI();
@@ -1147,10 +1625,12 @@ describe("mapbox", () => {
         });
 
         test('contains access token and skuToken', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             sessionAPI.getSession(1, skuToken, () => {});
 
             await new Promise((resolve) => {
                 setTimeout(() => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
                     const requestURL = new URL(window.server.requests[0].url);
                     const urlParam = new URLSearchParams(requestURL.search);
                     expect(urlParam.get('sku')).toEqual(skuToken);
@@ -1160,30 +1640,110 @@ describe("mapbox", () => {
             });
         });
 
-        test('no API is sent when API_URL unavailable', async () => {
+        test('no API is sent when API_URL unavailable', () => {
             config.API_URL = null;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             sessionAPI.getSession(1, skuToken, () => {});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(0);
+        });
 
-            await new Promise((resolve) => {
-                setTimeout(() => {
-                    expect(window.server.requests.length).toEqual(0);
-                    resolve();
-                }, 0);
-            });
+        test('no session request is sent when API_URL is not a Mapbox host', () => {
+            config.API_URL = 'http://localhost:8080';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            sessionAPI.getSessionAPI(1, skuToken, config.ACCESS_TOKEN, () => {});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(window.server.requests.length).toEqual(0);
         });
 
         test('send a new request when access token changes', async () => {
             config.ACCESS_TOKEN = 'pk.new.*';
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             sessionAPI.getSession(1, skuToken, () => {});
 
             await new Promise(resolve => {
-                const req = window.server.requests[0];
-                expect(req.url).toEqual(
-                    `${config.API_URL + config.SESSION_PATH}?sku=${skuToken}&access_token=pk.new.*`
-                );
-                expect(req.method).toEqual('GET');
-                resolve();
+                setTimeout(() => {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+                    const req = window.server.requests[0];
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(req.url).toEqual(
+                        `${config.API_URL + config.SESSION_PATH}?sku=${skuToken}&access_token=pk.new.*`
+                    );
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                    expect(req.method).toEqual('GET');
+                    resolve();
+                }, 0);
             });
+        });
+    });
+
+    describe('parseAccessToken', () => {
+        test('parses a token with expiration field', () => {
+            const header = btoa(JSON.stringify({typ: 'JWT', alg: 'ES256'}));
+            const payload = btoa(JSON.stringify({atlas: 1774345201000}));
+            const token = `${header}.${payload}.signature`;
+            const result = mapbox.parseAccessToken(token);
+            if (!result) throw new Error('expected non-null result');
+            expect(result.atlas).toEqual(1774345201000);
+            expect(result.u).toBeUndefined();
+        });
+
+        test('parses a token with user field', () => {
+            const header = btoa(JSON.stringify({typ: 'JWT', alg: 'ES256'}));
+            const payload = btoa(JSON.stringify({u: 'user123'}));
+            const token = `${header}.${payload}.signature`;
+            const result = mapbox.parseAccessToken(token);
+            if (!result) throw new Error('expected non-null result');
+            expect(result.u).toEqual('user123');
+            expect(result.atlas).toBeUndefined();
+        });
+
+        test('returns null for null input', () => {
+            expect(mapbox.parseAccessToken(null)).toBeNull();
+        });
+
+        test('returns null for empty string', () => {
+            expect(mapbox.parseAccessToken('')).toBeNull();
+        });
+
+        test('returns null for non-JWT string', () => {
+            expect(mapbox.parseAccessToken('not-a-jwt')).toBeNull();
+        });
+
+        test('returns null for two-part token', () => {
+            expect(mapbox.parseAccessToken('a.b')).toBeNull();
+        });
+
+        test('returns null for invalid base64 payload', () => {
+            expect(mapbox.parseAccessToken('a.!!!.c')).toBeNull();
+        });
+    });
+
+    describe('setBundleDistribution', () => {
+        let event: any;
+        const skuToken = '1234567890123';
+        beforeEach(() => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            window.useFakeXMLHttpRequest();
+            event = new mapbox.MapLoadEvent();
+        });
+        afterEach(() => {
+            // Reset the module-level state set by these tests (default is 'other').
+            mapbox.setBundleDistribution('other');
+        });
+
+        async function getBundleDistribution(): Promise<string> {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
+            const reqBody = await window.server.requests[0].requestBody;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            return JSON.parse(reqBody.slice(1, reqBody.length - 1)).bundleDistribution;
+        }
+
+        test('payload reflects the bundleDistribution set via setBundleDistribution', async () => {
+            mapbox.setBundleDistribution('cdn');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            event.postMapLoadEvent(1, skuToken);
+            expect(await getBundleDistribution()).toEqual('cdn');
         });
     });
 });

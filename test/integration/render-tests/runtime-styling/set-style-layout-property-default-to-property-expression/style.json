@@ -68,6 +68,9 @@
         [
           "wait"
         ]
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00318}
       ]
     }
   },

@@ -1,7 +1,7 @@
-import assert from 'assert';
-
+import assert from '../style-spec/util/assert';
 import {register} from './web_worker_transfer';
 import Color from '../style-spec/util/color';
+
 import type {LUT} from "./lut";
 
 export type Size = {
@@ -9,11 +9,12 @@ export type Size = {
     height: number;
 };
 
-export interface SpritePosition {
-    readonly tl: [number, number];
-    readonly br: [number, number];
-    readonly pixelRatio?: number;
-}
+export type SpritePosition = Readonly<{
+    tl: [number, number];
+    br: [number, number];
+    pixelRatio?: number;
+}>;
+
 export type SpritePositions = {
     [_: string]: SpritePosition;
 };
@@ -113,8 +114,8 @@ function copyImage<T extends RGBAImage | AlphaImage>(
                 const dstPixelOffset = dstOffset + i * channels;
 
                 const alpha = srcData[srcByteOffset + 3];
-                const color = new Color(srcData[srcByteOffset + 0] / 255 * alpha, srcData[srcByteOffset + 1] / 255 * alpha, srcData[srcByteOffset + 2] / 255 * alpha, alpha);
-                const shifted = color.toRenderColor(lut).toArray();
+                const color = new Color(srcData[srcByteOffset + 0] / 255, srcData[srcByteOffset + 1] / 255, srcData[srcByteOffset + 2] / 255, alpha);
+                const shifted = color.toNonPremultipliedRenderColor(lut).toArray();
 
                 dstData[dstPixelOffset + 0] = shifted[0];
                 dstData[dstPixelOffset + 1] = shifted[1];
@@ -132,9 +133,9 @@ function copyImage<T extends RGBAImage | AlphaImage>(
 }
 
 export class AlphaImage {
-    width: number;
-    height: number;
-    data: Uint8Array;
+    width!: number;
+    height!: number;
+    data!: Uint8Array;
 
     constructor(size: Size, data?: Uint8Array | Uint8ClampedArray) {
         createImage(this, size, 1, data);
@@ -156,12 +157,12 @@ export class AlphaImage {
 // Not premultiplied, because ImageData is not premultiplied.
 // UNPACK_PREMULTIPLY_ALPHA_WEBGL must be used when uploading to a texture.
 export class RGBAImage {
-    width: number;
-    height: number;
+    width!: number;
+    height!: number;
 
     // data must be a Uint8Array instead of Uint8ClampedArray because texImage2D does not
     // support Uint8ClampedArray in all browsers
-    data: Uint8Array;
+    data!: Uint8Array;
 
     constructor(size: Size, data?: Uint8Array | Uint8ClampedArray) {
         createImage(this, size, 4, data);

@@ -1,21 +1,33 @@
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import offscreenCanvasSupported from './offscreen_canvas_supported';
+
 import type {Cancelable} from '../types/cancelable';
 
-let linkEl;
+let linkEl: HTMLAnchorElement | undefined;
 
 let reducedMotionQuery: MediaQueryList;
 
 let stubTime: number | undefined;
 
-let canvas;
+let canvas: HTMLCanvasElement | undefined;
 
-let hasCanvasFingerprintNoise;
+let hasCanvasFingerprintNoise: boolean | undefined;
 
 /**
  * @private
  */
 const exported = {
+    requestIdleCallback: (callback: (deadline: IdleDeadline) => void): number | undefined => {
+        if (typeof requestIdleCallback !== 'undefined') {
+            return requestIdleCallback(callback);
+        } else {
+            // Fallback for environments without requestIdleCallback: emulate a fresh idle
+            // window (50ms is the spec maximum) via setTimeout so callers that rely on
+            // deadline.timeRemaining() still make progress.
+            setTimeout(() => callback({didTimeout: false, timeRemaining: () => 50}), 0);
+        }
+    },
+
     /**
      * Returns either performance.now() or a value set by setNow.
      * @returns {number} Time value in milliseconds.
@@ -39,8 +51,7 @@ const exported = {
         return {cancel: () => cancelAnimationFrame(frame)};
     },
 
-    getImageData(img: CanvasImageSource, padding: number = 0): ImageData {
-        // @ts-expect-error - TS2339 - Property 'width' does not exist on type 'CanvasImageSource'. | TS2339 - Property 'height' does not exist on type 'CanvasImageSource'.
+    getImageData(img: ImageBitmap | HTMLImageElement, padding: number = 0): ImageData {
         const {width, height} = img;
 
         if (!canvas) {
@@ -72,9 +83,7 @@ const exported = {
     get prefersReducedMotion(): boolean {
         if (!window.matchMedia) return false;
         // Lazily initialize media query.
-        if (reducedMotionQuery == null) {
-            reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-        }
+        reducedMotionQuery ??= window.matchMedia('(prefers-reduced-motion: reduce)');
         return reducedMotionQuery.matches;
     },
 
@@ -96,6 +105,7 @@ const exported = {
 
         const offscreenCanvas = new OffscreenCanvas(255 / 3, 1);
         const offscreenCanvasContext = offscreenCanvas.getContext('2d', {willReadFrequently: true});
+        assert(offscreenCanvasContext, 'OffscreenCanvas 2D context unavailable');
         let inc = 0;
         // getImageData is lossy with premultiplied alpha.
         for (let i = 0; i < offscreenCanvas.width; ++i) {
@@ -116,3 +126,5 @@ const exported = {
 };
 
 export default exported;
+
+export const {setNow, restoreNow} = exported;

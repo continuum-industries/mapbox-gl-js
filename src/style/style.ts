@@ -1,31 +1,33 @@
-import assert from 'assert';
-import murmur3 from 'murmurhash-js';
-
+import assert from '../style-spec/util/assert';
+import murmur3 from '../util/murmur3';
 import {Event, ErrorEvent, Evented} from '../util/evented';
-import StyleLayer from './style_layer';
 import StyleChanges from './style_changes';
 import createStyleLayer from './create_style_layer';
+import {LayerExpressionDependencies} from './layer_expression_dependencies';
 import loadSprite from './load_sprite';
 import ImageManager from '../render/image_manager';
 import GlyphManager, {LocalGlyphMode} from '../render/glyph_manager';
 import Light from './light';
 import Terrain, {DrapeRenderMode} from './terrain';
 import Fog from './fog';
-import {pick, clone, extend, deepEqual, filterObject, cartesianPositionToSpherical, warnOnce} from '../util/util';
-import {getJSON, getReferrer, makeRequest, ResourceType} from '../util/ajax';
+import Snow from './snow';
+import Rain from './rain';
+import {clone, deepEqual, filterObject, cartesianPositionToSpherical, warnOnce} from '../util/util';
+import {getJSON, getReferrer, ResourceType} from '../util/ajax';
 import {isMapboxURL} from '../util/mapbox_url';
 import {stripQueryParameters} from '../util/url';
 import browser from '../util/browser';
+import {getBroadcastableConfig} from '../util/config';
 import Dispatcher from '../util/dispatcher';
 import Lights from '../../3d-style/style/lights';
-import {properties as ambientProps} from '../../3d-style/style/ambient_light_properties';
-import {properties as directionalProps} from '../../3d-style/style/directional_light_properties';
-import {createExpression} from '../style-spec/expression/index';
-import Painter from '../render/painter';
-import ClipStyleLayer from './style_layer/clip_style_layer';
-import type SymbolBucket from '../data/bucket/symbol_bucket';
-import {LayerTypeMask} from '../../3d-style/util/conflation';
-
+import {getProperties as getAmbientProps} from '../../3d-style/style/ambient_light_properties';
+import {getProperties as getDirectionalProps} from '../../3d-style/style/directional_light_properties';
+import {createExpression, createConfigExpression} from '../style-spec/expression/index';
+import {HD, prepareHD as prepareHDMain} from '../../modules/hd_main';
+import {prepareStandard as prepareStandardMain} from '../../modules/standard_main';
+import {prepareLite as prepareLiteMain} from '../../modules/lite_main';
+import {HD_ROAD_COVERAGE_SOURCE_LAYER} from '../source/frc_coverage_snapshot';
+import {DebugModule, prepareDebug} from '../../modules/debug';
 import {
     validateStyle,
     validateLayoutProperty,
@@ -42,17 +44,17 @@ import {QueryGeometry} from '../style/query_geometry';
 import {
     create as createSource,
     getType as getSourceType,
-    setType as setSourceType,
 } from '../source/source';
-import {queryRenderedFeatures, queryRenderedSymbols, querySourceFeatures} from '../source/query_features';
+import {isLazySourceType, ensureSourceType} from '../source/lazy_source_types';
+import LazySource from '../source/lazy_source';
+import {queryRenderedFeatures, queryRenderedSymbols, querySourceFeatures, shouldSkipFeatureVariant} from '../source/query_features';
 import SourceCache from '../source/source_cache';
+import {RenderSourceType} from '../source/render_source_type';
 import BuildingIndex from '../source/building_index';
-import GeoJSONSource from '../source/geojson_source';
 import styleSpec from '../style-spec/reference/latest';
-import getWorkerPool from '../util/global_worker_pool';
+import {getGlobalWorkerPool as getWorkerPool} from '../util/worker_pool_factory';
 import deref from '../style-spec/deref';
 import emptyStyle from '../style-spec/empty';
-import diffStyles, {operations as diffOperations} from '../style-spec/diff';
 import {
     registerForPluginStateChange,
     evented as rtlTextPluginEvented,
@@ -61,16 +63,33 @@ import {
 import PauseablePlacement from './pauseable_placement';
 import CrossTileSymbolIndex from '../symbol/cross_tile_symbol_index';
 import {validateCustomStyleLayer} from './style_layer/custom_style_layer';
-import {isFQID, makeFQID, getNameFromFQID, getScopeFromFQID} from '../util/fqid';
-import {shadowDirectionFromProperties} from '../../3d-style/render/shadow_renderer';
+import {isFQID, makeFQID, getNameFromFQID, getInnerScopeFromFQID, getOuterScopeFromFQID} from '../util/fqid';
+import {shadowDirectionFromProperties} from '../../3d-style/render/shadow_utils';
 import ModelManager from '../../3d-style/render/model_manager';
-import {DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM} from '../geo/transform';
-import type {ReplacementSource} from "../../3d-style/source/replacement_source";
+import {ProgramPrecompiler} from '../render/program_precompiler';
 import {RGBAImage} from '../util/image';
-import type {ColorThemeSpecification,
+import {evaluateColorThemeProperties} from '../util/lut';
+import EvaluationParameters from './evaluation_parameters';
+import featureFilter from '../style-spec/feature_filter/index';
+import {TargetFeature} from '../util/vectortile_to_geojson';
+import {loadIconset} from './load_iconset';
+import {ImageId} from '../style-spec/expression/types/image_id';
+import {ImageProvider} from '../render/image_provider';
+import {StyleBOMUtils} from './style_bom_utils';
+
+import type IndoorManager from '../../3d-style/style/indoor_manager';
+import type {FontstackCompositing} from './glyph_loader';
+import type {PropertyValidatorOptions} from '../style-spec/validate/validate_property';
+import type Tile from '../source/tile';
+import type GeoJSONSource from '../source/geojson_source';
+import type {ReplacementSource} from "../../3d-style/source/replacement_source";
+import type SymbolStyleLayer from '../style/style_layer/symbol_style_layer';
+import type {
+    ColorThemeSpecification,
     LayerSpecification,
+    LayoutSpecification,
+    PaintSpecification,
     FilterSpecification,
-    ExpressionSpecification,
     StyleSpecification,
     ImportSpecification,
     LightSpecification,
@@ -79,49 +98,80 @@ import type {ColorThemeSpecification,
     LightsSpecification,
     FlatLightSpecification,
     FogSpecification,
+    SnowSpecification,
+    RainSpecification,
     ProjectionSpecification,
     TransitionSpecification,
-    PropertyValueSpecification,
     ConfigSpecification,
     SchemaSpecification,
-    CameraSpecification
+    CameraSpecification,
+    FeaturesetsSpecification,
+    IconsetSpecification,
+    ModelsSpecification,
+    AppearanceSpecification,
+    LayerBaseSpecification,
+    TerrainSpecificationUpdate
 } from '../style-spec/types';
-import {evaluateColorThemeProperties} from '../util/lut';
+import type {StyleImage, StyleImageMap} from './style_image';
+import type Transform from '../geo/transform';
+import type {Map as MapboxMap} from '../ui/map';
+import type {MapEvents} from '../ui/events';
+import type {vec3} from 'gl-matrix';
+import type {LightProps as Directional} from '../../3d-style/style/directional_light_properties';
+import type {LightProps as Ambient} from '../../3d-style/style/ambient_light_properties';
+import type {Placement} from '../symbol/placement';
+import type {PlacementAlgorithmName} from '../symbol/placement_algorithms';
+import type {Cancelable} from '../types/cancelable';
+import type {CustomLayerInterface} from './style_layer/custom_style_layer';
+import type {Validator, ValidationErrors} from './validate_style';
+import type {FeatureState, StyleExpression} from '../style-spec/expression/index';
+import type {PointLike} from '../types/point-like';
+import type {ISource, Source} from '../source/source';
+import type {TransitionParameters, ConfigOptions} from './properties';
+import type {QrfQuery, QrfTarget, QueryResult} from '../source/query_features';
+import type {GeoJSONFeature, FeaturesetDescriptor, TargetDescriptor, default as Feature} from '../util/vectortile_to_geojson';
+import type {LUT} from '../util/lut';
+import type {SerializedExpression} from '../style-spec/expression/expression';
+import type {MainInbox, WorkerInbox} from '../util/actor_messages';
+import type {StringifiedImageId} from '../style-spec/expression/types/image_id';
+import type {CustomSourceInterface} from '../source/custom_source';
+import type {CanvasSourceSpecification} from '../source/canvas_source';
+import type {StyleModelMap} from './style_mode';
+import type {TypedStyleLayer} from './style_layer/typed_style_layer';
+import type {LngLatLike} from '../geo/lng_lat';
+import type {RasterQueryParameters, RasterQueryResult} from '../source/raster_array_tile_source';
+import type {StyleBOM} from './style_bom_utils';
+
+export type {StyleBOMEntry, StyleBOM} from './style_bom_utils';
+
+export type QueryRenderedFeaturesParams = {
+    layers?: string[];
+    filter?: FilterSpecification;
+    validate?: boolean;
+    target?: never;
+};
+
+export type QueryRenderedFeaturesetParams = {
+    target: TargetDescriptor;
+    filter?: FilterSpecification;
+    validate?: boolean;
+    layers?: never;
+};
 
 // We're skipping validation errors with the `source.canvas` identifier in order
 // to continue to allow canvas sources to be added at runtime/updated in
 // smart setStyle (see https://github.com/mapbox/mapbox-gl-js/pull/6424):
-const emitValidationErrors = (evented: Evented, errors?: ValidationErrors | null) =>
-    _emitValidationErrors(evented, errors && errors.filter(error => error.identifier !== 'source.canvas'));
+const emitValidationErrors = (evented: Evented, errors?: ValidationErrors | null) => _emitValidationErrors(evented, errors && errors.filter(error => error.identifier !== 'source.canvas'));
 
-import type {LightProps as Ambient} from '../../3d-style/style/ambient_light_properties';
-import type {LightProps as Directional} from '../../3d-style/style/directional_light_properties';
-import type {vec3} from 'gl-matrix';
-import type {Map as MapboxMap} from '../ui/map';
-import type Transform from '../geo/transform';
-import type {StyleImage} from './style_image';
-import type {StyleGlyph} from './style_glyph';
-import type {Callback} from '../types/callback';
-import EvaluationParameters from './evaluation_parameters';
-import type {Placement} from '../symbol/placement';
-import type {Cancelable} from '../types/cancelable';
-import type {RequestParameters, ResponseCallback} from '../util/ajax';
-import type {CustomLayerInterface} from './style_layer/custom_style_layer';
-import type {Validator, ValidationErrors} from './validate_style';
-import type {OverscaledTileID} from '../source/tile_id';
-import type {FeatureStates} from '../source/source_state';
-import type {PointLike} from '../types/point-like';
-import type {Source, SourceClass} from '../source/source';
-import type {TransitionParameters, ConfigOptions} from './properties';
-import type {QueryResult, QueryFeature, QueryRenderedFeaturesParams} from '../source/query_features';
-import type {LUT} from '../util/lut';
-
-const supportedDiffOperations = pick(diffOperations, [
+// Operations the diff algorithm may emit that we handle incrementally without a full restyle.
+// Maintained as a plain Set of string constants — see src/style-spec/diff.ts.
+const supportedDiffOperations: ReadonlySet<string> = new Set([
     'addLayer',
     'removeLayer',
     'setLights',
     'setPaintProperty',
     'setLayoutProperty',
+    'setLayerProperty',
     'setSlot',
     'setFilter',
     'addSource',
@@ -132,34 +182,67 @@ const supportedDiffOperations = pick(diffOperations, [
     'setGeoJSONSourceData',
     'setTerrain',
     'setFog',
+    'setSnow',
+    'setRain',
     'setProjection',
     'setCamera',
     'addImport',
     'removeImport',
-    'updateImport'
+    'updateImport',
+    'addIconset',
+    'removeIconset',
     // 'setGlyphs',
     // 'setSprite',
 ]);
 
-const ignoredDiffOperations = pick(diffOperations, [
+const ignoredDiffOperations: ReadonlySet<string> = new Set([
     'setCenter',
     'setZoom',
     'setBearing',
     'setPitch'
 ]);
 
+/**
+ * Layer types that has no features and are not queryable with QRF API.
+ */
+const featurelessLayerTypes = new Set(['background', 'sky', 'slot', 'custom']);
+
 const empty = emptyStyle();
+
+type AnyLayerSource = {
+    source?: LayerSpecification['source'] | SourceSpecification
+};
+
+/**
+ * Helper type that represents user provided layer in addLayer method.
+ * @private
+ */
+export type AnyLayer = Omit<LayerSpecification, 'source'> & AnyLayerSource | CustomLayerInterface;
+
+export type FeatureSelector = {
+    id: string | number;
+    source: string;
+    sourceLayer?: string;
+};
+
+export type SourceSelector = {
+    id?: string | number;
+    source: string;
+    sourceLayer?: string;
+};
 
 export type StyleOptions = {
     validate?: boolean;
     localFontFamily?: string | null | undefined;
     localIdeographFontFamily?: string;
+    fontstackCompositing?: FontstackCompositing;
     dispatcher?: Dispatcher;
     imageManager?: ImageManager;
     glyphManager?: GlyphManager;
     modelManager?: ModelManager;
     styleChanges?: StyleChanges;
     configOptions?: ConfigOptions;
+    colorThemeOverride?: ColorThemeSpecification;
     scope?: string;
     importDepth?: number;
     importsCache?: Map<string, StyleSpecification>;
@@ -168,7 +251,7 @@ export type StyleOptions = {
     initialConfig?: {
         [key: string]: ConfigSpecification;
     };
-    configDependentLayers?: Set<string>;
+    layerExpressionDependencies?: Map<string, LayerExpressionDependencies>;
 };
 
 export type StyleSetterOptions = {
@@ -185,8 +268,19 @@ export type Fragment = {
 type StyleColorTheme = {
     lut: LUT | null;
     lutLoading: boolean;
+    lutLoadingCorrelationID: number;
     colorTheme: ColorThemeSpecification | null;
+    colorThemeOverride: ColorThemeSpecification | null;
 };
+
+type FeaturesetSelector = {
+    layerId: string;
+    namespace?: string;
+    properties?: Record<string, StyleExpression>;
+    uniqueFeatureID: boolean;
+};
+
+export type LayerProperty = LayerBaseSpecification & PaintSpecification & LayoutSpecification;
 
 const MAX_IMPORT_DEPTH = 5;
 const defaultTransition = {duration: 300, delay: 0};
@@ -194,26 +288,29 @@ const defaultTransition = {duration: 300, delay: 0};
 /**
  * @private
  */
-class Style extends Evented {
+class Style extends Evented<MapEvents> {
     map: MapboxMap;
-    stylesheet: StyleSpecification;
+    stylesheet!: StyleSpecification;
     dispatcher: Dispatcher;
     imageManager: ImageManager;
     glyphManager: GlyphManager;
     modelManager: ModelManager;
+    indoorManager: IndoorManager | null;
     ambientLight: Lights<Ambient> | null | undefined;
     directionalLight: Lights<Directional> | null | undefined;
-    light: Light;
+    light!: Light;
     terrain: Terrain | null | undefined;
     disableElevatedTerrain: boolean | null | undefined;
     fog: Fog | null | undefined;
-    camera: CameraSpecification;
+    snow: Snow | null | undefined;
+    rain: Rain | null | undefined;
+    camera!: CameraSpecification;
     _styleColorTheme: StyleColorTheme;
     _styleColorThemeForScope: {
         [_: string]: StyleColorTheme;
     };
     transition: TransitionSpecification;
-    projection: ProjectionSpecification;
+    projection!: ProjectionSpecification;
 
     // Serializable identifier of style, which we use for telemetry
     globalId: string | null;
@@ -230,20 +327,30 @@ class Style extends Evented {
 
     // Merged layers and sources
     _mergedOrder: Array<string>;
-    _mergedLayers: Record<string, StyleLayer>;
-    _mergedSlots: Array<string>;
+    _mergedLayers: Record<string, TypedStyleLayer>;
+    _mergedIndoor: Record<string, Set<string>>;
+    // Whether indoor is actually turned on by config (an indoor-source layer is visible),
+    // not merely declared in the stylesheet. Cached so per-tile `isIndoorEnabled()` is cheap.
+    _indoorEnabled: boolean;
+    _mergedSlots!: Array<string>;
     _mergedSourceCaches: Record<string, SourceCache>;
     _mergedOtherSourceCaches: Record<string, SourceCache>;
     _mergedSymbolSourceCaches: Record<string, SourceCache>;
-    _clipLayerIndices: Array<number>;
+    _mergedFillExtrusionSourceCaches: Record<string, SourceCache>;
+    _mergedHdRoadCoverageSourceCaches: Record<string, SourceCache>;
+    _mergedHdRoadElevationSourceCaches: Record<string, SourceCache>;
+    _hdCoverage: InstanceType<NonNullable<typeof HD.HdCoverageState>> | null;
+    _hdElevation: InstanceType<NonNullable<typeof HD.HdElevationState>> | null;
+    // Cached cross-source-elevation gate; refreshed on source change and each frame.
+    _crossSourceElevationActive: boolean;
+    _clipLayerPresent: boolean;
+
+    _featuresetSelectors!: Record<string, Array<FeaturesetSelector>>;
 
     _request: Cancelable | null | undefined;
-    _spriteRequest: Cancelable | null | undefined;
+    _spriteRequest: AbortController | null | undefined;
     _layers: {
-        [_: string]: StyleLayer;
-    };
-    _serializedLayers: {
-        [_: string]: any;
+        [_: string]: TypedStyleLayer;
     };
     _order: Array<string>;
     _drapedFirstOrder: Array<string>;
@@ -256,36 +363,45 @@ class Style extends Evented {
     _symbolSourceCaches: {
         [_: string]: SourceCache;
     };
+    _fillExtrusionSourceCaches: {
+        [_: string]: SourceCache;
+    };
     _loaded: boolean;
-    _shouldPrecompile: boolean;
-    _precompileDone: boolean;
-    _rtlTextPluginCallback: any;
+    _drapingLoaded?: boolean;
+    _initialBroadcastDone: boolean;
+    _programPrecompiler: ProgramPrecompiler | null;
+    _rtlTextPluginCallback: (state: {pluginStatus: string; pluginURL: string | null | undefined}) => void;
     _changes: StyleChanges;
     _optionsChanged: boolean;
-    _layerOrderChanged: boolean;
-    _availableImages: Array<string>;
+    _availableImages: ImageId[];
+    _availableModels: StyleModelMap;
     _markersNeedUpdate: boolean;
     _brightness: number | null | undefined;
-    _configDependentLayers: Set<string>;
+    // Expression dependencies of every layer in the style tree, keyed by layer
+    // fqid and shared by reference between the root style and its fragments.
+    _layerExpressionDependencies: Map<string, LayerExpressionDependencies>;
     _config: ConfigSpecification | null | undefined;
     _initialConfig: {
         [key: string]: ConfigSpecification;
     } | null | undefined;
     _buildingIndex: BuildingIndex;
     _transition: TransitionSpecification;
+    _importedAsBasemap: boolean;
 
     crossTileSymbolIndex: CrossTileSymbolIndex;
-    pauseablePlacement: PauseablePlacement;
-    placement: Placement;
-    z: number;
+    pauseablePlacement!: PauseablePlacement;
+    placement!: Placement;
+    z!: number;
 
     _has3DLayers: boolean;
     _hasCircleLayers: boolean;
     _hasSymbolLayers: boolean;
 
-    // exposed to allow stubbing by unit tests
-    static getSourceType: typeof getSourceType;
-    static setSourceType: typeof setSourceType;
+    _worldview: string | undefined;
+    _hasAppearances: boolean;
+
+    _hasDataDrivenEmissive: boolean;
+
     static registerForPluginStateChange: typeof registerForPluginStateChange;
 
     constructor(map: MapboxMap, options: StyleOptions = {}) {
@@ -300,27 +416,48 @@ class Style extends Evented {
 
         this.fragments = [];
         this.importDepth = options.importDepth || 0;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this.importsCache = options.importsCache || new Map();
         this.resolvedImports = options.resolvedImports || new Set();
 
-        this.transition = extend({}, defaultTransition);
+        this.transition = {...defaultTransition};
 
         this._buildingIndex = new BuildingIndex(this);
         this.crossTileSymbolIndex = new CrossTileSymbolIndex();
 
         this._mergedOrder = [];
         this._drapedFirstOrder = [];
-        this._mergedLayers = {};
+        this._mergedLayers = Object.create(null) as Style['_mergedLayers'];
+        this._mergedIndoor = {};
+        this._indoorEnabled = false;
         this._mergedSourceCaches = {};
-        this._mergedOtherSourceCaches = {};
-        this._mergedSymbolSourceCaches = {};
-        this._clipLayerIndices = [];
+        // `_other/_symbol/_fillExtrusionSourceCaches` are indexed by the raw
+        // source ID from the style JSON, so a source named "__proto__" would
+        // otherwise mutate the registry's prototype. Use null-prototype
+        // objects here (and in their non-merged counterparts and in
+        // `mergeSources`) to make those assignments ordinary own properties.
+        this._mergedOtherSourceCaches = Object.create(null) as Style['_mergedOtherSourceCaches'];
+        this._mergedSymbolSourceCaches = Object.create(null) as Style['_mergedSymbolSourceCaches'];
+        this._mergedFillExtrusionSourceCaches = Object.create(null) as Style['_mergedFillExtrusionSourceCaches'];
+        this._mergedHdRoadCoverageSourceCaches = Object.create(null) as Style['_mergedHdRoadCoverageSourceCaches'];
+        this._mergedHdRoadElevationSourceCaches = Object.create(null) as Style['_mergedHdRoadElevationSourceCaches'];
+        this._hdCoverage = null;
+        this._hdElevation = null;
+        this._crossSourceElevationActive = false;
+        this._clipLayerPresent = false;
+        this._hasAppearances = false;
 
         this._has3DLayers = false;
         this._hasCircleLayers = false;
         this._hasSymbolLayers = false;
 
+        this._importedAsBasemap = false;
+
         this._changes = options.styleChanges || new StyleChanges();
+
+        this._hasDataDrivenEmissive = false;
+
+        this.indoorManager = null;
 
         if (options.dispatcher) {
             this.dispatcher = options.dispatcher;
@@ -328,13 +465,29 @@ class Style extends Evented {
             this.dispatcher = new Dispatcher(getWorkerPool(), this);
         }
 
+        const globalWorkerParams: WorkerInbox['setGlobalParams']['params'] = {
+            referrer: getReferrer(),
+            config: getBroadcastableConfig(),
+        };
+
+        // Send UBO limits to workers so they can size batches correctly for this device.
+        if (this.map.painter && this.map.painter.context) {
+            const maxBindingPoints = this.map.painter.context.maxUniformBufferBindings;
+            const maxUniformBlockSizeDwords = Math.floor(this.map.painter.context.maxUniformBlockSize / 4);
+            globalWorkerParams.contextOptions = {maxBindingPoints, maxUniformBlockSizeDwords};
+        }
+
+        if (this.isRootStyle()) {
+            this.dispatcher.broadcast('setGlobalParams', globalWorkerParams);
+        }
+
         if (options.imageManager) {
             this.imageManager = options.imageManager;
         } else {
-            this.imageManager = new ImageManager();
+            this.imageManager = new ImageManager(this.map._spriteFormat);
             this.imageManager.setEventedParent(this);
         }
-        this.imageManager.createScope(this.scope);
+        this.imageManager.addScope(this.scope);
 
         if (options.glyphManager) {
             this.glyphManager = options.glyphManager;
@@ -343,7 +496,8 @@ class Style extends Evented {
                 options.localFontFamily ?
                     LocalGlyphMode.all :
                     (options.localIdeographFontFamily ? LocalGlyphMode.ideographs : LocalGlyphMode.none),
-                options.localFontFamily || options.localIdeographFontFamily);
+                options.localFontFamily || options.localIdeographFontFamily,
+                options.fontstackCompositing);
         }
 
         if (options.modelManager) {
@@ -353,40 +507,53 @@ class Style extends Evented {
             this.modelManager.setEventedParent(this);
         }
 
-        this._layers = {};
-        this._serializedLayers = {};
+        // Use a null-prototype object so a layer ID of "__proto__" (or any
+        // other inherited-property name) becomes an ordinary own property
+        // rather than mutating Object.prototype. The same hardening exists
+        // in StyleLayerIndex on the worker side.
+        this._layers = Object.create(null) as Style['_layers'];
         this._sourceCaches = {};
-        this._otherSourceCaches = {};
-        this._symbolSourceCaches = {};
+        this._otherSourceCaches = Object.create(null) as Style['_otherSourceCaches'];
+        this._symbolSourceCaches = Object.create(null) as Style['_symbolSourceCaches'];
+        this._fillExtrusionSourceCaches = Object.create(null) as Style['_fillExtrusionSourceCaches'];
+        this._hdCoverage = null;
+        this._hdElevation = null;
+        this._crossSourceElevationActive = false;
         this._loaded = false;
-        this._precompileDone = false;
-        this._shouldPrecompile = false;
+        this._drapingLoaded = undefined;
+        this._initialBroadcastDone = false;
+        this._programPrecompiler = this.map._precompilePrograms && this.isRootStyle() ?
+            new ProgramPrecompiler() :
+            null;
         this._availableImages = [];
+        this._availableModels = {};
         this._order = [];
         this._markersNeedUpdate = false;
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        this.options = options.configOptions ? options.configOptions : new Map();
+        this._layerExpressionDependencies = options.layerExpressionDependencies ? options.layerExpressionDependencies : new Map<string, LayerExpressionDependencies>();
+        this._config = options.config;
         this._styleColorTheme = {
             lut: null,
             lutLoading: false,
-            colorTheme: null
+            lutLoadingCorrelationID: 0,
+            colorTheme: null,
+            colorThemeOverride: options.colorThemeOverride
         };
         this._styleColorThemeForScope = {};
-
-        this.options = options.configOptions ? options.configOptions : new Map();
-        this._configDependentLayers = options.configDependentLayers ? options.configDependentLayers : new Set();
-        this._config = options.config;
         this._initialConfig = options.initialConfig;
 
-        this.dispatcher.broadcast('setReferrer', getReferrer());
-
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self = this;
         this._rtlTextPluginCallback = Style.registerForPluginStateChange((event) => {
             const state = {
                 pluginStatus: event.pluginStatus,
                 pluginURL: event.pluginURL
             };
-            self.dispatcher.broadcast('syncRTLPluginState', state, (err, results) => {
-                triggerPluginCompletionEvent(err);
-                if (results) {
+            self.dispatcher.send('syncRTLPluginState', state)
+                .then((results) => {
+                    triggerPluginCompletionEvent(null);
                     const allComplete = results.every((elem) => elem);
                     if (allComplete) {
                         for (const id in self._sourceCaches) {
@@ -397,8 +564,10 @@ class Style extends Evented {
                             }
                         }
                     }
-                }
-            });
+                })
+                .catch((err: Error) => {
+                    triggerPluginCompletionEvent(err);
+                });
         });
 
         this.on('data', (event) => {
@@ -407,7 +576,6 @@ class Style extends Evented {
             }
 
             const source = this.getOwnSource(event.sourceId);
-            // @ts-expect-error - TS2339 - Property 'vectorLayerIds' does not exist on type 'Source'.
             if (!source || !source.vectorLayerIds) {
                 return;
             }
@@ -450,7 +618,7 @@ class Style extends Evented {
             if (!url.startsWith('http')) {
                 try {
                     return new URL(url, location.href).toString();
-                } catch (_e: any) {
+                } catch (e) {
                     return url;
                 }
             }
@@ -464,24 +632,32 @@ class Style extends Evented {
     _diffStyle(style: StyleSpecification | string, onStarted: (err: Error | null, isUpdateNeeded: boolean) => void, onFinished?: () => void) {
         this.globalId = this._getGlobalId(style);
 
+        // Fetch dev chunk, for string/URL path the fetch parallelises with the JSON request;
+        // for object path, validation will run synchronously and no-op for the first call
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        prepareDebug();
+
         const handleStyle = (json: StyleSpecification, callback: (err: Error | null, isUpdateNeeded: boolean) => void) => {
             try {
                 callback(null, this.setState(json, onFinished));
-            } catch (e: any) {
-                callback(e, false);
+            } catch (e) {
+                callback(e as Error, false);
             }
         };
 
         if (typeof style === 'string') {
             const url = this.map._requestManager.normalizeStyleURL(style);
-            // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-            const request = this.map._requestManager.transformRequest(url, ResourceType.Style);
-            getJSON(request, (error?: Error | null, json?: any | null) => {
-                if (error) {
-                    this.fire(new ErrorEvent(error));
-                } else if (json) {
-                    handleStyle(json, onStarted);
-                }
+            const controller = new AbortController();
+            this._request = {cancel: () => controller.abort()};
+            const load = async () => {
+                const request = await this.map._requestManager.transformRequest(url, ResourceType.Style, controller.signal);
+                const {data: json} = await getJSON<StyleSpecification>(request, controller.signal);
+                this._request = null;
+                handleStyle(json, onStarted);
+            };
+            load().catch((err: Error) => {
+                this._request = null;
+                if (!controller.signal.aborted) this.fire(new ErrorEvent(err));
             });
         } else if (typeof style === 'object') {
             handleStyle(style, onStarted);
@@ -500,38 +676,55 @@ class Style extends Evented {
         const validate = typeof options.validate === 'boolean' ?
             options.validate : !isMapboxURL(url);
 
+        // Preload the dev-chunk fetch with the style JSON
+        // correctness is enforced via await in `_load`
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        if (validate) prepareDebug();
+
         this.globalId = this._getGlobalId(url);
         url = this.map._requestManager.normalizeStyleURL(url, options.accessToken);
         this.resolvedImports.add(url);
 
         const cachedImport = this.importsCache.get(url);
-        if (cachedImport) return this._load(cachedImport, validate);
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        if (cachedImport) { this._load(cachedImport, validate); return; }
 
-        // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type '"Unknown" | "Style" | "Source" | "Tile" | "Glyphs" | "SpriteImage" | "SpriteJSON" | "Image" | "Model"'.
-        const request = this.map._requestManager.transformRequest(url, ResourceType.Style);
-        this._request = getJSON(request, (error?: Error | null, json?: any | null) => {
+        const controller = new AbortController();
+        this._request = {cancel: () => controller.abort()};
+        const load = async () => {
+            const request = await this.map._requestManager.transformRequest(url, ResourceType.Style, controller.signal);
+            const {data: json} = await getJSON<StyleSpecification>(request, controller.signal);
             this._request = null;
-            if (error) {
-                this.fire(new ErrorEvent(error));
-            } else if (json) {
-                this.importsCache.set(url, json);
-                return this._load(json, validate);
-            }
+            this.importsCache.set(url, json);
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            this._load(json, validate);
+        };
+        load().catch((err: Error) => {
+            this._request = null;
+            if (!controller.signal.aborted) this.fire(new ErrorEvent(err));
         });
     }
 
     loadJSON(json: StyleSpecification, options: StyleSetterOptions = {}): void {
         this.fire(new Event('dataloading', {dataType: 'style'}));
 
+        const validate = options.validate !== false;
+        // Preload the dev-chunk fetch with the browser.frame()
+        // correctness is enforced via await in `_load`
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        if (validate) prepareDebug();
+
         this.globalId = this._getGlobalId(json);
         this._request = browser.frame(() => {
             this._request = null;
-            this._load(json, options.validate !== false);
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            this._load(json, validate);
         });
     }
 
     loadEmpty() {
         this.fire(new Event('dataloading', {dataType: 'style'}));
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         this._load(empty, false);
     }
 
@@ -539,14 +732,14 @@ class Style extends Evented {
         imports: Array<ImportSpecification>,
         validate: boolean,
         beforeId?: string | null,
-    ): Promise<any> {
+    ): Promise<void> {
         // We take the root style into account when calculating the import depth.
         if (this.importDepth >= MAX_IMPORT_DEPTH - 1) {
             warnOnce(`Style doesn't support nesting deeper than ${MAX_IMPORT_DEPTH}`);
             return Promise.resolve();
         }
 
-        const waitForStyles = [];
+        const waitForStyles: Promise<void>[] = [];
         for (const importSpec of imports) {
             const style = this._createFragmentStyle(importSpec);
 
@@ -554,8 +747,12 @@ class Style extends Evented {
             const waitForStyle = new Promise((resolve) => {
                 style.once('style.import.load', resolve);
                 style.once('error', resolve);
-            })
-                .then(() => this.mergeAll());
+            }).then(() => {
+                this.mergeAll();
+                // Fire a data event so that updateSources() runs after _mergedLayers is populated,
+                // ensuring tile fetches start promptly once merged state is ready.
+                this.fire(new Event('data', {dataType: 'style'}));
+            });
             waitForStyles.push(waitForStyle);
 
             // Load empty style if one of the ancestors was already
@@ -568,7 +765,21 @@ class Style extends Evented {
             // Use previously cached style JSON if the import data is not set.
             const json = importSpec.data || this.importsCache.get(importSpec.url);
             if (json) {
-                style.loadJSON(json, {validate});
+                if (importSpec.data) {
+                    // Data is already in memory — use a microtask instead of RAF to avoid ~16ms delay.
+                    // loadJSON() schedules _load() via browser.frame() (RAF) which introduces an
+                    // unnecessary animation frame delay when the data is already available.
+                    style.fire(new Event('dataloading', {dataType: 'style'}));
+                    style.globalId = style._getGlobalId(json);
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    if (validate) prepareDebug();
+                    queueMicrotask(() => {
+                        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                        style._load(json, validate);
+                    });
+                } else {
+                    style.loadJSON(json, {validate});
+                }
 
                 // Don't expose global ID for internal style to ensure
                 // that we don't send in telemetry Standard style as import
@@ -603,7 +814,7 @@ class Style extends Evented {
 
         }
 
-        return Promise.allSettled(waitForStyles);
+        return Promise.allSettled(waitForStyles) as unknown as Promise<void>;
     }
 
     getImportGlobalIds(style: Style = this, ids: Set<string> = new Set()): string[] {
@@ -621,10 +832,10 @@ class Style extends Evented {
         const scope = this.scope ? makeFQID(importSpec.id, this.scope) : importSpec.id;
 
         // Merge import config and initial config from the Map constructor
-        let config;
+        let config: ConfigSpecification | undefined;
         const initialConfig = this._initialConfig && this._initialConfig[scope];
         if (importSpec.config || initialConfig) {
-            config = extend({}, importSpec.config, initialConfig);
+            config = {...importSpec.config, ...initialConfig};
         }
 
         const style = new Style(this.map, {
@@ -641,7 +852,8 @@ class Style extends Evented {
             modelManager: this.modelManager,
             config,
             configOptions: this.options,
-            configDependentLayers: this._configDependentLayers
+            colorThemeOverride: importSpec["color-theme"],
+            layerExpressionDependencies: this._layerExpressionDependencies
         });
 
         // Bubble all events fired by the style to the map.
@@ -650,59 +862,109 @@ class Style extends Evented {
         return style;
     }
 
-    _reloadImports() {
+    _reloadImports(initialLoad: boolean = false) {
         this.mergeAll();
         this._updateMapProjection();
-        this.updateConfigDependencies();
+        if (!initialLoad) {
+            this.updateConfigDependencies();
+        }
+        this._updateLayers(this._dependentLayerIds((deps) => deps.isIndoorDependent));
         this.map._triggerCameraUpdate(this.camera);
 
-        this.dispatcher.broadcast('setLayers', {
-            layers: this._serializeLayers(this._order),
-            scope: this.scope,
-            options: this.options
-        });
+        // During root's initial-load batch, sibling fragments share a single
+        // config-options Map populated incrementally as each import calls
+        // updateConfig. A fragment that finishes first would broadcast setLayers
+        // with a stale snapshot missing sibling-fragment options — workers
+        // serialize that snapshot into their per-scope layer index, leaving
+        // cross-fragment ['config', _, _] expressions unresolved. Defer to
+        // root's _reloadImports, which runs after all imports have settled and
+        // ships one setLayers per scope with the final options.
+        //
+        // For runtime fragment additions (addImport, setImportUrl) the root has
+        // already broadcast — _initialBroadcastDone is true — and won't fire
+        // _reloadImports again. In that case the fragment broadcasts itself;
+        // its options Map already reflects the rest of the loaded style.
+        if (initialLoad && !this.isRootStyle() && !this.map.style._initialBroadcastDone) return;
 
-        this._shouldPrecompile = this.isRootStyle();
+        if (initialLoad && this.isRootStyle()) {
+            this.forEachFragmentStyle((style: Style) => {
+                this.dispatcher.broadcast('setLayers', {
+                    layers: style._serializeLayers(style._order),
+                    scope: style.scope,
+                    options: style.options
+                });
+            });
+            this._initialBroadcastDone = true;
+        } else {
+            this.dispatcher.broadcast('setLayers', {
+                layers: this._serializeLayers(this._order),
+                scope: this.scope,
+                options: this.options
+            });
+        }
     }
 
     _isInternalStyle(json: StyleSpecification): boolean {
         return this.isRootStyle() && (json.fragment || (!!json.schema && json.fragment !== false));
     }
 
-    _load(json: StyleSpecification, validate: boolean) {
-        const schema = json.schema;
-
+    async _load(json: StyleSpecification, validate: boolean) {
         // This style was loaded as a root style, but it is marked as a fragment and/or has a schema. We instead load
         // it as an import with the well-known ID "basemap" to make sure that we don't expose the internals.
         if (this._isInternalStyle(json)) {
             const basemap = {id: 'basemap', data: json, url: ''};
-            const style = extend({}, empty, {imports: [basemap]});
+            const style = ({...empty, imports: [basemap], ...(json.center ? {center: json.center} : {}),
+                ...(json.bearing ? {bearing: json.bearing} : {}),
+                ...(json.pitch ? {pitch: json.pitch} : {}),
+                ...(json.zoom ? {zoom: json.zoom} : {}),
+                ...(json.light ? {light: json.light} : {})}) as StyleSpecification;
+            this._importedAsBasemap = true;
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
             this._load(style, validate);
             return;
         }
 
-        this.updateConfig(this._config, schema);
+        this.updateConfig(this._config, json.schema);
 
-        if (validate && emitValidationErrors(this, validateStyle(json))) {
-            return;
+        // In ESM builds, the dev chunk (validators) is dynamically imported.
+        // Await it before validating top-level style JSON so the call below
+        // is meaningful — `validateStyle` no-ops when `Debug` isn't loaded yet.
+        if (validate) {
+            await prepareDebug();
+            // Check the map wasn't removed while awaiting the dev chunk.
+            if (!this.dispatcher.actors.length) return;
+            if (emitValidationErrors(this, validateStyle(json))) {
+                return;
+            }
         }
 
         this._loaded = true;
+
+        // Issue TileJSON requests immediately, before the expensive deep clone of the full style JSON.
+        // addSource() does not depend on this.stylesheet, so it's safe to call here.
+        // By the time TileJSON responses arrive (~100ms), clone() will have long since completed.
+        for (const id in json.sources) {
+            this.addSource(id, json.sources[id], {validate: false, isInitialLoad: true});
+        }
+
         this.stylesheet = clone(json);
 
         const proceedWithStyleLoad = () => {
-            for (const id in json.sources) {
-                this.addSource(id, json.sources[id], {validate: false, isInitialLoad: true});
+            if (json.iconsets) {
+                for (const id in json.iconsets) {
+                    this.addIconset(id, json.iconsets[id]);
+                }
             }
 
             if (json.sprite) {
-                this._loadSprite(json.sprite);
+                this._loadIconset(json.sprite);
             } else {
                 this.imageManager.setLoaded(true, this.scope);
-                this.dispatcher.broadcast('spriteLoaded', {scope: this.scope, isLoaded: true});
+                this.dispatcher.broadcast('spriteLoaded', {scope: this.scope});
             }
 
-            this.glyphManager.setURL(json.glyphs, this.scope);
+            // for style fragments, only set a glyphs url if it's not already set by the root style (GLJS-1345)
+            if (!this.glyphManager.url && json.glyphs) this.glyphManager.setURL(json.glyphs);
 
             const layers: Array<LayerSpecification> = deref(this.stylesheet.layers);
             this._order = layers.map((layer) => layer.id);
@@ -724,15 +986,18 @@ class Style extends Evented {
                 this.light = new Light(this.stylesheet.light);
             }
 
-            this._layers = {};
-            this._serializedLayers = {};
+            this._layers = Object.create(null) as Style['_layers'];
+            let hasPendingHdCoverage = false;
             for (const layer of layers) {
                 const styleLayer = createStyleLayer(layer, this.scope, this._styleColorTheme.lut, this.options);
-                if (styleLayer.isConfigDependent) this._configDependentLayers.add(styleLayer.fqid);
+                this._layerExpressionDependencies.set(styleLayer.fqid, new LayerExpressionDependencies(styleLayer));
+                this._hasAppearances = this._hasAppearances || styleLayer.getAppearances().length !== 0;
                 styleLayer.setEventedParent(this, {layer: {id: styleLayer.id}});
                 this._layers[styleLayer.id] = styleLayer;
-                this._serializedLayers[styleLayer.id] = styleLayer.serialize();
 
+                if (this._updateHdCoverageSourceCache(styleLayer)) {
+                    hasPendingHdCoverage = true;
+                }
                 const sourceCache = this.getOwnLayerSourceCache(styleLayer);
                 const shadowsEnabled = !!this.directionalLight && this.directionalLight.shadowsEnabled();
 
@@ -741,20 +1006,73 @@ class Style extends Evented {
                 }
             }
 
+            // In ESM builds HD loads lazily — `_updateHdCoverageSourceCache` is a no-op when
+            // HD hasn't resolved yet. Re-run setup and re-merge after the module loads so the
+            // coverage source cache is properly created and merged.
+            if (hasPendingHdCoverage) {
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                prepareHDMain().then(() => {
+                    if (!this.map) return;
+                    for (const layerId in this._layers) {
+                        this._updateHdCoverageSourceCache(this._layers[layerId]);
+                    }
+                    this.map.style.mergeAll();
+                    const transform = this.map.transform;
+                    for (const fqid in this.map.style._mergedHdRoadCoverageSourceCaches) {
+                        const sc = this.map.style._mergedHdRoadCoverageSourceCaches[fqid];
+                        sc.used = true;
+                        if (transform) sc.update(transform);
+                    }
+                    this.map._update();
+                });
+            }
+
+            // Pre-warm glyph range 0 (codepoints 0-255, ASCII/Latin) for all constant font stacks.
+            // This fires the HTTP requests before any tiles arrive, eliminating the first step
+            // of the waterfall staircase (tiles → workers discover text → getGlyphs IPC → HTTP).
+            if (this.glyphManager.url) {
+                const fontStacks = new Set<string>();
+                for (const id in this._layers) {
+                    const layer = this._layers[id];
+                    if (layer.type === 'symbol' && layer.layout) {
+                        const fonts = layer.layout.get('text-font');
+                        if (fonts && fonts.value && fonts.value.kind === 'constant') {
+                            fontStacks.add(fonts.value.value.join(','));
+                        }
+                    }
+                }
+                for (const stack of fontStacks) {
+                    this.glyphManager.prefetchRange(stack, 0);
+                }
+            }
+
+            if (this.stylesheet.featuresets) {
+                this.setFeaturesetSelectors(this.stylesheet.featuresets);
+            }
+
             if (this.stylesheet.models) {
-                this.modelManager.addModels(this.stylesheet.models, this.scope);
+                this.addModelURLs(this.stylesheet.models);
             }
 
             const terrain = this.stylesheet.terrain;
             if (terrain) {
                 this.checkCanvasFingerprintNoise();
-                if (!this.terrainSetForDrapingOnly()) {
+                if (!this.disableElevatedTerrain && !this.terrainSetForDrapingOnly()) {
+                    this._startLiteLoad();
                     this._createTerrain(terrain, DrapeRenderMode.elevated);
                 }
             }
 
             if (this.stylesheet.fog) {
                 this._createFog(this.stylesheet.fog);
+            }
+
+            if (this.stylesheet.snow) {
+                this._createSnow(this.stylesheet.snow);
+            }
+
+            if (this.stylesheet.rain) {
+                this._createRain(this.stylesheet.rain);
             }
 
             if (this.stylesheet.transition) {
@@ -766,18 +1084,24 @@ class Style extends Evented {
             const isRootStyle = this.isRootStyle();
 
             if (json.imports) {
-                this._loadImports(json.imports, validate).then(() => {
-                    this._reloadImports();
-                    this.fire(new Event(isRootStyle ? 'style.load' : 'style.import.load'));
-                });
+                this._loadImports(json.imports, validate)
+                    .then(() => {
+                        this._reloadImports(true);
+                        this.fire(new Event(isRootStyle ? 'style.load' : 'style.import.load'));
+                    })
+                    .catch((e) => {
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+                        this.fire(new ErrorEvent(new Error('Failed to load imports', e)));
+                        this.fire(new Event(isRootStyle ? 'style.load' : 'style.import.load'));
+                    });
             } else {
-                this._reloadImports();
+                this._reloadImports(true);
                 this.fire(new Event(isRootStyle ? 'style.load' : 'style.import.load'));
             }
         };
 
-        const colorTheme = this.stylesheet['color-theme'];
-        this._styleColorTheme.colorTheme = colorTheme;
+        this._styleColorTheme.colorTheme = this.stylesheet['color-theme'];
+        const colorTheme = this._styleColorTheme.colorThemeOverride ? this._styleColorTheme.colorThemeOverride : this._styleColorTheme.colorTheme;
         if (colorTheme) {
             const data = this._evaluateColorThemeData(colorTheme);
             this._loadColorTheme(data).then(() => {
@@ -796,15 +1120,21 @@ class Style extends Evented {
         return this.importDepth === 0;
     }
 
+    hasAppearances(): boolean {
+        return this._hasAppearances || this.fragments.some((f => f.style.hasAppearances()));
+    }
+
     mergeAll() {
-        let light;
-        let ambientLight;
-        let directionalLight;
-        let terrain;
-        let fog;
-        let projection;
-        let transition;
-        let camera;
+        let light: Light | undefined;
+        let ambientLight: Lights<Ambient> | null | undefined;
+        let directionalLight: Lights<Directional> | null | undefined;
+        let terrain: Terrain | null | undefined;
+        let fog: Fog | null | undefined;
+        let snow: Snow | null | undefined;
+        let rain: Rain | null | undefined;
+        let projection: ProjectionSpecification | undefined;
+        let transition: TransitionSpecification | undefined;
+        let camera: CameraSpecification | undefined;
         const styleColorThemeForScope: {
             [_: string]: StyleColorTheme;
         } = {};
@@ -816,6 +1146,9 @@ class Style extends Evented {
 
         this.forEachFragmentStyle((style: Style) => {
             if (!style.stylesheet) return;
+
+            if (style.disableElevatedTerrain)
+                this.disableElevatedTerrain = true;
 
             if (style.light != null)
                 light = style.light;
@@ -839,6 +1172,12 @@ class Style extends Evented {
             if (style.stylesheet.fog && style.fog != null)
                 fog = style.fog;
 
+            if (style.stylesheet.snow && style.snow != null)
+                snow = style.snow;
+
+            if (style.stylesheet.rain && style.rain != null)
+                rain = style.rain;
+
             if (style.stylesheet.camera != null)
                 camera = style.stylesheet.camera;
 
@@ -855,6 +1194,8 @@ class Style extends Evented {
         this.ambientLight = ambientLight;
         this.directionalLight = directionalLight;
         this.fog = fog;
+        this.snow = snow;
+        this.rain = rain;
         this._styleColorThemeForScope = styleColorThemeForScope;
 
         if (terrain === null) {
@@ -866,10 +1207,16 @@ class Style extends Evented {
         // Use perspective camera as a fallback if no camera is specified
         this.camera = camera || {'camera-projection': 'perspective'};
         this.projection = projection || {name: 'mercator'};
-        this.transition = extend({}, defaultTransition, transition);
+        this.transition = {...defaultTransition, ...transition};
 
         this.mergeSources();
         this.mergeLayers();
+        this.mergeIndoor();
+
+        // Style state (projection / terrain / fog / lights) just settled; rebuild the precompile queue
+        // so it sees the merged axes, not whatever was set before imports resolved. mergeAll runs at
+        // initial load (once per import resolution) and on state changes via _reloadImports / setState.
+        if (this._programPrecompiler) this._programPrecompiler.reset();
     }
 
     forEachFragmentStyle(fn: (style: Style) => void) {
@@ -917,7 +1264,7 @@ class Style extends Evented {
     }
 
     mergeTerrain() {
-        let terrain;
+        let terrain: Terrain | null | undefined;
 
         // Reset terrain that might have been set by a previous merge
         if (this.terrain && this.terrain.scope !== this.scope) {
@@ -937,10 +1284,13 @@ class Style extends Evented {
         } else {
             this.terrain = terrain;
         }
+
+        // Terrain axis flipped — rebuild precompile to pick up the new gating.
+        if (this._programPrecompiler) this._programPrecompiler.reset();
     }
 
     mergeProjection() {
-        let projection;
+        let projection: ProjectionSpecification | undefined;
 
         this.forEachFragmentStyle((style: Style) => {
             if (style.stylesheet.projection != null)
@@ -948,12 +1298,22 @@ class Style extends Evented {
         });
 
         this.projection = projection || {name: 'mercator'};
+
+        // Projection axis flipped — rebuild precompile to pick up the new globe gating.
+        if (this._programPrecompiler) this._programPrecompiler.reset();
     }
 
     mergeSources() {
-        const mergedSourceCaches: Record<string, any> = {};
-        const mergedOtherSourceCaches: Record<string, any> = {};
-        const mergedSymbolSourceCaches: Record<string, any> = {};
+        const mergedSourceCaches: Record<string, SourceCache> = {};
+        // `_other/_symbol/_fillExtrusionSourceCaches` are keyed by raw source
+        // IDs from the style JSON, so the root-scope FQID can collapse to
+        // "__proto__". Use null-prototype objects here so that assignment
+        // creates an own property rather than touching the prototype chain.
+        const mergedOtherSourceCaches: Record<string, SourceCache> = Object.create(null) as Record<string, SourceCache>;
+        const mergedSymbolSourceCaches: Record<string, SourceCache> = Object.create(null) as Record<string, SourceCache>;
+        const mergedFillExtrusionSourceCaches: Record<string, SourceCache> = Object.create(null) as Record<string, SourceCache>;
+        const mergedHdRoadCoverageSourceCaches: Record<string, SourceCache> = Object.create(null) as Record<string, SourceCache>;
+        const mergedHdRoadElevationSourceCaches: Record<string, SourceCache> = Object.create(null) as Record<string, SourceCache>;
 
         this.forEachFragmentStyle((style: Style) => {
             for (const id in style._sourceCaches) {
@@ -970,17 +1330,106 @@ class Style extends Evented {
                 const fqid = makeFQID(id, style.scope);
                 mergedSymbolSourceCaches[fqid] = style._symbolSourceCaches[id];
             }
+
+            for (const id in style._fillExtrusionSourceCaches) {
+                const fqid = makeFQID(id, style.scope);
+                mergedFillExtrusionSourceCaches[fqid] = style._fillExtrusionSourceCaches[id];
+            }
+
+            if (style._hdCoverage) {
+                const coverageCaches = style._hdCoverage.coverageSourceCaches;
+                for (const id in coverageCaches) {
+                    mergedHdRoadCoverageSourceCaches[makeFQID(id, style.scope)] = coverageCaches[id];
+                }
+            }
+
+            if (style._hdElevation) {
+                const elevationCaches = style._hdElevation.elevationSourceCaches;
+                for (const fqid in elevationCaches) {
+                    mergedHdRoadElevationSourceCaches[fqid] = elevationCaches[fqid];
+                }
+            }
         });
 
         this._mergedSourceCaches = mergedSourceCaches;
         this._mergedOtherSourceCaches = mergedOtherSourceCaches;
         this._mergedSymbolSourceCaches = mergedSymbolSourceCaches;
+        this._mergedFillExtrusionSourceCaches = mergedFillExtrusionSourceCaches;
+        this._mergedHdRoadCoverageSourceCaches = mergedHdRoadCoverageSourceCaches;
+        this._mergedHdRoadElevationSourceCaches = mergedHdRoadElevationSourceCaches;
+
+        if (Object.keys(mergedHdRoadCoverageSourceCaches).length > 0 && !this._hdCoverage && HD.HdCoverageState) {
+            this._hdCoverage = new HD.HdCoverageState();
+        }
+
+        if (HD.updateCrossSourceElevationGate) HD.updateCrossSourceElevationGate(this);
+    }
+
+    mergeIndoor() {
+        this._mergedIndoor = {};
+        this.forEachFragmentStyle((style: Style) => {
+            if (style.stylesheet && style.stylesheet.indoor) {
+                for (const indoor of Object.values(style.stylesheet.indoor)) {
+                    const indoorSpec = indoor;
+                    const fqid = makeFQID(indoorSpec.sourceId, style.scope);
+                    this._mergedIndoor[fqid] = new Set(indoorSpec.sourceLayers || []);
+                }
+            }
+        });
+
+        this._updateIndoorEnabled();
+    }
+
+    // Recompute whether indoor is actually active. Styles like Standard declare an `indoor`
+    // block unconditionally, but gate the indoor layers behind a config option (`showIndoor`,
+    // off by default). Loading the HD module — and parsing indoor data on the worker — is only
+    // worthwhile when at least one layer drawing from an indoor source is visible. Re-run on
+    // config changes so toggling that option turns indoor on/off without a tile-data probe.
+    _updateIndoorEnabled() {
+        const wasEnabled = this._indoorEnabled;
+        this._indoorEnabled = false;
+        if (Object.keys(this._mergedIndoor).length > 0) {
+            for (const fqid of this._mergedOrder) {
+                const layer = this._mergedLayers[fqid];
+                if (layer.visibility === 'none') continue;
+                if (this._mergedIndoor[makeFQID(layer.source, layer.scope)]) {
+                    this._indoorEnabled = true;
+                    break;
+                }
+            }
+        }
+        // Create the IndoorManager (and load HD on both threads) the first time indoor turns
+        // on. _initIndoorManager reloads indoor sources so the worker re-parses them once the
+        // manager — and thus the indoor tile options — are available.
+        if (this._indoorEnabled && !wasEnabled && !this.indoorManager) {
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            prepareHDMain().then(() => { this._initIndoorManager(); });
+        }
+    }
+
+    _initIndoorManager(): void {
+        if (this.indoorManager || !HD.IndoorManager || !this.isRootStyle() || Object.keys(this._mergedIndoor).length === 0) {
+            return;
+        }
+        this.indoorManager = new HD.IndoorManager(this, this._loaded);
+        // If the style had already finished loading before the HD module resolved,
+        // reload indoor sources so they are re-parse on the worker with the now-available IndoorManager.
+        if (this._loaded) {
+            for (const fqid of Object.keys(this._mergedIndoor)) {
+                const sourceCache = this._mergedSourceCaches[fqid] || this._mergedOtherSourceCaches[fqid];
+                if (sourceCache) sourceCache.reload();
+            }
+        }
     }
 
     mergeLayers() {
-        const slots: Record<string, StyleLayer[]> = {};
-        const mergedOrder: StyleLayer[] = [];
-        const mergedLayers: Record<string, StyleLayer> = {};
+        const slots: Record<string, TypedStyleLayer[]> = {};
+        const mergedOrder: TypedStyleLayer[] = [];
+        // Keys are FQIDs that collapse to the raw layer ID at root scope, so
+        // a layer named "__proto__" would otherwise mutate this object's
+        // prototype rather than being stored as an own property. Match the
+        // null-prototype hardening used for the unmerged `_layers` registry.
+        const mergedLayers: Record<string, TypedStyleLayer> = Object.create(null) as Record<string, TypedStyleLayer>;
 
         this._mergedSlots = [];
         this._has3DLayers = false;
@@ -1006,10 +1455,10 @@ class Style extends Evented {
         });
 
         this._mergedOrder = [];
-        this._clipLayerIndices = [];
 
-        let i = 0;
-        const sort = (layers: StyleLayer[] = []) => {
+        let last3DLayerIdx = -1;
+
+        const sort = (layers: TypedStyleLayer[] = []) => {
             for (const layer of layers) {
                 if (layer.type === 'slot') {
                     const slotName = getNameFromFQID(layer.id);
@@ -1021,19 +1470,55 @@ class Style extends Evented {
                     mergedLayers[fqid] = layer;
 
                     // Typed layer bookkeeping
-                    if (layer.is3D()) this._has3DLayers = true;
+                    if (layer.is3D(!!this.terrain)) {
+                        this._has3DLayers = true;
+                        last3DLayerIdx = this._mergedOrder.length - 1;
+                    }
                     if (layer.type === 'circle') this._hasCircleLayers = true;
                     if (layer.type === 'symbol') this._hasSymbolLayers = true;
-                    if (layer.type === 'clip') this._clipLayerIndices.push(i);
-                    i++;
+                    if (layer.type === 'clip') this._clipLayerPresent = true;
                 }
             }
         };
 
         sort(mergedOrder);
+
+        // Sort symbols with occlusion opacity to be rendered after last 3D layer
+        if (this._has3DLayers) {
+            const priorities: Record<string, number> = {};
+
+            for (let i = 0; i < this._mergedOrder.length; ++i) {
+                const layerName = this._mergedOrder[i];
+                const layer = mergedLayers[layerName];
+
+                // All layers after last 3D layer are left unchanged
+                // If there are occlusion layers before last 3D layer they are placed tight after it keeping their relative order
+
+                if (i === last3DLayerIdx) {
+                    priorities[layerName] = 1;
+                } else if (i < last3DLayerIdx) {
+                    if ((layer as SymbolStyleLayer).hasOcclusionOpacityProperties) {
+                        priorities[layerName] = 2;
+                    } else {
+                        priorities[layerName] = 0;
+                    }
+                } else {
+                    priorities[layerName] = 4;
+                }
+            }
+
+            this._mergedOrder.sort((layerName1: string, layerName2: string) => {
+                const p1 = priorities[layerName1];
+                const p2 = priorities[layerName2];
+
+                return p1 - p2;
+            });
+        }
+
         this._mergedLayers = mergedLayers;
         this.updateDrapeFirstLayers();
         this._buildingIndex.processLayersChanged();
+        this._updateDataDrivenEmissiveStrength();
     }
 
     terrainSetForDrapingOnly(): boolean {
@@ -1045,7 +1530,7 @@ class Style extends Evented {
     }
 
     setCamera(camera: CameraSpecification): Style {
-        this.stylesheet.camera = extend({}, this.stylesheet.camera, camera);
+        this.stylesheet.camera = {...this.stylesheet.camera, ...camera};
         this.camera = this.stylesheet.camera;
         return this;
     }
@@ -1058,23 +1543,27 @@ class Style extends Evented {
         return properties.get('data');
     }
 
-    _loadColorTheme(colorThemeData: string): Promise<void> {
+    _loadColorTheme(inputData: string | null): Promise<void> {
         this._styleColorTheme.lutLoading = true;
+        this._styleColorTheme.lutLoadingCorrelationID += 1;
+        const correlationID = this._styleColorTheme.lutLoadingCorrelationID;
         return new Promise((resolve, reject) => {
             const dataURLPrefix = 'data:image/png;base64,';
 
-            if (colorThemeData.length === 0) {
+            if (!inputData || inputData.length === 0) {
                 this._styleColorTheme.lut = null;
                 this._styleColorTheme.lutLoading = false;
                 resolve();
                 return;
             }
 
+            let colorThemeData = inputData;
             if (!colorThemeData.startsWith(dataURLPrefix)) {
                 colorThemeData = dataURLPrefix + colorThemeData;
             }
+
             // Reserved image name, which references the LUT in the image manager
-            const styleLutName = 'mapbox-reserved-lut';
+            const styleLutName = ImageId.from('mapbox-reserved-lut');
 
             const lutImage = new Image();
             lutImage.src = colorThemeData;
@@ -1084,6 +1573,10 @@ class Style extends Evented {
 
             };
             lutImage.onload = () => {
+                if (this._styleColorTheme.lutLoadingCorrelationID !== correlationID) {
+                    resolve();
+                    return;
+                }
                 this._styleColorTheme.lutLoading = false;
                 const {width, height, data} = browser.getImageData(lutImage);
                 if (height > 32) {
@@ -1098,7 +1591,7 @@ class Style extends Evented {
                 if (this.getImage(styleLutName)) {
                     this.removeImage(styleLutName);
                 }
-                this.addImage(styleLutName, {data: new RGBAImage({width, height}, data), pixelRatio: 1, sdf: false, version: 0});
+                this.addImage(styleLutName, {data: new RGBAImage({width, height}, data), pixelRatio: 1, sdf: false, usvg: false, version: 0});
 
                 const image = this.imageManager.getImage(styleLutName, this.scope);
                 if (!image) {
@@ -1106,7 +1599,7 @@ class Style extends Evented {
                 } else {
                     this._styleColorTheme.lut = {
                         image: image.data,
-                        data: colorThemeData
+                        data: inputData
                     };
                     resolve();
                 }
@@ -1130,6 +1623,13 @@ class Style extends Evented {
     }
 
     applyProjectionUpdate() {
+        // Kick off Lite load as early as possible whenever globe is active — even before
+        // the style finishes loading — so the terrain renderer factory is registered by
+        // the time the first globe frame renders.
+        if (this.map.transform.projection.requiresDraping) {
+            this._startLiteLoad();
+        }
+
         if (!this._loaded) return;
         this.dispatcher.broadcast('setProjection', this.map.transform.projectionOptions);
 
@@ -1154,29 +1654,99 @@ class Style extends Evented {
         }
     }
 
+    /**
+     * Loads a sprite from the given URL.
+     * @fires Map.event:data Fires `data` with `{dataType: 'style'}` to indicate that sprite loading is complete.
+     */
     _loadSprite(url: string) {
-        this._spriteRequest = loadSprite(url, this.map._requestManager, (err, images) => {
+        const controller = new AbortController();
+        this._spriteRequest = controller;
+        loadSprite(url, this.map._requestManager, controller.signal, (err, images) => {
             this._spriteRequest = null;
             if (err) {
+                this.dispatcher.broadcast('spriteLoaded', {scope: this.scope});
                 this.fire(new ErrorEvent(err));
             } else if (images) {
+                const styleImageMap: StyleImageMap<ImageId> = new Map();
                 for (const id in images) {
-                    this.imageManager.addImage(id, this.scope, images[id]);
+                    styleImageMap.set(ImageId.from(id), images[id]);
                 }
+                this.addImages(styleImageMap, true);
             }
 
             this.imageManager.setLoaded(true, this.scope);
-            this._availableImages = this.imageManager.listImages(this.scope);
-            this.dispatcher.broadcast('setImages', {
-                scope: this.scope,
-                images: this._availableImages
-            });
-            this.dispatcher.broadcast('spriteLoaded', {scope: this.scope, isLoaded: true});
             this.fire(new Event('data', {dataType: 'style'}));
         });
     }
 
-    _validateLayer(layer: StyleLayer) {
+    addIconset(iconsetId: string, iconset: IconsetSpecification) {
+        if (iconset.type === 'sprite') {
+            this._loadSprite(iconset.url);
+            return;
+        }
+
+        const sourceCache = this.getOwnSourceCache(iconset.source);
+        if (!sourceCache) {
+            this.fire(new ErrorEvent(new Error(`Source "${iconset.source}" as specified by iconset "${iconsetId}" does not exist and cannot be used as an iconset source`)));
+            return;
+        }
+
+        const source = sourceCache.getSource();
+        if (source.type !== 'raster-array') {
+            this.fire(new ErrorEvent(new Error(`Source "${iconset.source}" as specified by iconset "${iconsetId}" is not a "raster-array" source and cannot be used as an iconset source`)));
+            return;
+        }
+
+        const imageProvider = new ImageProvider(iconsetId, this.scope, sourceCache);
+        this.imageManager.addImageProvider(imageProvider, this.scope);
+    }
+
+    removeIconset(iconsetId: string) {
+        this.imageManager.removeImageProvider(iconsetId, this.scope);
+    }
+
+    /**
+     * Loads an iconset from the given URL. If the sprite is not a Mapbox URL, it loads a raster sprite.
+     * @fires Map.event:data Fires `data` with `{dataType: 'style'}` to indicate that sprite loading is complete.
+     */
+    _loadIconset(url: string) {
+        // For non-Mapbox URLs, automatically fall back to raster sprite loading.
+        // 'raster' and 'icon_set' are reserved for internal/test use only.
+        if ((!isMapboxURL(url) && this.map._spriteFormat !== 'icon_set') || this.map._spriteFormat === 'raster') {
+            this._loadSprite(url);
+            return;
+        }
+
+        // At runtime _spriteFormat is always 'auto'
+        const isFallbackExists = this.map._spriteFormat === 'auto';
+
+        const controller = new AbortController();
+        this._spriteRequest = controller;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        loadIconset(url, this.map._requestManager, controller.signal, (err, images) => {
+            this._spriteRequest = null;
+            if (err) {
+                // Try to fallback to raster sprite
+                if (isFallbackExists) {
+                    this._loadSprite(url);
+                } else {
+                    this.dispatcher.broadcast('spriteLoaded', {scope: this.scope});
+                    this.fire(new ErrorEvent(err));
+                }
+            } else if (images) {
+                const styleImageMap: StyleImageMap<ImageId> = new Map();
+                for (const id in images) {
+                    styleImageMap.set(ImageId.from(id), images[id]);
+                }
+                this.addImages(styleImageMap, true);
+            }
+
+            this.imageManager.setLoaded(true, this.scope);
+            this.fire(new Event('data', {dataType: 'style'}));
+        });
+    }
+
+    _validateLayer(layer: TypedStyleLayer) {
         const source = this.getOwnSource(layer.source);
         if (!source) {
             return;
@@ -1187,8 +1757,7 @@ class Style extends Evented {
             return;
         }
 
-        // @ts-expect-error - TS2339 - Property 'vectorLayerIds' does not exist on type 'Source'. | TS2339 - Property 'vectorLayerIds' does not exist on type 'Source'.
-        if (source.type === 'geojson' || (source.vectorLayerIds && source.vectorLayerIds.indexOf(sourceLayer) === -1)) {
+        if (source.type === 'geojson' || (source.vectorLayerIds && !source.vectorLayerIds.includes(sourceLayer))) {
             this.fire(new ErrorEvent(new Error(
                 `Source layer "${sourceLayer}" ` +
                 `does not exist on source "${source.id}" ` +
@@ -1211,10 +1780,16 @@ class Style extends Evented {
         if (!this.imageManager.isLoaded())
             return false;
 
+        if (this.imageManager.hasPatternsInFlight())
+            return false;
+
         if (!this.modelManager.isLoaded())
             return false;
 
         if (this._styleColorTheme.lutLoading)
+            return false;
+
+        if (this._drapingLoaded === false)
             return false;
 
         for (const {style} of this.fragments) {
@@ -1224,7 +1799,7 @@ class Style extends Evented {
         return true;
     }
 
-    _serializeImports(): Array<ImportSpecification> | void {
+    _serializeImports(): Array<ImportSpecification> | undefined {
         if (!this.stylesheet.imports) return undefined;
 
         return this.stylesheet.imports.map((importSpec, index) => {
@@ -1237,13 +1812,12 @@ class Style extends Evented {
         });
     }
 
-    _serializeSources(): {
-        [sourceId: string]: SourceSpecification;
-        } {
-        const sources: Record<string, any> = {};
+    _serializeSources(): Record<string, SourceSpecification> {
+        const sources: Record<string, SourceSpecification> = {};
         for (const cacheId in this._sourceCaches) {
             const source = this._sourceCaches[cacheId].getSource();
             if (!sources[source.id]) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 sources[source.id] = source.serialize();
             }
         }
@@ -1252,7 +1826,7 @@ class Style extends Evented {
     }
 
     _serializeLayers(ids: Array<string>): Array<LayerSpecification> {
-        const serializedLayers = [];
+        const serializedLayers: LayerSpecification[] = [];
         for (const id of ids) {
             const layer = this._layers[id];
             if (layer && layer.type !== 'custom') {
@@ -1283,12 +1857,30 @@ class Style extends Evented {
         return this.fog.hasTransition();
     }
 
+    hasSnowTransition(): boolean {
+        if (!this.snow) return false;
+        return this.snow.hasTransition();
+    }
+
+    hasRainTransition(): boolean {
+        if (!this.rain) return false;
+        return this.rain.hasTransition();
+    }
+
     hasTransitions(): boolean {
         if (this.hasLightTransitions()) {
             return true;
         }
 
         if (this.hasFogTransition()) {
+            return true;
+        }
+
+        if (this.hasSnowTransition()) {
+            return true;
+        }
+
+        if (this.hasRainTransition()) {
             return true;
         }
 
@@ -1308,6 +1900,27 @@ class Style extends Evented {
         return false;
     }
 
+    _updateDataDrivenEmissiveStrength() {
+        for (const layerId in this._mergedLayers) {
+            const layer = this._mergedLayers[layerId];
+
+            if (layer._transitionablePaint && layer._transitionablePaint._values) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                const transitionableValue = layer._transitionablePaint._values['line-emissive-strength'];
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+                if (transitionableValue && transitionableValue.value && transitionableValue.value.isDataDriven()) {
+                    this._hasDataDrivenEmissive = true;
+                    return;
+                }
+            }
+        }
+        this._hasDataDrivenEmissive = false;
+    }
+
+    hasDataDrivenEmissiveStrength(): boolean {
+        return this._hasDataDrivenEmissive;
+    }
+
     get order(): Array<string> {
         if (this.terrain) {
             assert(this._drapedFirstOrder.length === this._mergedOrder.length, 'drapedFirstOrder doesn\'t match order');
@@ -1316,9 +1929,17 @@ class Style extends Evented {
         return this._mergedOrder;
     }
 
-    isLayerDraped(layer: StyleLayer): boolean {
+    /**
+     * Returns active order for when terrain or globe are enabled (when draping is enabled).
+     * @param drapingEnabled {boolean} speficy if order is requested for draping enabled.
+     * @private
+     */
+    _getOrder(drapingEnabled: boolean): Array<string> {
+        return drapingEnabled ? this.order : this._mergedOrder;
+    }
+
+    isLayerDraped(layer: TypedStyleLayer): boolean {
         if (!this.terrain) return false;
-        // @ts-expect-error - TS2345 - Argument of type 'void | SourceCache' is not assignable to parameter of type 'SourceCache'.
         return layer.isDraped(this.getLayerSourceCache(layer));
     }
 
@@ -1328,7 +1949,7 @@ class Style extends Evented {
         }
     }
 
-    _checkLayer(layerId: string): StyleLayer | null | undefined {
+    _checkLayer(layerId: string): TypedStyleLayer | null | undefined {
         const layer = this.getOwnLayer(layerId);
         if (!layer) {
             this.fire(new ErrorEvent(new Error(`The layer '${layerId}' does not exist in the map's style.`)));
@@ -1344,6 +1965,32 @@ class Style extends Evented {
             return;
         }
         return source;
+    }
+
+    _resolveLayerFragment(layerId: string): {layer: TypedStyleLayer, fragment: Style} | undefined {
+        const layer = this.getLayer(layerId);
+        if (!layer) {
+            this.fire(new ErrorEvent(new Error(`The layer '${layerId}' does not exist in the map's style.`)));
+            return;
+        }
+        const fragment = this.getFragmentStyle(layer.scope);
+        if (!fragment) return;
+        return {layer, fragment};
+    }
+
+    handleIdle() {
+        const painter = this.map.painter;
+        if (!painter) return;
+        painter.context.sweepPendingPrograms();
+        if (this._programPrecompiler) {
+            this._programPrecompiler.processQueue(painter, this);
+        }
+    }
+
+    handleContextLost() {
+        if (this._programPrecompiler) {
+            this._programPrecompiler.reset();
+        }
     }
 
     /**
@@ -1365,9 +2012,23 @@ class Style extends Evented {
 
         const brightness = this.calculateLightsBrightness();
         parameters.brightness = brightness || 0.0;
+
+        let renderParamsUpdated = false;
         if (brightness !== this._brightness) {
             this._brightness = brightness;
-            this.dispatcher.broadcast('setBrightness', brightness);
+            renderParamsUpdated = true;
+        }
+
+        if (parameters.worldview !== this._worldview) {
+            this._worldview = parameters.worldview;
+            renderParamsUpdated = true;
+        }
+
+        if (renderParamsUpdated) {
+            this.dispatcher.broadcast('upsertRenderParams', {
+                brightness: this._brightness,
+                worldview: this._worldview
+            });
         }
 
         const changed = this._changes.isDirty();
@@ -1403,10 +2064,18 @@ class Style extends Evented {
                 this.fog.updateTransitions(parameters);
             }
 
+            if (this.snow) {
+                this.snow.updateTransitions(parameters);
+            }
+
+            if (this.rain) {
+                this.rain.updateTransitions(parameters);
+            }
+
             this._changes.reset();
         }
 
-        const sourcesUsedBefore: Record<string, any> = {};
+        const sourcesUsedBefore: Record<string, boolean> = {};
 
         for (const sourceId in this._mergedSourceCaches) {
             const sourceCache = this._mergedSourceCaches[sourceId];
@@ -1415,10 +2084,39 @@ class Style extends Evented {
             sourceCache.tileCoverLift = 0.0;
         }
 
+        // Track effective max-source-zoom per fill-extrusion source cache
+        const feSourceMaxZooms: Record<string, number | null> = {};
+
         for (const layerId of this._mergedOrder) {
             const layer = this._mergedLayers[layerId];
-            layer.recalculate(parameters, this._availableImages);
+            if (layer.visibility !== 'none' || layer.hasTransition()) layer.recalculate(parameters, this._availableImages);
             if (!layer.isHidden(parameters.zoom)) {
+
+                if (layer.mayUse('HD')) {
+                    // Preload HD on both threads so bucket transfers from worker succeed and
+                    // main can render without an extra await. Fire-and-forget: the tile-level
+                    // gate in WorkerTile.parse / vector_tile_source `done()` awaits the same
+                    // load promise for any tile that actually carries HD content.
+                    // `layer.prepare()` fires the worker-side HD load; `prepareHDMain()` is
+                    // called here (rather than inside prepare()) because importing hd_main
+                    // from style_layer.ts would drag the main-only chunk into the worker
+                    // bundle.
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    layer.prepare();
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    prepareHDMain();
+                }
+
+                if (layer.mayUse('Standard')) {
+                    // Same pattern as HD: preload Standard on both threads before the first
+                    // tile carrying ModelBucket/Tiled3dModelBucket arrives. `layer.prepare()`
+                    // triggers worker-side load; `prepareStandardMain()` triggers main-side.
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    layer.prepare();
+                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                    prepareStandardMain();
+                }
+
                 const sourceCache = this.getLayerSourceCache(layer);
                 if (sourceCache) {
                     sourceCache.used = true;
@@ -1427,38 +2125,37 @@ class Style extends Evented {
                 }
             }
 
-            if (!this._precompileDone && this._shouldPrecompile) {
-                for (let i = (layer.minzoom || DEFAULT_MIN_ZOOM); i < (layer.maxzoom || DEFAULT_MAX_ZOOM); i++) {
-                    const painter = this.map.painter;
-                    if (painter) {
-                        const programIds = layer.getProgramIds();
-                        if (!programIds) continue;
+            // Mark HD road coverage source caches as used when any layer uses their source
+            if (layer.source) {
+                const coverageFqid = makeFQID(layer.source, layer.scope);
+                const coverageCache = this._mergedHdRoadCoverageSourceCaches[coverageFqid];
+                if (coverageCache && !coverageCache.used) {
+                    coverageCache.used = true;
+                }
+            }
 
-                        for (const programId of programIds) {
-                            const params = layer.getDefaultProgramParams(programId, parameters.zoom, this._styleColorTheme.lut);
-                            if (params) {
-                                painter.style = this;
-                                if (this.fog) {
-                                    painter._fogVisible = true;
-                                    params.overrideFog = true;
-                                    painter.getOrCreateProgram(programId, params);
-                                }
-                                painter._fogVisible = false;
-                                params.overrideFog = false;
-                                painter.getOrCreateProgram(programId, params);
-
-                                if (this.stylesheet.terrain || (this.stylesheet.projection && this.stylesheet.projection.name === 'globe')) {
-                                    params.overrideRtt = true;
-                                    painter.getOrCreateProgram(programId, params);
-                                }
-                            }
-                        }
+            // Accumulate source-max-zoom for fill-extrusion layers
+            if (layer.type === 'fill-extrusion') {
+                const fqid = makeFQID(layer.source, layer.scope);
+                if (fqid in this._mergedFillExtrusionSourceCaches) {
+                    const maxSourceZoom = layer.layout && layer.layout.get('source-max-zoom');
+                    if (maxSourceZoom !== undefined && maxSourceZoom !== null) {
+                        const prev = feSourceMaxZooms[fqid];
+                        feSourceMaxZooms[fqid] = prev == null ? maxSourceZoom : Math.min(prev, maxSourceZoom);
                     }
                 }
             }
+
         }
-        if (this._shouldPrecompile) {
-            this._precompileDone = true;
+
+        if (this._programPrecompiler && this._programPrecompiler.needsBuild()) {
+            const layers = this._mergedOrder.map(id => this._mergedLayers[id]);
+            this._programPrecompiler.buildQueue(layers, parameters, this);
+        }
+
+        // Apply accumulated source-max-zoom overrides
+        for (const fqid in this._mergedFillExtrusionSourceCaches) {
+            this._mergedFillExtrusionSourceCaches[fqid].setMaxzoomOverride(feSourceMaxZooms[fqid] ?? null);
         }
 
         if (this.terrain && layersUpdated) {
@@ -1466,10 +2163,16 @@ class Style extends Evented {
             this.mergeLayers();
         }
 
+        const pendingImageProviders = this.imageManager.getPendingImageProviders();
+        for (const imageProvider of pendingImageProviders) {
+            imageProvider.sourceCache.used = true;
+        }
+
         for (const sourceId in sourcesUsedBefore) {
             const sourceCache = this._mergedSourceCaches[sourceId];
             if (sourcesUsedBefore[sourceId] !== sourceCache.used) {
-                sourceCache.getSource().fire(new Event('data', {sourceDataType: 'visibility', dataType:'source', sourceId: sourceCache.getSource().id}));
+                const source = sourceCache.getSource() as ISource;
+                source.fire(new Event('data', {sourceDataType: 'visibility', dataType: 'source', sourceId: sourceCache.getSource().id}));
             }
         }
 
@@ -1485,6 +2188,14 @@ class Style extends Evented {
             this.fog.recalculate(parameters);
         }
 
+        if (this.snow) {
+            this.snow.recalculate(parameters);
+        }
+
+        if (this.rain) {
+            this.rain.recalculate(parameters);
+        }
+
         this.z = parameters.zoom;
 
         if (this._markersNeedUpdate) {
@@ -1492,8 +2203,25 @@ class Style extends Evented {
             this._markersNeedUpdate = false;
         }
 
+        this.imageManager.clearUpdatedImages(this.scope);
+
         if (changed) {
             this.fire(new Event('data', {dataType: 'style'}));
+        }
+    }
+
+    /**
+     * Resolves pending image requests from ImageProviders during the map render cycle.
+     * @private
+     */
+    updateImageProviders() {
+        const pendingImageProviders = this.imageManager.getPendingImageProviders();
+        for (const imageProvider of pendingImageProviders) {
+            const images = imageProvider.resolvePendingRequests();
+            const fragmentStyle = this.getFragmentStyle(imageProvider.scope);
+            assert(fragmentStyle, 'Fragment style not found for image provider');
+            if (!fragmentStyle) continue;
+            fragmentStyle.addImages(images);
         }
     }
 
@@ -1501,12 +2229,19 @@ class Style extends Evented {
      * Apply any queued image changes.
      */
     _updateTilesForChangedImages() {
-        const updatedImages = this._changes.getUpdatedImages();
-        if (updatedImages.length) {
-            for (const name in this._sourceCaches) {
-                this._sourceCaches[name].reloadTilesForDependencies(['icons', 'patterns'], updatedImages);
-            }
-            this._changes.resetUpdatedImages();
+        const updatedImages: Record<string, StringifiedImageId[]> = {};
+
+        for (const name in this._mergedSourceCaches) {
+            const sourceCache = this._mergedSourceCaches[name];
+            const scope = sourceCache.getSource().scope;
+            updatedImages[scope] = updatedImages[scope] || this._changes.getUpdatedImages(scope);
+            if (updatedImages[scope].length === 0) continue;
+
+            this._mergedSourceCaches[name].reloadTilesForDependencies(['icons', 'patterns'], updatedImages[scope]);
+        }
+
+        for (const scope in updatedImages) {
+            this._changes.resetUpdatedImages(scope);
         }
     }
 
@@ -1540,14 +2275,19 @@ class Style extends Evented {
         nextState = clone(nextState);
         nextState.layers = deref(nextState.layers);
 
-        const changes = diffStyles(this.serialize(), nextState)
-            .filter(op => !(op.command in ignoredDiffOperations));
+        // `DebugModule.diffStyles` should be preloaded by `_diffStyle` before this runs
+        // otherwise throw so `_diffStyle`'s try/catch falls back to full restyle
+        if (!DebugModule.diffStyles) {
+            throw new Error('Debug module not loaded; cannot diff style.');
+        }
+        const changes = DebugModule.diffStyles(this.serialize(), nextState)
+            .filter(op => !ignoredDiffOperations.has(op.command));
 
         if (changes.length === 0) {
             return false;
         }
 
-        const unimplementedOps = changes.filter(op => !(op.command in supportedDiffOperations));
+        const unimplementedOps = changes.filter(op => !supportedDiffOperations.has(op.command));
         if (unimplementedOps.length > 0) {
             throw new Error(`Unimplemented: ${unimplementedOps.map(op => op.command).join(', ')}.`);
         }
@@ -1555,11 +2295,14 @@ class Style extends Evented {
         const changesPromises = [];
 
         changes.forEach((op) => {
-            changesPromises.push((this as any)[op.command].apply(this, op.args));
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            changesPromises.push(this[op.command](...op.args));
         });
 
         if (onFinish) {
-            Promise.all(changesPromises).then(onFinish);
+            Promise.all(changesPromises)
+                .then(onFinish)
+                .catch(onFinish);
         }
 
         this.stylesheet = nextState;
@@ -1574,74 +2317,133 @@ class Style extends Evented {
         return true;
     }
 
-    addImage(id: string, image: StyleImage): this {
-        if (this.getImage(id)) {
-            return this.fire(new ErrorEvent(new Error('An image with this name already exists.')));
+    /**
+     * Broadcast the current set of available images to the Workers.
+     * Note that this is a scoped method, so it will only update the images for the given scope.
+     */
+    _updateWorkerImages(isSpriteLoaded = false) {
+        this._availableImages = this.imageManager.listImages(this.scope);
+        const params: WorkerInbox['setImages']['params'] = {scope: this.scope, images: this._availableImages};
+
+        if (isSpriteLoaded) {
+            params.isSpriteLoaded = true;
         }
-        this.imageManager.addImage(id, this.scope, image);
-        this._afterImageUpdated(id);
+
+        this.dispatcher.broadcast('setImages', params);
+    }
+
+    _updateWorkerModels() {
+        this._availableModels = this.modelManager.getModelURIs(this.scope);
+        const params = {scope: this.scope, models: this._availableModels};
+        this.dispatcher.broadcast('setModels', params);
+    }
+
+    /**
+     * Add a set of images to the style.
+     * @fires Map.event:data Fires `data` with `{dataType: 'style'}` to indicate that the set of available images has changed.
+     * @returns {Style}
+     */
+    addImages(images: StyleImageMap<ImageId>, isSpriteLoaded?: boolean): this {
+        if (images.size === 0) {
+            if (isSpriteLoaded) {
+                this.dispatcher.broadcast('spriteLoaded', {scope: this.scope});
+            }
+            return this;
+        }
+        for (const [id, image] of images.entries()) {
+            if (this.getImage(id)) {
+                return this.fire(new ErrorEvent(new Error(`An image with the name "${id.name}" already exists.`)));
+            }
+            this.imageManager.addImage(id, this.scope, image);
+            this._changes.updateImage(id, this.scope);
+        }
+
+        this._updateWorkerImages(isSpriteLoaded);
+        this.fire(new Event('data', {dataType: 'style'}));
         return this;
     }
 
-    updateImage(id: string, image: StyleImage) {
-        this.imageManager.updateImage(id, this.scope, image);
+    addImage(id: ImageId, image: StyleImage): this {
+        if (this.getImage(id)) {
+            return this.fire(new ErrorEvent(new Error(`An image with the name "${id.name}" already exists.`)));
+        }
+        this.imageManager.addImage(id, this.scope, image);
+        this._changes.updateImage(id, this.scope);
+        this._updateWorkerImages();
+        this.fire(new Event('data', {dataType: 'style'}));
+        return this;
     }
 
-    getImage(id: string): StyleImage | null | undefined {
+    updateImage(id: ImageId, image: StyleImage, performSymbolLayout = false) {
+        this.imageManager.updateImage(id, this.scope, image);
+        if (performSymbolLayout) {
+            this._changes.updateImage(id, this.scope);
+            this._updateWorkerImages();
+            this.fire(new Event('data', {dataType: 'style'}));
+        }
+    }
+
+    getImage(id: ImageId): StyleImage | null | undefined {
         return this.imageManager.getImage(id, this.scope);
     }
 
-    removeImage(id: string): this {
+    removeImage(id: ImageId): this {
         if (!this.getImage(id)) {
             return this.fire(new ErrorEvent(new Error('No image with this name exists.')));
         }
         this.imageManager.removeImage(id, this.scope);
-        this._afterImageUpdated(id);
+        this._changes.updateImage(id, this.scope);
+        this._updateWorkerImages();
+        this.fire(new Event('data', {dataType: 'style'}));
         return this;
     }
 
-    _afterImageUpdated(id: string) {
-        this._availableImages = this.imageManager.listImages(this.scope);
-        this._changes.updateImage(id);
-        this.dispatcher.broadcast('setImages', {
-            scope: this.scope,
-            images: this._availableImages
-        });
-        this.fire(new Event('data', {dataType: 'style'}));
-    }
-
-    listImages(): Array<string> {
+    listImages(): ImageId[] {
         this._checkLoaded();
         return this._availableImages.slice();
+    }
+
+    getActualScope() {
+        return this._importedAsBasemap ? "basemap" : this.scope;
+    }
+
+    addModelURLs(models: ModelsSpecification): this {
+        this.modelManager.addModelURLs(models, this.getActualScope());
+        this._updateWorkerModels();
+        this.fire(new Event('data', {dataType: 'style'}));
+        return this;
     }
 
     addModel(id: string, url: string, options: StyleSetterOptions = {}): this {
         this._checkLoaded();
         if (this._validate(validateModel, `models.${id}`, url, null, options)) return this;
 
-        this.modelManager.addModel(id, url, this.scope);
-        this._changes.setDirty();
+        this.modelManager.addModel(id, url, this.getActualScope());
+        this.fire(new Event('data', {dataType: 'style'}));
         return this;
     }
 
     hasModel(id: string): boolean {
-        return this.modelManager.hasModel(id, this.scope);
+        return this.modelManager.hasModel(id, this.getActualScope());
     }
 
     removeModel(id: string): this {
         if (!this.hasModel(id)) {
             return this.fire(new ErrorEvent(new Error('No model with this ID exists.')));
         }
-        this.modelManager.removeModel(id, this.scope);
+        const keepModelURI = false;
+        const forceRemoval = true;
+        this.modelManager.removeModel(id, this.getActualScope(), keepModelURI, forceRemoval);
+        this.fire(new Event('data', {dataType: 'style'}));
         return this;
     }
 
     listModels(): Array<string> {
         this._checkLoaded();
-        return this.modelManager.listModels(this.scope);
+        return this.modelManager.listModels(this.getActualScope());
     }
 
-    addSource(id: string, source: SourceSpecification, options: StyleSetterOptions = {}): void {
+    addSource(id: string, source: (SourceSpecification | CanvasSourceSpecification | CustomSourceInterface<unknown>) & {collectResourceTiming?: boolean}, options: StyleSetterOptions = {}): void {
         this._checkLoaded();
 
         if (this.getOwnSource(id) !== undefined) {
@@ -1653,34 +2455,79 @@ class Style extends Evented {
         }
 
         const builtIns = ['vector', 'raster', 'geojson', 'video', 'image'];
-        const shouldValidate = builtIns.indexOf(source.type) >= 0;
+        const shouldValidate = builtIns.includes(source.type);
         if (shouldValidate && this._validate(validateSource, `sources.${id}`, source, null, options)) return;
 
-        if (this.map && this.map._collectResourceTiming) (source as any).collectResourceTiming = true;
-        const sourceInstance = createSource(id, source, this.dispatcher, this);
+        if (this.map && this.map._collectResourceTiming) source.collectResourceTiming = true;
+
+        // A source type whose class lives in a lazily-loaded module (e.g. `model`,
+        // `batched-model` in the Standard module). To keep `addSource` synchronous, add a
+        // placeholder source now and upgrade it in place once the module resolves.
+        const lazy = isLazySourceType(source.type) && !getSourceType(source.type);
+        const sourceInstance: Source = lazy ?
+            new LazySource(id, source as SourceSpecification, this.dispatcher, this) as unknown as Source :
+            createSource(id, source, this.dispatcher, this);
         sourceInstance.scope = this.scope;
 
-        sourceInstance.setEventedParent(this, () => ({
-            isSourceLoaded: this._isSourceCacheLoaded(sourceInstance.id),
-            source: sourceInstance.serialize(),
-            sourceId: sourceInstance.id
-        }));
+        const setSourceEventedParent = (src: Source) => {
+            src.setEventedParent(this, () => ({
+                isSourceLoaded: this._isSourceCacheLoaded(src.id),
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                source: src.serialize(),
+                sourceId: src.id
+            }));
+        };
+        setSourceEventedParent(sourceInstance);
 
-        const addSourceCache = (onlySymbols: boolean) => {
-            const sourceCacheId = (onlySymbols ? 'symbol:' : 'other:') + sourceInstance.id;
+        const addSourceCache = (renderSourceType?: RenderSourceType) => {
+            const prefix = renderSourceType === RenderSourceType.Symbol ? 'symbol:' :
+                renderSourceType === RenderSourceType.FillExtrusion ? 'fill-extrusion:' : 'other:';
+            const sourceCacheId = prefix + sourceInstance.id;
             const sourceCacheFQID = makeFQID(sourceCacheId, this.scope);
-            const sourceCache = this._sourceCaches[sourceCacheId] = new SourceCache(sourceCacheFQID, sourceInstance, onlySymbols);
-            (onlySymbols ? this._symbolSourceCaches : this._otherSourceCaches)[sourceInstance.id] = sourceCache;
+            const sourceCache = this._sourceCaches[sourceCacheId] = new SourceCache(sourceCacheFQID, sourceInstance, renderSourceType);
+            if (renderSourceType === RenderSourceType.Symbol) {
+                this._symbolSourceCaches[sourceInstance.id] = sourceCache;
+            } else if (renderSourceType === RenderSourceType.FillExtrusion) {
+                this._fillExtrusionSourceCaches[sourceInstance.id] = sourceCache;
+            } else {
+                this._otherSourceCaches[sourceInstance.id] = sourceCache;
+            }
             sourceCache.onAdd(this.map);
         };
 
-        addSourceCache(false);
+        addSourceCache(RenderSourceType.Other);
         if (source.type === 'vector' || source.type === 'geojson') {
-            addSourceCache(true);
+            addSourceCache(RenderSourceType.Symbol);
+            if (source.type === 'vector') {
+                addSourceCache(RenderSourceType.FillExtrusion);
+            }
         }
 
         if (sourceInstance.onAdd)
             sourceInstance.onAdd(this.map);
+
+        if (lazy) {
+            // Lazy types have no `symbol:`/`fill-extrusion:` caches, so a single `other:`
+            // SourceCache backs the placeholder. Load the module and swap the real source in.
+            // eslint-disable-next-line @typescript-eslint/no-floating-promises
+            ensureSourceType(source.type).then(() => {
+                const SourceType = getSourceType(source.type);
+                const sourceCache = this._otherSourceCaches[id];
+                // The source may have been removed during the async gap; the cache may also
+                // have been upgraded already (idempotent) — bail unless it still holds the placeholder.
+                if (!sourceCache || sourceCache.getSource() !== sourceInstance) return;
+                if (!SourceType) {
+                    this.fire(new ErrorEvent(new Error(`Could not load module for source type "${source.type}".`)));
+                    return;
+                }
+                const realSource = createSource(id, source, this.dispatcher, this);
+                realSource.scope = this.scope;
+                setSourceEventedParent(realSource);
+                sourceCache.setSource(realSource);
+                if (realSource.onAdd) realSource.onAdd(this.map);
+                this._changes.setDirty();
+            });
+        }
 
         // Avoid triggering redundant style update after adding initial sources.
         if (!options.isInitialLoad) {
@@ -1702,13 +2549,20 @@ class Style extends Evented {
         if (!source) {
             throw new Error('There is no source with this ID');
         }
+
         for (const layerId in this._layers) {
             if (this._layers[layerId].source === id) {
                 return this.fire(new ErrorEvent(new Error(`Source "${id}" cannot be removed while layer "${layerId}" is using it.`)));
             }
         }
+
         if (this.terrain && this.terrain.scope === this.scope && this.terrain.get().source === id) {
             return this.fire(new ErrorEvent(new Error(`Source "${id}" cannot be removed while terrain is using it.`)));
+        }
+
+        if (this.stylesheet.iconsets) {
+            const iconset = Object.entries(this.stylesheet.iconsets).find(([_, iconset]) => (iconset.type === 'source' ? iconset.source === id : false));
+            if (iconset) return this.fire(new ErrorEvent(new Error(`Source "${id}" cannot be removed while iconset "${iconset[0]}" is using it.`)));
         }
 
         const sourceCaches = this.getOwnSourceCaches(id);
@@ -1716,17 +2570,24 @@ class Style extends Evented {
             const id = getNameFromFQID(sourceCache.id);
             delete this._sourceCaches[id];
             this._changes.discardSourceCacheUpdate(sourceCache.id);
-            sourceCache.fire(new Event('data', {sourceDataType: 'metadata', dataType:'source', sourceId: sourceCache.getSource().id}));
+            sourceCache.fire(new Event('data', {sourceDataType: 'metadata', dataType: 'source', sourceId: sourceCache.getSource().id}));
             sourceCache.setEventedParent(null);
             sourceCache.clearTiles();
         }
         delete this._otherSourceCaches[id];
         delete this._symbolSourceCaches[id];
+        delete this._fillExtrusionSourceCaches[id];
+        if (this._hdCoverage) delete this._hdCoverage.coverageSourceCaches[id];
+        if (this._hdElevation) delete this._hdElevation.elevationSourceCaches[makeFQID(id, this.scope)];
         this.mergeSources();
 
         source.setEventedParent(null);
         if (source.onRemove)
             source.onRemove(this.map);
+
+        // Tiles are spread across all workers, so every worker may hold an instance.
+        this.dispatcher.broadcast('removeSource', {type: source.type, source: id, scope: source.scope});
+
         this._changes.setDirty();
         return this;
     }
@@ -1740,7 +2601,7 @@ class Style extends Evented {
         this._checkLoaded();
 
         assert(this.getOwnSource(id) !== undefined, 'There is no source with this ID');
-        const geojsonSource: GeoJSONSource = (this.getOwnSource(id) as any);
+        const geojsonSource: GeoJSONSource = this.getOwnSource(id);
         assert(geojsonSource.type === 'geojson');
 
         geojsonSource.setData(data);
@@ -1752,18 +2613,17 @@ class Style extends Evented {
      * @param {string} id ID of the desired source.
      * @returns {?Source} The source object.
      */
-    getOwnSource(id: string): Source | null | undefined {
+    getOwnSource<T extends Source>(id: string): T | undefined {
         const sourceCache = this.getOwnSourceCache(id);
         return sourceCache && sourceCache.getSource();
     }
 
     getOwnSources(): Source[] {
-        const sources = [];
+        const sources: Source[] = [];
         for (const id in this._otherSourceCaches) {
             const sourceCache = this.getOwnSourceCache(id);
             if (sourceCache) sources.push(sourceCache.getSource());
         }
-
         return sources;
     }
 
@@ -1783,6 +2643,10 @@ class Style extends Evented {
     setLights(lights?: Array<LightsSpecification> | null) {
         this._checkLoaded();
 
+        // Lights affect both `enable3dLights()` (LIGHTING_3D_MODE static gate) and shadows (RENDER_SHADOWS axis).
+        // Reset precompile so the next update rebuilds with fresh axes regardless of the path below.
+        if (this._programPrecompiler) this._programPrecompiler.reset();
+
         if (!lights) {
             delete this.ambientLight;
             delete this.directionalLight;
@@ -1792,7 +2656,6 @@ class Style extends Evented {
         const transitionParameters = this._getTransitionParameters();
 
         for (const light of lights) {
-            // @ts-expect-error - TS2554 - Expected 4-5 arguments, but got 3.
             if (this._validate(validateLights, 'lights', light)) {
                 return;
             }
@@ -1804,7 +2667,7 @@ class Style extends Evented {
                     ambientLight.set(light);
                     ambientLight.updateTransitions(transitionParameters);
                 } else {
-                    this.ambientLight = new Lights<Ambient>(light, ambientProps, this.scope, this.options);
+                    this.ambientLight = new Lights<Ambient>(light, getAmbientProps(), this.scope, this.options);
                 }
                 break;
             case 'directional':
@@ -1813,7 +2676,7 @@ class Style extends Evented {
                     directionalLight.set(light);
                     directionalLight.updateTransitions(transitionParameters);
                 } else {
-                    this.directionalLight = new Lights<Directional>(light, directionalProps, this.scope, this.options);
+                    this.directionalLight = new Lights<Directional>(light, getDirectionalProps(), this.scope, this.options);
                 }
                 break;
             default:
@@ -1821,7 +2684,8 @@ class Style extends Evented {
             }
         }
 
-        const evaluationParameters = new EvaluationParameters(this.z || 0, transitionParameters);
+        const evaluationParametersOptions = Object.assign(transitionParameters, {worldview: this.map.getWorldview()});
+        const evaluationParameters = new EvaluationParameters(this.z || 0, evaluationParametersOptions);
 
         if (this.ambientLight) {
             this.ambientLight.recalculate(evaluationParameters);
@@ -1832,7 +2696,7 @@ class Style extends Evented {
         }
 
         this._brightness = this.calculateLightsBrightness();
-        this.dispatcher.broadcast('setBrightness', this._brightness);
+        this.dispatcher.broadcast('upsertRenderParams', {brightness: this._brightness});
     }
 
     calculateLightsBrightness(): number | null | undefined {
@@ -1851,7 +2715,7 @@ class Style extends Evented {
             return 0.2126 * r + 0.7152 * g + 0.0722 * b;
         };
 
-        const directionalColor = directional.properties.get('color').toRenderColor(null).toArray01();
+        const directionalColor = directional.properties.get('color').toNonPremultipliedRenderColor(null).toArray01();
         const directionalIntensity = directional.properties.get('intensity');
         const direction = directional.properties.get('direction');
 
@@ -1860,12 +2724,16 @@ class Style extends Evented {
 
         const directionalBrightness = relativeLuminance(directionalColor) * directionalIntensity * polarIntensity;
 
-        const ambientColor = ambient.properties.get('color').toRenderColor(null).toArray01();
+        const ambientColor = ambient.properties.get('color').toNonPremultipliedRenderColor(null).toArray01();
         const ambientIntensity = ambient.properties.get('intensity');
 
         const ambientBrightness = relativeLuminance(ambientColor) * ambientIntensity;
 
-        return (directionalBrightness + ambientBrightness) / 2.0;
+        const brightness = (directionalBrightness + ambientBrightness) / 2.0;
+
+        // Reduces decimal places to prevent bucket re-evaluation which was caused by small precision differences
+        // Since in most places we directly compare the previously evaluated brightness values
+        return Number(brightness.toFixed(6));
     }
 
     getBrightness(): number | null | undefined {
@@ -1874,7 +2742,7 @@ class Style extends Evented {
 
     getLights(): Array<LightsSpecification> | null | undefined {
         if (!this.enable3dLights()) return null;
-        const lights = [];
+        const lights: LightsSpecification[] = [];
         if (this.directionalLight) {
             lights.push(this.directionalLight.get());
         }
@@ -1888,29 +2756,129 @@ class Style extends Evented {
         return !!this.ambientLight && !!this.directionalLight;
     }
 
-    getFragmentStyle(fragmentId?: string): Style | null | undefined {
-        if (!fragmentId) return this;
+    /**
+     * Returns nested fragment style associated with the provided fragmentId.
+     * If no fragmentId is provided, returns itself.
+     */
+    getFragmentStyle(fragmentId?: string): Style | undefined {
+        if (fragmentId == null || (fragmentId === '' && this.isRootStyle())) return this;
 
         if (isFQID(fragmentId)) {
-            const scope = getScopeFromFQID(fragmentId);
+            const scope = getInnerScopeFromFQID(fragmentId);
             const fragment = this.fragments.find(({id}) => id === scope);
-            if (!fragment) throw new Error(`Style import not found: ${fragmentId}`);
+            assert(fragment, `Fragment with id ${scope} not found in the style.`);
+            if (!fragment) return undefined;
             const name = getNameFromFQID(fragmentId);
             return fragment.style.getFragmentStyle(name);
         } else {
             const fragment = this.fragments.find(({id}) => id === fragmentId);
-            if (!fragment) throw new Error(`Style import not found: ${fragmentId}`);
-            return fragment.style;
+            return fragment ? fragment.style : undefined;
         }
     }
 
-    getConfigProperty(fragmentId: string, key: string): unknown {
+    setFeaturesetSelectors(featuresets?: FeaturesetsSpecification) {
+        if (!featuresets) return;
+
+        // Helper to create consistent keys
+        const createKey = (sourceId: string, sourcelayerId: string = '') => `${sourceId}::${sourcelayerId}`;
+
+        this._featuresetSelectors = {};
+        for (const featuresetId in featuresets) {
+            const sourceInfoMap: {[sourceInfo: string]: string} = {};
+            const featuresetSelectors: FeaturesetSelector[] = this._featuresetSelectors[featuresetId] = [];
+            for (const selector of featuresets[featuresetId].selectors) {
+                if (selector.featureNamespace) {
+                    const layer = this.getOwnLayer(selector.layer);
+                    if (!layer) {
+                        warnOnce(`Layer is undefined for selector: ${selector.layer}`);
+                        continue;
+                    }
+                    const sourceKey = createKey(layer.source, layer.sourceLayer);
+                    // Based on spec, "If the underlying source is the same for multiple selectors within a featureset, the same featureNamespace should be used across those selectors."
+                    if (sourceKey in sourceInfoMap && sourceInfoMap[sourceKey] !== selector.featureNamespace)  {
+                        warnOnce(`"featureNamespace ${selector.featureNamespace} of featureset ${featuresetId}'s selector is not associated to the same source, skip this selector`);
+                        continue;
+                    }
+                    sourceInfoMap[sourceKey] = selector.featureNamespace;
+                }
+                let properties: Record<string, StyleExpression> | undefined;
+                if (selector.properties) {
+                    for (const name in selector.properties) {
+                        const expression = createExpression(selector.properties[name]);
+                        if (expression.result === 'success') {
+                            properties = properties || {};
+                            properties[name] = expression.value;
+                        }
+                    }
+                }
+
+                featuresetSelectors.push({layerId: selector.layer, namespace: selector.featureNamespace, properties, uniqueFeatureID: selector._uniqueFeatureID});
+            }
+        }
+    }
+
+    /**
+     * Returns the featureset descriptors associated with a style fragment.
+     * If no fragmentId is provided, returns own featureset descriptors.
+     */
+    getFeaturesetDescriptors(fragmentId?: string): Array<FeaturesetDescriptor> {
+        const style = this.getFragmentStyle(fragmentId);
+        if (!style || !style.stylesheet.featuresets) return [];
+
+        const featuresetDescriptors: FeaturesetDescriptor[] = [];
+        for (const id in style.stylesheet.featuresets) {
+            featuresetDescriptors.push({featuresetId: id, importId: style.scope ? style.scope : undefined});
+        }
+
+        return featuresetDescriptors;
+    }
+
+    /**
+     * Returns the layers associated with a featureset in the style fragment.
+     * If no fragmentId is provided, returns the layers associated with own featuresets.
+     */
+    getFeaturesetLayers(featuresetId: string, fragmentId?: string): TypedStyleLayer[] {
+        const style = this.getFragmentStyle(fragmentId);
+        const featuresets = style.stylesheet.featuresets;
+        if (!featuresets || !featuresets[featuresetId]) {
+            this.fire(new ErrorEvent(new Error(`The featureset '${featuresetId}' does not exist in the map's style and cannot be queried.`)));
+            return [];
+        }
+
+        const layers: TypedStyleLayer[] = [];
+        for (const selector of featuresets[featuresetId].selectors) {
+            const layer = style.getOwnLayer(selector.layer);
+            if (layer) layers.push(layer);
+        }
+        return layers;
+    }
+
+    getConfigProperty(fragmentId: string, key: string): SerializedExpression | null {
         const fragmentStyle = this.getFragmentStyle(fragmentId);
         if (!fragmentStyle) return null;
         const fqid = makeFQID(key, fragmentStyle.scope);
         const expressions = fragmentStyle.options.get(fqid);
         const expression = expressions ? expressions.value || expressions.default : null;
         return expression ? expression.serialize() : null;
+    }
+
+    isIndoorEnabled(): boolean {
+        return this._indoorEnabled;
+    }
+
+    getIndoorSourceLayers(sourceId: string, scope: string): Set<string> | null {
+        const fqid = makeFQID(sourceId, scope);
+        return this._mergedIndoor[fqid];
+    }
+
+    setIndoorData(mapId: undefined, params: MainInbox['setIndoorData']['params']) {
+        if (this.indoorManager) this.indoorManager.setIndoorData(params);
+    }
+
+    updateIndoorDependentLayers() {
+        this._updateLayers(this._dependentLayerIds((deps) => deps.isIndoorDependent));
+        this.map._styleDirty = true;
+        this.map.triggerRepaint();
     }
 
     setConfigProperty(fragmentId: string, key: string, value: unknown) {
@@ -1920,7 +2888,7 @@ class Style extends Evented {
         const schema = fragmentStyle.stylesheet.schema;
         if (!schema || !schema[key]) return;
 
-        const expressionParsed = createExpression(value);
+        const expressionParsed = createConfigExpression(value, schema[key]);
         if (expressionParsed.result !== 'success') {
             emitValidationErrors(this, expressionParsed.value);
             return;
@@ -1932,9 +2900,9 @@ class Style extends Evented {
         const expressions = fragmentStyle.options.get(fqid);
         if (!expressions) return;
 
-        let defaultExpression;
+        let defaultExpression: StyleExpression['expression'] | undefined;
         const {minValue, maxValue, stepValue, type, values} = schema[key];
-        const defaultExpressionParsed = createExpression(schema[key].default);
+        const defaultExpressionParsed = createConfigExpression(schema[key].default, schema[key]);
         if (defaultExpressionParsed.result === 'success') {
             defaultExpression = defaultExpressionParsed.value.expression;
         }
@@ -1944,14 +2912,11 @@ class Style extends Evented {
             return;
         }
 
-        this.options.set(fqid, {
-            ...expressions,
-            value: expression,
+        this.options.set(fqid, {...expressions, value: expression,
             default: defaultExpression,
-            minValue, maxValue, stepValue, type, values
-        });
+            minValue, maxValue, stepValue, type, values});
 
-        this.updateConfigDependencies();
+        this.updateConfigDependencies(key);
     }
 
     getConfig(fragmentId: string): ConfigSpecification | null | undefined {
@@ -1961,7 +2926,7 @@ class Style extends Evented {
         const schema = fragmentStyle.stylesheet.schema;
         if (!schema) return null;
 
-        const config: Record<string, any> = {};
+        const config: ConfigSpecification = {};
         for (const key in schema) {
             const fqid = makeFQID(key, fragmentStyle.scope);
             const expressions = fragmentStyle.options.get(fqid);
@@ -2009,17 +2974,17 @@ class Style extends Evented {
         }
 
         for (const id in schema) {
-            let defaultExpression;
-            let configExpression;
+            let defaultExpression: StyleExpression['expression'] | undefined;
+            let configExpression: StyleExpression['expression'] | undefined;
 
             const expression = schema[id].default;
-            const expressionParsed = createExpression(expression);
+            const expressionParsed = createConfigExpression(expression, schema[id]);
             if (expressionParsed.result === 'success') {
                 defaultExpression = expressionParsed.value.expression;
             }
 
             if (config && config[id] !== undefined) {
-                const expressionParsed = createExpression(config[id]);
+                const expressionParsed = createConfigExpression(config[id], schema[id]);
                 if (expressionParsed.result === 'success') {
                     configExpression = expressionParsed.value.expression;
                 }
@@ -2040,14 +3005,29 @@ class Style extends Evented {
         }
     }
 
-    updateConfigDependencies() {
-        for (const id of this._configDependentLayers) {
+    _updateLayers(layerIds: Iterable<string>) {
+        for (const id of layerIds) {
             const layer = this.getLayer(id);
             if (layer) {
                 layer.possiblyEvaluateVisibility();
                 this._updateLayer(layer);
+                this._changes.setDirty();
             }
         }
+    }
+
+    _dependentLayerIds(predicate: (deps: LayerExpressionDependencies) => boolean): Array<string> {
+        const ids: Array<string> = [];
+        for (const [id, deps] of this._layerExpressionDependencies) {
+            if (predicate(deps)) ids.push(id);
+        }
+        return ids;
+    }
+
+    updateConfigDependencies(configKey?: string) {
+        this._updateLayers(this._dependentLayerIds((deps) => {
+            return configKey ? deps.hasConfigDependency(configKey) : deps.isConfigDependent;
+        }));
 
         if (this.ambientLight) {
             this.ambientLight.updateConfig(this.options);
@@ -2061,14 +3041,26 @@ class Style extends Evented {
             this.fog.updateConfig(this.options);
         }
 
+        if (this.snow) {
+            this.snow.updateConfig(this.options);
+        }
+
+        if (this.rain) {
+            this.rain.updateConfig(this.options);
+        }
+
         this.forEachFragmentStyle((style: Style) => {
-            if (style._styleColorTheme.colorTheme) {
-                const data = style._evaluateColorThemeData(style._styleColorTheme.colorTheme);
-                if (!style._styleColorTheme.lut || (style._styleColorTheme.lut && data !== style._styleColorTheme.lut.data)) {
-                    style.setColorTheme(style._styleColorTheme.colorTheme);
+            const colorTheme = style._styleColorTheme.colorThemeOverride ? style._styleColorTheme.colorThemeOverride : style._styleColorTheme.colorTheme;
+            if (colorTheme) {
+                const data = style._evaluateColorThemeData(colorTheme);
+                if ((!style._styleColorTheme.lut && data !== '') || (style._styleColorTheme.lut && data !== style._styleColorTheme.lut.data)) {
+                    style.setColorTheme(colorTheme);
                 }
             }
         });
+
+        // Config may have flipped the indoor layers' visibility (e.g. `showIndoor`).
+        this._updateIndoorEnabled();
 
         this._changes.setDirty();
     }
@@ -2081,7 +3073,7 @@ class Style extends Evented {
      * @param {Object} options Style setter options.
      * @returns {Map} The {@link Map} object.
      */
-    addLayer(layerObject: LayerSpecification | CustomLayerInterface, before?: string, options: StyleSetterOptions = {}) {
+    addLayer(layerObject: AnyLayer, before?: string, options: StyleSetterOptions = {}) {
         this._checkLoaded();
 
         const id = layerObject.id;
@@ -2091,7 +3083,7 @@ class Style extends Evented {
             return;
         }
 
-        let layer;
+        let layer: TypedStyleLayer;
         if (layerObject.type === 'custom') {
             if (emitValidationErrors(this, validateCustomStyleLayer(layerObject))) return;
             layer = createStyleLayer(layerObject, this.scope, this._styleColorTheme.lut, this.options);
@@ -2099,21 +3091,20 @@ class Style extends Evented {
             if (typeof layerObject.source === 'object') {
                 this.addSource(id, layerObject.source);
                 layerObject = clone(layerObject);
-                layerObject = (extend(layerObject, {source: id}));
+                layerObject = (Object.assign(layerObject, {source: id}));
             }
 
             // this layer is not in the style.layers array, so we pass an impossible array index
             if (this._validate(validateLayer,
                 `layers.${id}`, layerObject, {arrayIndex: -1}, options)) return;
 
-            layer = createStyleLayer(layerObject, this.scope, this._styleColorTheme.lut, this.options);
+            layer = createStyleLayer(layerObject as LayerSpecification, this.scope, this._styleColorTheme.lut, this.options);
             this._validateLayer(layer);
 
             layer.setEventedParent(this, {layer: {id}});
-            this._serializedLayers[layer.id] = layer.serialize();
         }
 
-        if (layer.isConfigDependent) this._configDependentLayers.add(layer.fqid);
+        this._layerExpressionDependencies.set(layer.fqid, new LayerExpressionDependencies(layer));
 
         let index = this._order.length;
         if (before) {
@@ -2127,13 +3118,12 @@ class Style extends Evented {
             // or it has the same slot as the 'before' layer,
             // then we can insert the new layer before the existing one.
             const beforeLayer = this._layers[before];
-            if (layer.slot === beforeLayer.slot) index = beforeIndex;
+            if (!layer.slot || layer.slot === beforeLayer.slot) index = beforeIndex;
             else warnOnce(`Layer with id "${before}" has a different slot. Layers can only be rearranged within the same slot.`);
         }
 
         this._order.splice(index, 0, id);
-        this._layerOrderChanged = true;
-
+        this._handleLayerOrderChange();
         this._layers[id] = layer;
 
         const sourceCache = this.getOwnLayerSourceCache(layer);
@@ -2169,7 +3159,6 @@ class Style extends Evented {
         }
 
         layer.scope = this.scope;
-
         this.mergeLayers();
     }
 
@@ -2204,14 +3193,14 @@ class Style extends Evented {
             // or it has the same slot as the 'before' layer,
             // then we can insert the new layer before the existing one.
             const beforeLayer = this._layers[before];
-            if (layer.slot === beforeLayer.slot) newIndex = beforeIndex;
+            if (!layer.slot || layer.slot === beforeLayer.slot) newIndex = beforeIndex;
             else warnOnce(`Layer with id "${before}" has a different slot. Layers can only be rearranged within the same slot.`);
         }
 
         this._order.splice(newIndex, 0, id);
 
         this._changes.setDirty();
-        this._layerOrderChanged = true;
+        this._handleLayerOrderChange();
 
         this.mergeLayers();
     }
@@ -2236,12 +3225,11 @@ class Style extends Evented {
         this._order.splice(index, 1);
 
         delete this._layers[id];
-        delete this._serializedLayers[id];
 
         this._changes.setDirty();
-        this._layerOrderChanged = true;
+        this._handleLayerOrderChange();
 
-        this._configDependentLayers.delete(layer.fqid);
+        this._layerExpressionDependencies.delete(layer.fqid);
         this._changes.removeLayer(layer);
 
         const sourceCache = this.getOwnLayerSourceCache(layer);
@@ -2269,10 +3257,10 @@ class Style extends Evented {
      * Return the style layer object with the given `id`.
      *
      * @param {string} id ID of the desired layer.
-     * @returns {?StyleLayer} A layer, if one with the given `id` exists.
+     * @returns {TypedStyleLayer} A layer, if one with the given `id` exists.
      */
-    getOwnLayer(id: string): StyleLayer | null | undefined {
-        return this._layers[id];
+    getOwnLayer<T extends TypedStyleLayer>(id: string): T | undefined {
+        return this._layers[id] as T;
     }
 
     /**
@@ -2347,8 +3335,11 @@ class Style extends Evented {
             return;
         }
 
+        const dependencies = this._layerExpressionDependencies.get(layer.fqid);
+
         if (filter === null || filter === undefined) {
             layer.filter = undefined;
+            if (dependencies) dependencies.invalidateFilter();
             this._updateLayer(layer);
             return;
         }
@@ -2358,6 +3349,7 @@ class Style extends Evented {
         }
 
         layer.filter = clone(filter);
+        if (dependencies) dependencies.invalidateFilter();
         this._updateLayer(layer);
     }
 
@@ -2372,7 +3364,7 @@ class Style extends Evented {
         return clone(layer.filter);
     }
 
-    setLayoutProperty(layerId: string, name: string, value: any, options: StyleSetterOptions = {}) {
+    setLayoutProperty<T extends keyof LayoutSpecification>(layerId: string, name: T, value: LayoutSpecification[T], options: StyleSetterOptions = {}) {
         this._checkLoaded();
 
         const layer = this._checkLayer(layerId);
@@ -2390,15 +3382,57 @@ class Style extends Evented {
                 styleSpec,
                 // Workaround for https://github.com/mapbox/mapbox-gl-js/issues/2407
                 style: {glyphs: true, sprite: true}
-            }));
+            } as unknown as PropertyValidatorOptions));
             if (errors) {
                 return;
             }
         }
 
         layer.setLayoutProperty(name, value);
-        if (layer.isConfigDependent) this._configDependentLayers.add(layer.fqid);
         this._updateLayer(layer);
+    }
+
+    getLayerProperty<K extends keyof LayerProperty>(layerId: string, name: K): LayerProperty[K] | undefined {
+        const layer = this._checkLayer(layerId);
+        if (!layer) return;
+
+        switch (name) {
+        case 'minzoom':      return layer.minzoom as LayerProperty[K];
+        case 'maxzoom':      return layer.maxzoom as LayerProperty[K];
+        case 'filter':       return this.getFilter(layerId) as LayerProperty[K];
+        case 'slot':         return layer.slot as LayerProperty[K];
+        case 'appearances':  return layer.getAppearances().map(a => a.serialize()) as LayerProperty[K];
+        }
+
+        return (layer.isPaintProperty(name as keyof PaintSpecification) ?
+            this.getPaintProperty(layerId, name as keyof PaintSpecification) :
+            this.getLayoutProperty(layerId, name as keyof LayoutSpecification)) as LayerProperty[K];
+    }
+
+    setLayerProperty<K extends keyof LayerProperty>(layerId: string, name: K, value: LayerProperty[K], options: StyleSetterOptions = {}) {
+        this._checkLoaded();
+
+        const layer = this._checkLayer(layerId);
+        if (!layer) return;
+
+        switch (name) {
+        case 'appearances':
+            layer.setAppearances(value as AppearanceSpecification[]);
+            this._updateLayer(layer);
+            return;
+        case 'minzoom':      return this.setLayerZoomRange(layerId, value as number);
+        case 'maxzoom':      return this.setLayerZoomRange(layerId, null, value as number);
+        case 'filter':       return this.setFilter(layerId, value as FilterSpecification, options);
+        case 'slot':         return this.setSlot(layerId, value as string);
+        }
+
+        if (layer.isPaintProperty(name as keyof PaintSpecification)) {
+            const paintName = name as keyof PaintSpecification;
+            this.setPaintProperty(layerId, paintName, value as PaintSpecification[typeof paintName], options);
+        } else {
+            const layoutName = name as keyof LayoutSpecification;
+            this.setLayoutProperty(layerId, layoutName, value as LayoutSpecification[typeof layoutName], options);
+        }
     }
 
     /**
@@ -2407,13 +3441,13 @@ class Style extends Evented {
      * @param {string} name The name of the layout property.
      * @returns {*} The property value.
      */
-    getLayoutProperty(layerId: string, name: string): PropertyValueSpecification<unknown> | null | undefined {
+    getLayoutProperty<T extends keyof LayoutSpecification>(layerId: string, name: T): LayoutSpecification[T] | undefined {
         const layer = this._checkLayer(layerId);
         if (!layer) return;
         return layer.getLayoutProperty(name);
     }
 
-    setPaintProperty(layerId: string, name: string, value: any, options: StyleSetterOptions = {}) {
+    setPaintProperty<T extends keyof PaintSpecification>(layerId: string, name: T, value: PaintSpecification[T], options: StyleSetterOptions = {}) {
         this._checkLoaded();
 
         const layer = this._checkLayer(layerId);
@@ -2429,14 +3463,13 @@ class Style extends Evented {
                 objectKey: name,
                 value,
                 styleSpec
-            }));
+            } as unknown as PropertyValidatorOptions));
             if (errors) {
                 return;
             }
         }
 
         const requiresRelayout = layer.setPaintProperty(name, value);
-        if (layer.isConfigDependent) this._configDependentLayers.add(layer.fqid);
         if (requiresRelayout) {
             this._updateLayer(layer);
         }
@@ -2444,14 +3477,32 @@ class Style extends Evented {
         this._changes.updatePaintProperties(layer);
     }
 
-    getPaintProperty(layerId: string, name: string): void | TransitionSpecification | PropertyValueSpecification<unknown> {
+    getPaintProperty<T extends keyof PaintSpecification>(layerId: string, name: T): PaintSpecification[T] | undefined {
         const layer = this._checkLayer(layerId);
         if (!layer) return;
         return layer.getPaintProperty(name);
     }
 
-    setFeatureState(target: {id: string | number; source: string; sourceLayer?: string}, state: any) {
+    setFeatureState(target: FeatureSelector | GeoJSONFeature | TargetFeature, state: FeatureState) {
         this._checkLoaded();
+
+        // target is TargetFeature
+        if ('target' in target) {
+            if ('featuresetId' in target.target) {
+                const {featuresetId, importId} = target.target;
+                const fragment = this.getFragmentStyle(importId);
+                const layers = fragment.getFeaturesetLayers(featuresetId);
+                for (const {source, sourceLayer} of layers) {
+                    fragment.setFeatureState({id: target.id, source, sourceLayer}, state);
+                }
+            } else if ('layerId' in target.target) {
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                resolved?.fragment.setFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer}, state);
+            }
+
+            return;
+        }
+
         const sourceId = target.source;
         const sourceLayer = target.sourceLayer;
 
@@ -2477,12 +3528,26 @@ class Style extends Evented {
         }
     }
 
-    removeFeatureState(target: {
-        source: string;
-        sourceLayer?: string;
-        id?: string | number;
-    }, key?: string) {
+    removeFeatureState(target: FeatureSelector | SourceSelector | GeoJSONFeature | TargetFeature, key?: string) {
         this._checkLoaded();
+
+        // target is TargetFeature
+        if ('target' in target) {
+            if ('featuresetId' in target.target) {
+                const {featuresetId, importId} = target.target;
+                const fragment = this.getFragmentStyle(importId);
+                const layers = fragment.getFeaturesetLayers(featuresetId);
+                for (const {source, sourceLayer} of layers) {
+                    fragment.removeFeatureState({id: target.id, source, sourceLayer}, key);
+                }
+            } else if ('layerId' in target.target) {
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                resolved?.fragment.removeFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer}, key);
+            }
+
+            return;
+        }
+
         const sourceId = target.source;
 
         const source = this._checkSource(sourceId);
@@ -2507,14 +3572,35 @@ class Style extends Evented {
         }
     }
 
-    getFeatureState(
-        target: {
-            source: string;
-            sourceLayer?: string;
-            id: string | number;
-        },
-    ): FeatureStates | null | undefined {
+    getFeatureState(target: FeatureSelector | GeoJSONFeature | TargetFeature): FeatureState | null | undefined {
         this._checkLoaded();
+
+        // target is TargetFeature
+        if ('target' in target) {
+            let finalState: FeatureState;
+            if ('featuresetId' in target.target) {
+                const {featuresetId, importId} = target.target;
+                const fragment = this.getFragmentStyle(importId);
+                const layers = fragment.getFeaturesetLayers(featuresetId);
+                for (const {source, sourceLayer} of layers) {
+                    const state = fragment.getFeatureState({id: target.id, source, sourceLayer});
+                    // There is possibility that the same feature id exists in multiple sources, and the states of the
+                    // features must be consistent through all the sources
+                    if (state && !finalState) {
+                        finalState = state;
+                    } else if (!deepEqual(finalState, state)) {
+                        this.fire(new ErrorEvent(new Error(`The same feature id exists in multiple sources in the featureset, but their feature states are not consistent through the sources.`)));
+                        return;
+                    }
+                }
+            } else if ('layerId' in target.target) {
+                const resolved = this._resolveLayerFragment(target.target.layerId);
+                finalState = resolved?.fragment.getFeatureState({id: target.id, source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer});
+            }
+
+            return finalState;
+        }
+
         const sourceId = target.source;
         const sourceLayer = target.sourceLayer;
 
@@ -2534,14 +3620,38 @@ class Style extends Evented {
         return sourceCaches[0].getFeatureState(sourceLayer, target.id);
     }
 
+    resetFeatureStates(target: TargetDescriptor) {
+        this._checkLoaded();
+
+        if ('featuresetId' in target) {
+            const {featuresetId, importId} = target;
+            const fragment = this.getFragmentStyle(importId);
+            if (!fragment) return;
+            const layers = fragment.getFeaturesetLayers(featuresetId);
+            for (const {source, sourceLayer} of layers) {
+                fragment.removeFeatureState({source, sourceLayer});
+            }
+        } else {
+            const resolved = this._resolveLayerFragment(target.layerId);
+            resolved?.fragment.removeFeatureState({source: resolved.layer.source, sourceLayer: resolved.layer.sourceLayer});
+        }
+    }
+
     setTransition(transition?: TransitionSpecification | null): Style {
-        this.stylesheet.transition = extend({}, this.stylesheet.transition, transition);
+        this.stylesheet.transition = {...this.stylesheet.transition, ...transition};
         this.transition = this.stylesheet.transition;
         return this;
     }
 
     getTransition(): TransitionSpecification {
-        return extend({}, this.stylesheet.transition);
+        return {...this.stylesheet.transition};
+    }
+
+    setWorldview(worldview: string | undefined | null) {
+        if (worldview === this._worldview) return;
+        this._worldview = worldview;
+        this.dispatcher.broadcast('upsertRenderParams', {worldview: this._worldview});
+        this.reloadSources();
     }
 
     serialize(): StyleSpecification {
@@ -2557,6 +3667,8 @@ class Style extends Evented {
             name: this.stylesheet.name,
             metadata: this.stylesheet.metadata,
             fragment: this.stylesheet.fragment,
+            iconsets: this.stylesheet.iconsets,
+            featuresets: this.stylesheet.featuresets,
             imports: this._serializeImports(),
             schema: this.stylesheet.schema,
             camera: this.stylesheet.camera,
@@ -2564,8 +3676,11 @@ class Style extends Evented {
             lights: this.stylesheet.lights,
             terrain: scopedTerrain,
             fog: this.stylesheet.fog,
+            snow: this.stylesheet.snow,
+            rain: this.stylesheet.rain,
+            indoor: this.stylesheet.indoor,
             center: this.stylesheet.center,
-            "color-theme": this.stylesheet["color-theme"],
+            'color-theme': this.stylesheet['color-theme'],
             zoom: this.stylesheet.zoom,
             bearing: this.stylesheet.bearing,
             pitch: this.stylesheet.pitch,
@@ -2575,10 +3690,18 @@ class Style extends Evented {
             projection: this.stylesheet.projection,
             sources: this._serializeSources(),
             layers: this._serializeLayers(this._order)
-        }, (value) => { return value !== undefined; });
+        }, (value) => value !== undefined);
     }
 
-    _updateLayer(layer: StyleLayer) {
+    _updateFilteredLayers(filter: (layer: TypedStyleLayer) => boolean) {
+        for (const layer of Object.values(this._mergedLayers)) {
+            if (filter(layer)) {
+                this._updateLayer(layer);
+            }
+        }
+    }
+
+    _updateLayer(layer: TypedStyleLayer) {
         this._changes.updateLayer(layer);
         const sourceCache = this.getLayerSourceCache(layer);
         const fqid = makeFQID(layer.source, layer.scope);
@@ -2592,7 +3715,7 @@ class Style extends Evented {
         layer.invalidateCompiledFilter();
     }
 
-    _flattenAndSortRenderedFeatures(sourceResults: Array<QueryResult>): Array<QueryFeature> {
+    _flattenAndSortRenderedFeatures(sourceResults: Array<QueryResult>): Array<Feature> {
         // Feature order is complicated.
         // The order between features in two 2D layers is determined by layer order (subject to draped rendering modification).
         //  - if terrain/globe enabled layers are reordered in a drape-first, immediate-second manner
@@ -2612,12 +3735,12 @@ class Style extends Evented {
         //      This means that that the line_layer feature is above the extrusion_layer_b feature despite
         //      it being in an earlier layer.
 
-        const isLayer3D = (layerId: string) => this._mergedLayers[layerId].type === 'fill-extrusion' ||  this._mergedLayers[layerId].type === 'model';
+        const isLayer3D = (layerId: string) => this._mergedLayers[layerId].is3D(!!this.terrain);
 
         const order = this.order;
 
-        const layerIndex: Record<string, any> = {};
-        const features3D = [];
+        const layerIndex: Record<string, number> = {};
+        const features3D: Array<{feature: Feature; featureIndex: number; intersectionZ: number}> = [];
         for (let l = order.length - 1; l >= 0; l--) {
             const layerId = order[l];
             if (isLayer3D(layerId)) {
@@ -2637,7 +3760,8 @@ class Style extends Evented {
             return b.intersectionZ - a.intersectionZ;
         });
 
-        const features = [];
+        const features: Feature[] = [];
+
         for (let l = order.length - 1; l >= 0; l--) {
             const layerId = order[l];
 
@@ -2664,119 +3788,238 @@ class Style extends Evented {
         return features;
     }
 
-    queryRenderedFeatures(
-        queryGeometry: PointLike | [PointLike, PointLike],
-        params: QueryRenderedFeaturesParams,
-        transform: Transform,
-    ): Array<QueryFeature> {
-        if (params && params.filter) {
-            this._validate(validateFilter, 'queryRenderedFeatures.filter', params.filter, null, params);
+    queryRasterValue(sourceId: string, lnglat: LngLatLike, parameters: RasterQueryParameters): Promise<RasterQueryResult | null> {
+        const source = this.getOwnSource(sourceId);
+
+        if (!source) {
+            this.fire(new ErrorEvent(new Error(`Source with id "${sourceId}" does not exist in the style.`)));
+            return Promise.resolve(null);
         }
 
-        params.scope = this.scope;
-        params.availableImages = this._availableImages;
-        params.serializedLayers = this._serializedLayers;
+        if (source.type !== 'raster-array') {
+            this.fire(new ErrorEvent(new Error(`queryRasterValue support only "raster-array" sources.`)));
+            return Promise.resolve(null);
+        }
 
-        const includedSources: Record<string, any> = {};
+        return source.queryRasterArrayValue(lnglat, parameters);
+    }
+
+    queryRenderedFeatures(queryGeometry: PointLike | [PointLike, PointLike], params: QueryRenderedFeaturesParams | undefined, transform: Transform): GeoJSONFeature[] {
+        let filter: ReturnType<typeof featureFilter> | undefined;
+        if (params && !Array.isArray(params) && params.filter) {
+            this._validate(validateFilter, 'queryRenderedFeatures.filter', params.filter, null, params);
+            filter = featureFilter(params.filter);
+        }
+
+        const queries: Record<string, QrfQuery & {has3DLayers?: boolean}> = {};
+
+        const addLayerToQuery = (styleLayer: TypedStyleLayer) => {
+            // Skip layers that don't have features.
+            if (featurelessLayerTypes.has(styleLayer.type)) return;
+
+            const sourceCache = this.getOwnLayerSourceCache(styleLayer);
+            assert(sourceCache, 'queryable layers must have a source');
+
+            const querySourceCache = queries[sourceCache.id] = queries[sourceCache.id] || {sourceCache, layers: {}, has3DLayers: false};
+            if (styleLayer.is3D(!!this.terrain)) querySourceCache.has3DLayers = true;
+            querySourceCache.layers[styleLayer.fqid] = querySourceCache.layers[styleLayer.fqid] || {styleLayer, targets: []};
+            querySourceCache.layers[styleLayer.fqid].targets.push({filter});
+        };
+
         if (params && params.layers) {
             if (!Array.isArray(params.layers)) {
                 this.fire(new ErrorEvent(new Error('parameters.layers must be an Array.')));
                 return [];
             }
+
             for (const layerId of params.layers) {
-                const layer = this._mergedLayers[layerId];
-                if (!layer) {
-                    // this layer is not in the style.layers array
+                const styleLayer = this._layers[layerId];
+                if (!styleLayer) {
                     this.fire(new ErrorEvent(new Error(`The layer '${layerId}' does not exist in the map's style and cannot be queried for features.`)));
                     return [];
                 }
-                includedSources[layer.source] = true;
+
+                addLayerToQuery(styleLayer);
+            }
+        } else {
+            for (const layerId in this._layers) {
+                addLayerToQuery(this._layers[layerId]);
             }
         }
 
-        const sourceResults: Array<QueryResult> = [];
-        const serializedLayers = params.serializedLayers || {};
+        const renderedFeatures = this._queryRenderedFeatures(queryGeometry, queries, transform);
+        const sortedFeatures = this._flattenAndSortRenderedFeatures(renderedFeatures);
 
-        const has3DLayer = (params && params.layers) ?
-            params.layers.some((layerId) => {
-                const layer = this.getLayer(layerId);
-                return layer && layer.is3D();
-            }) : this.has3DLayers();
+        const features: GeoJSONFeature[] = [];
+        for (const feature of sortedFeatures) {
+            const scope = getOuterScopeFromFQID(feature.layer.id);
+            if (scope === this.scope) features.push(feature);
+        }
 
+        return features;
+    }
+
+    queryRenderedFeatureset(queryGeometry: PointLike | [PointLike, PointLike], params: QueryRenderedFeaturesetParams | undefined, transform: Transform): TargetFeature[] {
+        let filter: ReturnType<typeof featureFilter> | undefined;
+        if (params && !Array.isArray(params) && params.filter) {
+            this._validate(validateFilter, 'queryRenderedFeatures.filter', params.filter, null, params);
+            filter = featureFilter(params.filter);
+        }
+
+        const targetId = 'mock'; // use mock target id for plain featureset queries
+        const targets: QrfTarget[] = [];
+
+        if (params && params.target) {
+            targets.push({...params, targetId, filter});
+        } else {
+            // Query all root-level featuresets
+            const featuresetDescriptors = this.getFeaturesetDescriptors();
+            for (const featureset of featuresetDescriptors) {
+                targets.push({targetId, filter, target: featureset});
+            }
+
+            // Query all root-level featuresets in imported styles
+            for (const {style} of this.fragments) {
+                const featuresetDescriptors = style.getFeaturesetDescriptors();
+                for (const featureset of featuresetDescriptors) {
+                    targets.push({targetId, filter, target: featureset});
+                }
+            }
+        }
+
+        const features = this.queryRenderedTargets(queryGeometry, targets, transform);
+
+        const targetFeatures: TargetFeature[] = [];
+        const uniqueFeatureSet = new Set<string>();
+        for (const feature of features) {
+            for (const variant of feature.variants[targetId]) {
+                if (shouldSkipFeatureVariant(variant, feature, uniqueFeatureSet)) {
+                    continue;
+                }
+                targetFeatures.push(new TargetFeature(feature, variant));
+            }
+        }
+        return targetFeatures;
+    }
+
+    queryRenderedTargets(queryGeometry: PointLike | [PointLike, PointLike], targets: QrfTarget[], transform: Transform): Feature[] {
+        const queries: Record<string, QrfQuery & {has3DLayers?: boolean}> = {};
+
+        const addLayerToQuery = (styleLayer: TypedStyleLayer, sourceCache: SourceCache, target: QrfTarget, selector?: FeaturesetSelector) => {
+            assert(sourceCache, 'queryable layers must have a source');
+
+            const querySourceCache = queries[sourceCache.id] = queries[sourceCache.id] || {sourceCache, layers: {}, has3DLayers: false};
+            querySourceCache.layers[styleLayer.fqid] = querySourceCache.layers[styleLayer.fqid] || {styleLayer, targets: []};
+            if (styleLayer.is3D(!!this.terrain)) querySourceCache.has3DLayers = true;
+
+            if (!selector) {
+                target.uniqueFeatureID = false;
+                querySourceCache.layers[styleLayer.fqid].targets.push(target);
+                return;
+            }
+
+            querySourceCache.layers[styleLayer.fqid].targets.push({...target, namespace: selector.namespace,
+                properties: selector.properties,
+                uniqueFeatureID: selector.uniqueFeatureID});
+        };
+
+        for (const target of targets) {
+            if ('featuresetId' in target.target) {
+                const {featuresetId, importId} = target.target;
+                const style = this.getFragmentStyle(importId);
+                if (!style || !style._featuresetSelectors) continue;
+
+                const selectors = style._featuresetSelectors[featuresetId];
+                if (!selectors) {
+                    this.fire(new ErrorEvent(new Error(`The featureset '${featuresetId}' does not exist in the map's style and cannot be queried for features.`)));
+                    continue;
+                }
+
+                for (const selector of selectors) {
+                    const styleLayer = style.getOwnLayer(selector.layerId);
+                    if (!styleLayer || featurelessLayerTypes.has(styleLayer.type)) continue;
+                    const sourceCache = style.getOwnLayerSourceCache(styleLayer);
+                    addLayerToQuery(styleLayer, sourceCache, target, selector);
+                }
+            } else if ('layerId' in target.target) {
+                const {layerId} = target.target;
+                const styleLayer = this.getLayer(layerId);
+                if (!styleLayer || featurelessLayerTypes.has(styleLayer.type)) continue;
+                const sourceCache = this.getLayerSourceCache(styleLayer);
+                addLayerToQuery(styleLayer, sourceCache, target);
+            }
+        }
+
+        const renderedFeatures = this._queryRenderedFeatures(queryGeometry, queries, transform);
+        const sortedFeatures = this._flattenAndSortRenderedFeatures(renderedFeatures);
+        return sortedFeatures;
+    }
+
+    _queryRenderedFeatures(
+        queryGeometry: PointLike | [PointLike, PointLike],
+        queries: Record<string, QrfQuery & {has3DLayers?: boolean}>,
+        transform: Transform
+    ): Array<QueryResult> {
+        const queryResults: Array<QueryResult> = [];
+        const showQueryGeometry = !!this.map._showQueryGeometry;
         const queryGeometryStruct = QueryGeometry.createFromScreenPoints(queryGeometry, transform);
 
-        for (const id in this._mergedSourceCaches) {
-            const source = this._mergedSourceCaches[id].getSource();
-            if (!source || source.scope !== params.scope) continue;
-
-            const sourceId = this._mergedSourceCaches[id].getSource().id;
-            if (params.layers && !includedSources[sourceId]) continue;
-            const showQueryGeometry = !!this.map._showQueryGeometry;
-            sourceResults.push(
-                queryRenderedFeatures(
-                    this._mergedSourceCaches[id],
-                    this._mergedLayers,
-                    serializedLayers,
-                    queryGeometryStruct,
-                    (params as any),
-                    transform,
-                    has3DLayer,
-                    showQueryGeometry)
+        for (const sourceCacheId in queries) {
+            const queryResult = queryRenderedFeatures(
+                queryGeometryStruct,
+                queries[sourceCacheId],
+                this._availableImages,
+                transform,
+                showQueryGeometry,
+                this.getActualScope()
             );
+
+            if (Object.keys(queryResult).length) queryResults.push(queryResult);
         }
 
+        // If a placement has run, query against its CollisionIndex
+        // for symbol results, and treat it as an extra source to merge
         if (this.placement) {
-            // If a placement has run, query against its CollisionIndex
-            // for symbol results, and treat it as an extra source to merge
-            sourceResults.push(
-                queryRenderedSymbols(
-                    this._mergedLayers,
-                    serializedLayers,
-                    this.getLayerSourceCache.bind(this),
+            for (const sourceCacheId in queries) {
+                // Skip non-symbol source caches
+                if (queries[sourceCacheId].sourceCache._renderSourceType !== RenderSourceType.Symbol) continue;
+
+                const queryResult = queryRenderedSymbols(
                     queryGeometryStruct.screenGeometry,
-                    (params as any),
+                    queries[sourceCacheId],
+                    this._availableImages,
                     this.placement.collisionIndex,
-                    this.placement.retainedQueryData)
-            );
+                    this.placement.retainedQueryData,
+                    this.map.getWorldview()
+                );
+
+                if (Object.keys(queryResult).length) queryResults.push(queryResult);
+            }
         }
 
-        return this._flattenAndSortRenderedFeatures(sourceResults);
+        return queryResults;
     }
 
     querySourceFeatures(
-        sourceID: string,
+        sourceId: string,
         params?: {
             sourceLayer?: string;
-            filter?: FilterSpecification | ExpressionSpecification;
+            filter?: FilterSpecification;
             validate?: boolean;
-        },
-    ): Array<QueryFeature> {
-        if (params && params.filter) {
-            this._validate(validateFilter, 'querySourceFeatures.filter', params.filter, null, params);
         }
-        const sourceCaches = this.getOwnSourceCaches(sourceID);
-        let results = [];
+    ): Array<Feature> {
+        const filter = params && params.filter;
+        if (filter) {
+            this._validate(validateFilter, 'querySourceFeatures.filter', filter, null, params);
+        }
+
+        let results: Array<Feature> = [];
+        const sourceCaches = this.getOwnSourceCaches(sourceId);
         for (const sourceCache of sourceCaches) {
             results = results.concat(querySourceFeatures(sourceCache, params));
         }
+
         return results;
-    }
-
-    addSourceType(name: string, SourceType: SourceClass, callback: Callback<undefined>): void {
-        if (Style.getSourceType(name)) {
-            return callback(new Error(`A source type called "${name}" already exists.`));
-        }
-
-        Style.setSourceType(name, SourceType);
-
-        if (!SourceType.workerSourceURL) {
-            return callback(null, null);
-        }
-
-        this.dispatcher.broadcast('loadWorkerSource', {
-            name,
-            url: SourceType.workerSourceURL
-        }, callback);
     }
 
     getFlatLight(): LightSpecification {
@@ -2802,11 +4045,31 @@ class Style extends Evented {
         this.light.updateTransitions(parameters);
     }
 
+    hasTerrain(): boolean {
+        return !!this.terrain && this.terrain.drapeRenderMode === DrapeRenderMode.elevated;
+    }
+
     getTerrain(): TerrainSpecification | null | undefined {
-        return this.terrain && this.terrain.drapeRenderMode === DrapeRenderMode.elevated ? this.terrain.get() : null;
+        return this.hasTerrain() ? this.terrain.get() : null;
+    }
+
+    /**
+     * Triggers the Lite module load and tracks pending state so that `loaded()` returns
+     * false until the terrain renderer factory is registered. Idempotent — safe to call
+     * multiple times; the module is cached by the JS runtime after the first import.
+     */
+    _startLiteLoad() {
+        if (this._drapingLoaded !== undefined) return;
+        this._drapingLoaded = false;
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        prepareLiteMain().then(() => {
+            this._drapingLoaded = true;
+            this.map.triggerRepaint();
+        });
     }
 
     setTerrainForDraping() {
+        this._startLiteLoad();
         const mockTerrainOptions = {source: '', exaggeration: 0};
         this.setTerrain(mockTerrainOptions, DrapeRenderMode.deferred);
     }
@@ -2823,13 +4086,21 @@ class Style extends Evented {
     // eslint-disable-next-line no-warning-comments
     // TODO: generic approach for root level property: light, terrain, skybox.
     // It is not done here to prevent rebasing issues.
-    setTerrain(terrainOptions?: TerrainSpecification | null, drapeRenderMode: number = DrapeRenderMode.elevated) {
+    setTerrain(terrainOptions?: TerrainSpecification | TerrainSpecificationUpdate | null, drapeRenderMode: number = DrapeRenderMode.elevated) {
         this._checkLoaded();
 
         // Disabling
         if (!terrainOptions) {
             // This check prevents removing draping terrain not from #applyProjectionUpdate
-            if (!this.terrainSetForDrapingOnly() || drapeRenderMode === DrapeRenderMode.deferred) {
+            if (!this.terrainSetForDrapingOnly()) {
+                delete this.terrain;
+
+                if (this.map.transform.projection.requiresDraping) {
+                    this.setTerrainForDraping();
+                }
+            }
+
+            if (drapeRenderMode === DrapeRenderMode.deferred) {
                 delete this.terrain;
             }
 
@@ -2846,24 +4117,25 @@ class Style extends Evented {
 
         this.checkCanvasFingerprintNoise();
 
-        let options: TerrainSpecification = terrainOptions;
-        const isUpdating = terrainOptions.source == null;
+        let options: TerrainSpecification | TerrainSpecificationUpdate = terrainOptions;
+        const isUpdating = !("source" in terrainOptions) || terrainOptions.source == null;
         if (drapeRenderMode === DrapeRenderMode.elevated) {
+            this._startLiteLoad();
             if (this.disableElevatedTerrain) return;
 
             // Input validation and source object unrolling
-            if (typeof options.source === 'object') {
+            if ("source" in options && typeof options.source === 'object') {
                 const id = 'terrain-dem-src';
                 this.addSource(id, options.source);
                 options = clone(options);
-                options = extend(options, {source: id});
+                options = Object.assign(options, {source: id});
             }
 
-            const validationOptions = extend({}, options);
-            const validationProps: Record<string, any> = {};
+            const validationOptions = {...options};
+            const validationProps: {style?: StyleSpecification} = {};
 
             if (this.terrain && isUpdating) {
-                validationOptions.source = this.terrain.get().source;
+                (validationOptions as TerrainSpecification).source = this.terrain.get().source;
 
                 const fragmentStyle = this.terrain ? this.getFragmentStyle(this.terrain.scope) : null;
                 if (fragmentStyle) {
@@ -2879,22 +4151,25 @@ class Style extends Evented {
         // Enabling
         if (!this.terrain || (this.terrain.scope !== this.scope && !isUpdating) || (this.terrain && drapeRenderMode !== this.terrain.drapeRenderMode)) {
             if (!options) return;
-            this._createTerrain(options, drapeRenderMode);
+            this._createTerrain(options as TerrainSpecification, drapeRenderMode);
             this.fire(new Event('data', {dataType: 'style'}));
         } else { // Updating
             const terrain = this.terrain;
             const currSpec = terrain.get();
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             for (const name of Object.keys(styleSpec.terrain)) {
                 // Fallback to use default style specification when the properties wasn't set
-                if (!options.hasOwnProperty(name) && !!styleSpec.terrain[name].default) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                if (!Object.hasOwn(options, name) && !!styleSpec.terrain[name].default) {
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                     options[name] = styleSpec.terrain[name].default;
                 }
             }
             for (const key in terrainOptions) {
                 if (!deepEqual(terrainOptions[key], currSpec[key])) {
                     terrain.set(terrainOptions, this.options);
-                    this.stylesheet.terrain = terrainOptions;
+                    this.stylesheet.terrain = terrainOptions as TerrainSpecification;
                     const parameters = this._getTransitionParameters({duration: 0});
                     terrain.updateTransitions(parameters);
                     this.fire(new Event('data', {dataType: 'style'}));
@@ -2913,6 +4188,20 @@ class Style extends Evented {
         this.stylesheet.fog = fog.get();
         const parameters = this._getTransitionParameters({duration: 0});
         fog.updateTransitions(parameters);
+    }
+
+    _createSnow(snowOptions: SnowSpecification) {
+        const snow = this.snow = new Snow(snowOptions, this.map.transform, this.scope, this.options);
+        this.stylesheet.snow = snow.get();
+        const parameters = this._getTransitionParameters({duration: 0});
+        snow.updateTransitions(parameters);
+    }
+
+    _createRain(rainOptions: RainSpecification) {
+        const rain = this.rain = new Rain(rainOptions, this.map.transform, this.scope, this.options);
+        this.stylesheet.rain = rain.get();
+        const parameters = this._getTransitionParameters({duration: 0});
+        rain.updateTransitions(parameters);
     }
 
     _updateMarkersOpacity() {
@@ -2937,11 +4226,7 @@ class Style extends Evented {
             // Remove fog
             delete this.fog;
             delete this.stylesheet.fog;
-            this._markersNeedUpdate = true;
-            return;
-        }
-
-        if (!this.fog) {
+        } else if (!this.fog) {
             // Initialize Fog
             this._createFog(fogOptions);
         } else {
@@ -2956,11 +4241,73 @@ class Style extends Evented {
         }
 
         this._markersNeedUpdate = true;
+        // Fog axis flipped — rebuild precompile.
+        if (this._programPrecompiler) this._programPrecompiler.reset();
     }
 
-    setColorTheme(colorTheme?: ColorThemeSpecification) {
+    getSnow(): SnowSpecification | null | undefined {
+        return this.snow ? this.snow.get() : null;
+    }
+
+    setSnow(snowOptions?: SnowSpecification) {
         this._checkLoaded();
 
+        if (!snowOptions) {
+            // Remove snow
+            delete this.snow;
+            delete this.stylesheet.snow;
+            return;
+        }
+
+        if (!this.snow) {
+            // Initialize Snow
+            this._createSnow(snowOptions);
+        } else {
+            // Updating snow
+            const snow = this.snow;
+            if (!deepEqual(snow.get(), snowOptions)) {
+                snow.set(snowOptions, this.options);
+                this.stylesheet.snow = snow.get();
+                const parameters = this._getTransitionParameters({duration: 0});
+                snow.updateTransitions(parameters);
+            }
+        }
+
+        this._markersNeedUpdate = true;
+    }
+
+    getRain(): RainSpecification | null | undefined {
+        return this.rain ? this.rain.get() : null;
+    }
+
+    setRain(rainOptions?: RainSpecification) {
+        this._checkLoaded();
+
+        if (!rainOptions) {
+            // Remove rain
+            delete this.rain;
+            delete this.stylesheet.rain;
+            return;
+        }
+
+        if (!this.rain) {
+            // Initialize Rain
+            this._createRain(rainOptions);
+        } else {
+            // Updating rain
+            const rain = this.rain;
+            if (!deepEqual(rain.get(), rainOptions)) {
+                rain.set(rainOptions, this.options);
+                this.stylesheet.rain = rain.get();
+                const parameters = this._getTransitionParameters({duration: 0});
+                rain.updateTransitions(parameters);
+            }
+        }
+
+        this._markersNeedUpdate = true;
+    }
+
+    _reloadColorTheme() {
         const updateStyle = () => {
             for (const layerId in this._layers) {
                 const layer = this._layers[layerId];
@@ -2971,7 +4318,7 @@ class Style extends Evented {
             }
         };
 
-        this._styleColorTheme.colorTheme = colorTheme;
+        const colorTheme = this._styleColorTheme.colorThemeOverride ? this._styleColorTheme.colorThemeOverride : this._styleColorTheme.colorTheme;
         if (!colorTheme) {
             this._styleColorTheme.lut = null;
             updateStyle();
@@ -2980,16 +4327,37 @@ class Style extends Evented {
 
         const data = this._evaluateColorThemeData(colorTheme);
         this._loadColorTheme(data).then(() => {
+            this.fire(new Event('colorthemeset'));
             updateStyle();
         }).catch((e) => {
             warnOnce(`Couldn\'t set color theme: ${e}`);
         });
     }
 
+    setColorTheme(colorTheme?: ColorThemeSpecification) {
+        this._checkLoaded();
+
+        if (this._styleColorTheme.colorThemeOverride) {
+            // This is just for hardening and in practice shouldn't happen.
+            // In theory colorThemeOverride can have values only for imports, and it's not possible to call setColorTheme directly on an imported style.
+            warnOnce(`Note: setColorTheme is called on a style with a color-theme override, the passed color-theme won't be visible.`);
+        }
+
+        this._styleColorTheme.colorTheme = colorTheme;
+        this._reloadColorTheme();
+    }
+
+    setImportColorTheme(importId: string, colorTheme?: ColorThemeSpecification) {
+        const fragmentStyle = this.getFragmentStyle(importId);
+        if (!fragmentStyle) return;
+        fragmentStyle._styleColorTheme.colorThemeOverride = colorTheme;
+        fragmentStyle._reloadColorTheme();
+    }
+
     _getTransitionParameters(transition?: TransitionSpecification | null): TransitionParameters {
         return {
             now: browser.now(),
-            transition: extend(this.transition, transition)
+            transition: Object.assign(this.transition, transition)
         };
     }
 
@@ -2998,9 +4366,9 @@ class Style extends Evented {
             return;
         }
 
-        const draped = [];
-        const nonDraped = [];
-        for (const layerId in this._mergedLayers) {
+        const draped: string[] = [];
+        const nonDraped: string[] = [];
+        for (const layerId of this._mergedOrder) {
             const layer = this._mergedLayers[layerId];
             if (this.isLayerDraped(layer)) {
                 draped.push(layerId);
@@ -3015,7 +4383,7 @@ class Style extends Evented {
     }
 
     _createTerrain(terrainOptions: TerrainSpecification, drapeRenderMode: number) {
-        const terrain = this.terrain = new Terrain(terrainOptions, drapeRenderMode, this.scope, this.options);
+        const terrain = this.terrain = new Terrain(terrainOptions, drapeRenderMode, this.scope, this.options, this.map.getWorldview());
 
         // We need to update the stylesheet only for the elevated mode,
         // i.e., mock terrain shouldn't be propagated to the stylesheet
@@ -3051,33 +4419,34 @@ class Style extends Evented {
     _validate(
         validate: Validator,
         key: string,
-        value: any,
-        props: any,
-        options: {
-            validate?: boolean;
-        } = {},
+        value: unknown,
+        props?: object,
+        options: {validate?: boolean} = {},
     ): boolean {
         if (options && options.validate === false) {
             return false;
         }
 
         // Fallback to the default glyphs URL if none is specified
-        const style = extend({}, this.serialize());
-        return emitValidationErrors(this, validate.call(validateStyle, extend({
-            key,
+        const style = {...this.serialize()};
+
+        return emitValidationErrors(this, validate.call(validateStyle, {key,
             style,
             value,
-            styleSpec
-        }, props)));
+            styleSpec, ...props}));
     }
 
     _remove() {
+        if (this._programPrecompiler) {
+            this._programPrecompiler.reset();
+            this._programPrecompiler = null;
+        }
         if (this._request) {
             this._request.cancel();
             this._request = null;
         }
         if (this._spriteRequest) {
-            this._spriteRequest.cancel();
+            this._spriteRequest.abort();
             this._spriteRequest = null;
         }
 
@@ -3089,21 +4458,31 @@ class Style extends Evented {
         }
 
         for (const id in this._mergedSourceCaches) {
-            this._mergedSourceCaches[id].clearTiles();
-            this._mergedSourceCaches[id].setEventedParent(null);
+            const sourceCache = this._mergedSourceCaches[id];
+            sourceCache.clearTiles();
+            sourceCache.setEventedParent(null);
+            const source = sourceCache.getSource();
+            if (source && source.onRemove) source.onRemove(this.map);
         }
+
+        this.imageManager.removeScope(this.scope);
+        this.imageManager.imageAtlasCache.clear();
 
         this.setEventedParent(null);
 
         delete this.fog;
+        delete this.snow;
+        delete this.rain;
         delete this.terrain;
         delete this.ambientLight;
         delete this.directionalLight;
+        if (this.indoorManager) this.indoorManager.destroy();
 
         // Shared managers should be removed only on removing the root style
         if (this.isRootStyle()) {
             this.imageManager.setEventedParent(null);
             this.modelManager.setEventedParent(null);
+            this.modelManager.destroy();
             this.dispatcher.remove();
         }
     }
@@ -3118,6 +4497,15 @@ class Style extends Evented {
     clearSources() {
         for (const id in this._mergedSourceCaches) {
             this._mergedSourceCaches[id].clearTiles();
+        }
+    }
+
+    clearLayers() {
+        for (const id in this._mergedLayers) {
+            const layer = this._mergedLayers[id];
+            if (layer._clear) {
+                layer._clear();
+            }
         }
     }
 
@@ -3136,17 +4524,59 @@ class Style extends Evented {
         }
     }
 
+    reloadModels() {
+        this.modelManager.reloadModels('');
+        this.forEachFragmentStyle((style) => {
+            style.modelManager.reloadModels(style.scope);
+        });
+    }
+
     updateSources(transform: Transform) {
         let lightDirection: vec3 | null | undefined;
         if (this.directionalLight) {
             lightDirection = shadowDirectionFromProperties(this.directionalLight);
         }
-        for (const id in this._mergedSourceCaches) {
-            this._mergedSourceCaches[id].update(transform, undefined, undefined, lightDirection);
+
+        // Hack to ensure that for procedural buildings we don't reparse the tile on zoom levels
+        // above source maxzoom. Here we assume that building layer has its own separate source.
+        const sourcesForBuildingLayers: Set<string> = new Set();
+        // Find sources with elevated layers
+        const sourcesWithElevatedLayers: Set<string> = new Set();
+        const sourcesWithRasterElevatedOverTerrain: Set<string> = new Set();
+        for (const id in this._mergedLayers) {
+            const layer = this._mergedLayers[id];
+            if (layer.type === 'building') {
+                sourcesForBuildingLayers.add(layer.source);
+            } else if (layer.type === 'raster' && layer.paint && (layer.paint.get('raster-elevation-reference') === 'ground' || (layer.paint.get('raster-allow-draping') === false))) {
+                sourcesWithRasterElevatedOverTerrain.add(layer.source);
+            }
+            if (layer.hasElevation() && !sourcesWithElevatedLayers.has(layer.source)) {
+                sourcesWithElevatedLayers.add(layer.source);
+            }
         }
+
+        // Set fade range before source cache updates so tiles loading on this
+        // frame see the correct forceHdCoveredFalse flag.
+        this.updateFrcCoverageFadeRange();
+
+        for (const id in this._mergedSourceCaches) {
+            const sourceCache = this._mergedSourceCaches[id];
+            const elevatedLayers = sourcesWithElevatedLayers.has(sourceCache._source.id);
+            sourceCache._isRasterElevatedOverTerrain = sourcesWithRasterElevatedOverTerrain.has(sourceCache._source.id);
+            if (sourcesForBuildingLayers.has(sourceCache._source.id)) {
+                sourceCache._source.reparseOverscaled = false;
+            }
+            sourceCache.update(transform, undefined, undefined, lightDirection, elevatedLayers);
+        }
+
+        this.updateFrcCoverage();
+        // Run elevation setup before mark so _needsCrossSourceElevation / _ingestFQIDs
+        // match the current style on the same frame (mark keys off that gate).
+        this.updateElevationCoverage();
+        if (HD.markElevationIngestSourceCachesUsed) HD.markElevationIngestSourceCachesUsed(this);
     }
 
-    _generateCollisionBoxes() {
+    _reloadSources() {
         for (const id in this._sourceCaches) {
             const sourceCache = this._sourceCaches[id];
             sourceCache.resume();
@@ -3154,23 +4584,60 @@ class Style extends Evented {
         }
     }
 
+    updateFrcCoverageFadeRange() {
+        if (!this.map.painter || !HD.updateFrcCoverageFadeRange) return;
+        HD.updateFrcCoverageFadeRange(this, this.map.painter);
+    }
+
+    updateFrcCoverage() {
+        if (this._hdCoverage && HD.updateFrcCoverage) HD.updateFrcCoverage(this, this._hdCoverage);
+    }
+
+    updateElevationCoverage() {
+        if (!this.isRootStyle()) return;
+        if (HD.setupAndUpdateElevationCoverage) HD.setupAndUpdateElevationCoverage(this);
+    }
+
+    _handleLayerOrderChange() {
+        this._requestFullLabelPlacement();
+        this.fire(new Event('neworder'));
+    }
+
+    _requestFullLabelPlacement() {
+        if (!this.pauseablePlacement) {
+            this.pauseablePlacement = new PauseablePlacement();
+        }
+
+        // Anything that changes our "in progress" layer and tile indices requires us
+        // to start over. When we start over, we do a full placement instead of incremental
+        // to prevent starvation.
+        // We need to restart placement to keep layer indices in sync.
+        this.pauseablePlacement.requestFullPlacement();
+    }
+
+    _setLabelPlacementStale() {
+        if (this.placement) {
+            this.placement.setStale();
+        }
+    }
+
     _updatePlacement(
-        painter: Painter,
         transform: Transform,
         showCollisionBoxes: boolean,
         fadeDuration: number,
         crossSourceCollisions: boolean,
         replacementSource: ReplacementSource,
-        forceFullPlacement: boolean = false,
-    ): {
-        needsRerender: boolean;
-        occlusionQueryBasedOpacityChanged: boolean;
-    } {
+        placementAlgorithmName?: PlacementAlgorithmName,
+    ): boolean {
+        if (!this.pauseablePlacement) {
+            this.pauseablePlacement = new PauseablePlacement();
+        }
+
         let symbolBucketsChanged = false;
         let placementCommitted = false;
 
-        const layerTiles: Record<string, any> = {};
-        const layerTilesInYOrder: Record<string, any> = {};
+        const layerTiles: Record<string, Tile[]> = {};
+        const layerTilesInYOrder: Record<string, Tile[]> = {};
 
         for (const layerId of this._mergedOrder) {
             const styleLayer = this._mergedLayers[layerId];
@@ -3194,32 +4661,35 @@ class Style extends Evented {
         }
         this.crossTileSymbolIndex.pruneUnusedLayers(this._mergedOrder);
 
-        // Anything that changes our "in progress" layer and tile indices requires us
-        // to start over. When we start over, we do a full placement instead of incremental
-        // to prevent starvation.
-        // We need to restart placement to keep layer indices in sync.
-        // Also force full placement when fadeDuration === 0 to ensure that newly loaded
-        // tiles will fully display symbols in their first frame
-        forceFullPlacement = forceFullPlacement || this._layerOrderChanged || fadeDuration === 0;
+        const transformChanged = Boolean(this.placement && !transform.equals(this.placement.transform));
+        const replacementSourceChanged = Boolean(this.placement && ((this.placement.lastReplacementSourceUpdateTime !== 0 && !replacementSource) || this.placement.lastReplacementSourceUpdateTime !== replacementSource.updateTime));
 
-        if (this._layerOrderChanged) {
-            this.fire(new Event('neworder'));
-        }
+        const isDonePlacementConsideredStale = transformChanged || replacementSourceChanged || symbolBucketsChanged;
+        // Force full placement when fadeDuration === 0 to ensure that newly loaded
+        // tiles will fully display symbols in their first frame.
+        // Make sure to not do this for the static camera, otherwise
+        // we will do expensive full placements on every frame.
+        const newImmediatePlacementRequired = (isDonePlacementConsideredStale || this.pauseablePlacement.isStale()) && fadeDuration === 0;
+        const newNormalPlacementRequired = this.pauseablePlacement.isDone() && !this.placement.stillRecent(browser.now(), transform.zoom) && fadeDuration !== 0;
 
-        if (forceFullPlacement || !this.pauseablePlacement || (this.pauseablePlacement.isDone() && !this.placement.stillRecent(browser.now(), transform.zoom))) {
+        if (this.pauseablePlacement.isFullPlacementRequested() || !this.pauseablePlacement.placement || newImmediatePlacementRequired || newNormalPlacementRequired) {
             const fogState = this.fog && transform.projection.supportsFog ? this.fog.state : null;
-            this.pauseablePlacement = new PauseablePlacement(transform, this._mergedOrder, forceFullPlacement, showCollisionBoxes, fadeDuration, crossSourceCollisions, this.placement, fogState, this._buildingIndex);
-            this._layerOrderChanged = false;
+            this.pauseablePlacement = this.pauseablePlacement.startNewPlacement(transform, this._mergedOrder, showCollisionBoxes, fadeDuration, crossSourceCollisions, this.placement, fogState, this._buildingIndex, placementAlgorithmName);
+            if (this.map.painter) {
+                const raw = this.map.painter.maxFrontCutoffRawStart;
+                if (raw > 0) {
+                    const pitchDeg = transform.pitch * 180 / Math.PI;
+                    if (pitchDeg >= 15) {
+                        const t = Math.min(1, Math.max(0, (pitchDeg - 15) / 5));
+                        const pitchBlend = t * t * (3 - 2 * t);
+                        this.pauseablePlacement.placement.frontCutoffStart = -0.5 * (1 - pitchBlend) + raw * pitchBlend;
+                    }
+                }
+            }
         }
 
-        if (this.pauseablePlacement.isDone()) {
-            // the last placement finished running, but the next one hasn’t
-            // started yet because of the `stillRecent` check immediately
-            // above, so mark it stale to ensure that we request another
-            // render frame
-            this.placement.setStale();
-        } else {
-            this.pauseablePlacement.continuePlacement(this._mergedOrder, this._mergedLayers, layerTiles, layerTilesInYOrder);
+        if (!this.pauseablePlacement.isDone()) {
+            this.pauseablePlacement.continuePlacement(this._mergedOrder, this._mergedLayers, layerTiles, layerTilesInYOrder, this.map.painter.scaleFactor);
 
             if (this.pauseablePlacement.isDone()) {
                 this.placement = this.pauseablePlacement.commit(browser.now());
@@ -3230,8 +4700,10 @@ class Style extends Evented {
                 // since the placement gets split over multiple frames it is possible
                 // these buckets were processed before they were changed and so the
                 // placement is already stale while it is in progress
-                this.pauseablePlacement.placement.setStale();
+                this.pauseablePlacement.setStale();
             }
+        } else if (isDonePlacementConsideredStale && fadeDuration !== 0) {
+            this.pauseablePlacement.setStale();
         }
 
         if (placementCommitted || symbolBucketsChanged) {
@@ -3240,28 +4712,14 @@ class Style extends Evented {
                 const layerId = this._mergedOrder[i];
                 const styleLayer = this._mergedLayers[layerId];
                 if (styleLayer.type !== 'symbol') continue;
-                const checkAgainstClipLayer = this.isLayerClipped(styleLayer) && this._clipLayerIndices.some(c => i < c);
-                this.placement.updateLayerOpacities(styleLayer, layerTiles[makeFQID(styleLayer.source, styleLayer.scope)], i, checkAgainstClipLayer ? replacementSource : null);
-            }
-        }
-
-        // Update symbol bucket opacities due to occlusion queries
-        let opacityChanged = false;
-        for (const layerId of this._mergedOrder) {
-            const styleLayer = this._mergedLayers[layerId];
-            if (styleLayer.type !== 'symbol') continue;
-            const tiles = layerTiles[makeFQID(styleLayer.source, styleLayer.scope)];
-            for (const tile of tiles) {
-                const symbolBucket = (tile.getBucket(styleLayer) as SymbolBucket);
-                if (symbolBucket && tile.latestFeatureIndex && styleLayer.fqid === symbolBucket.layerIds[0]) {
-                    opacityChanged = symbolBucket.updateOcclusionOpacities(painter.context, painter.symbolParams, painter._dt) || opacityChanged;
-                }
+                if (styleLayer.visibility === 'none') continue;
+                const checkAgainstClipLayer = this.isLayerClipped(styleLayer);
+                this.placement.updateLayerOpacities(styleLayer, layerTiles[makeFQID(styleLayer.source, styleLayer.scope)], i, checkAgainstClipLayer ? replacementSource : null, showCollisionBoxes, this.map.painter.scaleFactor);
             }
         }
 
         // needsRender is false when we have just finished a placement that didn't change the visibility of any symbols
-        const needsRerender = !this.pauseablePlacement.isDone() || this.placement.hasTransitions(browser.now()) || opacityChanged;
-        return {needsRerender, occlusionQueryBasedOpacityChanged: opacityChanged};
+        return !this.pauseablePlacement.isDone() || this.placement.isStale() || this.placement.hasTransitions(browser.now());
     }
 
     _releaseSymbolFadeTiles() {
@@ -3272,8 +4730,14 @@ class Style extends Evented {
 
     // Fragments and merging
 
-    addImport(importSpec: ImportSpecification, beforeId?: string | null): Promise<any> | void {
+    addImport(importSpec: ImportSpecification, beforeId?: string | null): Promise<void> {
         this._checkLoaded();
+
+        const reservedImportIds = new Set(['__proto__', 'constructor', 'prototype']);
+        if (reservedImportIds.has(importSpec.id)) {
+            this.fire(new ErrorEvent(new Error(`Import id can't be "${importSpec.id}".`)));
+            return;
+        }
 
         const imports = this.stylesheet.imports = this.stylesheet.imports || [];
 
@@ -3319,7 +4783,7 @@ class Style extends Evented {
         }
 
         if (!deepEqual(importSpecification.config, imports[index].config)) {
-            this.setImportConfig(importId, importSpecification.config);
+            this.setImportConfig(importId, importSpecification.config, importSpecification.data.schema);
         }
 
         if (!deepEqual(importSpecification.data, imports[index].data)) {
@@ -3401,7 +4865,7 @@ class Style extends Evented {
         return this;
     }
 
-    setImportConfig(importId: string, config?: ConfigSpecification | null): Style {
+    setImportConfig(importId: string, config?: ConfigSpecification | null, importSchema?: SchemaSpecification | null): Style {
         this._checkLoaded();
 
         const index = this.getImportIndex(importId);
@@ -3416,6 +4880,9 @@ class Style extends Evented {
 
         // Update related fragment
         const fragment = this.fragments[index];
+        if (importSchema && fragment.style.stylesheet) {
+            fragment.style.stylesheet.schema = importSchema;
+        }
         const schema = fragment.style.stylesheet && fragment.style.stylesheet.schema;
 
         fragment.config = config;
@@ -3456,19 +4923,18 @@ class Style extends Evented {
      * Return the style layer object with the given `id`.
      *
      * @param {string} id ID of the desired layer.
-     * @returns {?StyleLayer} A layer, if one with the given `id` exists.
+     * @returns {TypedStyleLayer} A layer, if one with the given `id` exists.
      */
-    getLayer(id: string): StyleLayer | null | undefined {
+    getLayer(id: string): TypedStyleLayer | null | undefined {
         return this._mergedLayers[id];
     }
 
     getSources(): Source[] {
-        const sources = [];
+        const sources: Source[] = [];
         for (const id in this._mergedOtherSourceCaches) {
             const sourceCache = this._mergedOtherSourceCaches[id];
             if (sourceCache) sources.push(sourceCache.getSource());
         }
-
         return sources;
     }
 
@@ -3482,21 +4948,26 @@ class Style extends Evented {
         return sourceCache && sourceCache.getSource();
     }
 
-    getLayerSource(layer: StyleLayer): Source | null | undefined {
+    getLayerSource(layer: TypedStyleLayer): Source | null | undefined {
         const sourceCache = this.getLayerSourceCache(layer);
         return sourceCache && sourceCache.getSource();
     }
 
-    getSourceCache(id: string, scope?: string | null): SourceCache | void {
+    getSourceCache(id: string, scope?: string | null): SourceCache | undefined {
         const fqid = makeFQID(id, scope);
         return this._mergedOtherSourceCaches[fqid];
     }
 
-    getLayerSourceCache(layer: StyleLayer): SourceCache | void {
+    getLayerSourceCache(layer: TypedStyleLayer): SourceCache | undefined {
         const fqid = makeFQID(layer.source, layer.scope);
-        return layer.type === 'symbol' ?
-            this._mergedSymbolSourceCaches[fqid] :
-            this._mergedOtherSourceCaches[fqid];
+        if (layer.type === 'symbol') return this._mergedSymbolSourceCaches[fqid];
+        if (layer.type === 'fill-extrusion') return this._mergedFillExtrusionSourceCaches[fqid] || this._mergedOtherSourceCaches[fqid];
+        // Layers using hd_road_coverage source-layer render from the HdRoadCoverage
+        // source cache (maxzoom=14) since coverage data only exists at z14.
+        if (layer.type === 'fill' && layer.sourceLayer === HD_ROAD_COVERAGE_SOURCE_LAYER && this._mergedHdRoadCoverageSourceCaches[fqid]) {
+            return this._mergedHdRoadCoverageSourceCaches[fqid];
+        }
+        return this._mergedOtherSourceCaches[fqid];
     }
 
     /**
@@ -3510,14 +4981,13 @@ class Style extends Evented {
         if (fqid == null)
             return Object.values(this._mergedSourceCaches);
 
-        const sourceCaches = [];
-        if (this._mergedOtherSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedOtherSourceCaches[fqid]);
-        }
-        if (this._mergedSymbolSourceCaches[fqid]) {
-            sourceCaches.push(this._mergedSymbolSourceCaches[fqid]);
-        }
-        return sourceCaches;
+        return [
+            this._mergedOtherSourceCaches[fqid],
+            this._mergedSymbolSourceCaches[fqid],
+            this._mergedFillExtrusionSourceCaches[fqid],
+            this._mergedHdRoadCoverageSourceCaches[fqid],
+            this._mergedHdRoadElevationSourceCaches[fqid],
+        ].filter(Boolean);
     }
 
     updateSourceCaches() {
@@ -3541,78 +5011,44 @@ class Style extends Evented {
         }
     }
 
-    // Callbacks from web workers
-
-    getImages(mapId: string, params: {
-        icons: Array<string>;
-        source: string;
-        scope: string;
-        tileID: OverscaledTileID;
-        type: string;
-    }, callback: Callback<{
-        [_: string]: StyleImage;
-    }>) {
-        this.imageManager.getImages(params.icons, params.scope, callback);
-
-        // Apply queued image changes before setting the tile's dependencies so that the tile
-        // is not reloaded unecessarily. Without this forced update the reload could happen in cases
-        // like this one:
-        // - icons contains "my-image"
-        // - imageManager.getImages(...) triggers `onstyleimagemissing`
-        // - the user adds "my-image" within the callback
-        // - addImage adds "my-image" to this._changes.changedImages
-        // - the next frame triggers a reload of this tile even though it already has the latest version
-        this._updateTilesForChangedImages();
-
-        const setDependencies = (sourceCache: SourceCache) => {
-            if (sourceCache) {
-                sourceCache.setDependencies(params.tileID.key, params.type, params.icons);
-            }
-        };
-        setDependencies(this._otherSourceCaches[params.source]);
-        setDependencies(this._symbolSourceCaches[params.source]);
+    getGlyphsUrl(): string | undefined {
+        return this.stylesheet.glyphs;
     }
 
-    getGlyphs(mapId: string, params: {
-        stacks: {
-            [_: string]: Array<number>;
-        };
-        scope: string;
-    }, callback: Callback<{
-        [_: string]: {
-            glyphs: {
-                [_: number]: StyleGlyph | null | undefined;
-            };
-            ascender?: number;
-            descender?: number;
-        };
-    }>) {
-        this.glyphManager.getGlyphs(params.stacks, params.scope, callback);
+    setGlyphsUrl(url: string) {
+        this.stylesheet.glyphs = url;
+        this.glyphManager.setURL(url);
     }
 
-    getResource(mapId: string, params: RequestParameters, callback: ResponseCallback<any>): Cancelable {
-        return makeRequest(params, callback);
-    }
-
-    getOwnSourceCache(source: string): SourceCache | void {
+    getOwnSourceCache(source: string): SourceCache | undefined {
         return this._otherSourceCaches[source];
     }
 
-    getOwnLayerSourceCache(layer: StyleLayer): SourceCache | void {
-        return layer.type === 'symbol' ?
-            this._symbolSourceCaches[layer.source] :
-            this._otherSourceCaches[layer.source];
+    getOwnLayerSourceCache(layer: TypedStyleLayer): SourceCache | undefined {
+        if (layer.type === 'symbol') return this._symbolSourceCaches[layer.source];
+        if (layer.type === 'fill-extrusion') return this._fillExtrusionSourceCaches[layer.source] || this._otherSourceCaches[layer.source];
+        return this._otherSourceCaches[layer.source];
     }
 
     getOwnSourceCaches(source: string): Array<SourceCache> {
-        const sourceCaches = [];
-        if (this._otherSourceCaches[source]) {
-            sourceCaches.push(this._otherSourceCaches[source]);
+        return [
+            this._otherSourceCaches[source],
+            this._symbolSourceCaches[source],
+            this._fillExtrusionSourceCaches[source],
+            this._hdCoverage && this._hdCoverage.coverageSourceCaches[source],
+            this._hdElevation && this._hdElevation.elevationSourceCaches[makeFQID(source, this.scope)],
+        ].filter(Boolean);
+    }
+
+    // Returns true if HD module isn't loaded yet and the layer needs a coverage source
+    // cache — signals _load() to retry setup after prepareHD() resolves.
+    _updateHdCoverageSourceCache(layer: TypedStyleLayer): boolean {
+        if (!HD.HdCoverageState || !HD.updateHdCoverageSourceCache) {
+            return layer.type === 'fill' && layer.sourceLayer === HD_ROAD_COVERAGE_SOURCE_LAYER;
         }
-        if (this._symbolSourceCaches[source]) {
-            sourceCaches.push(this._symbolSourceCaches[source]);
-        }
-        return sourceCaches;
+        if (!this._hdCoverage) this._hdCoverage = new HD.HdCoverageState();
+        HD.updateHdCoverageSourceCache(this, this._hdCoverage, layer);
+        return false;
     }
 
     _isSourceCacheLoaded(source: string): boolean {
@@ -3636,48 +5072,42 @@ class Style extends Evented {
         return this._hasCircleLayers;
     }
 
-    isLayerClipped(layer: StyleLayer, source?: Source | null): boolean {
+    isLayerClipped(layer: TypedStyleLayer, source?: Source | null): boolean {
         // fill-extrusions can be conflated by landmarks.
-        if (this._clipLayerIndices.length === 0 && layer.type !== 'fill-extrusion') return false;
-        const isFillExtrusion = layer.type === 'fill-extrusion' && layer.sourceLayer === 'building';
+        if (!this._clipLayerPresent && layer.type !== 'fill-extrusion' && layer.type !== 'building') return false;
 
-        let layerMask = 0;
-        if (layer.is3D()) {
-            if (isFillExtrusion || (!!source && source.type === 'batched-model')) return true;
+        const isFillExtrusion = layer.type === 'fill-extrusion' && (layer.sourceLayer === 'building' || layer.sourceLayer === 'procedural_buildings');
+        const isBuilding = layer.type === 'building';
+        if (layer.is3D(!!this.terrain)) {
+            if (isFillExtrusion || isBuilding || (!!source && source.type === 'batched-model')) return true;
             if (layer.type === 'model') {
-                layerMask = LayerTypeMask.Model;
+                return true;
             }
-        } else {
-            if (layer.type === 'symbol') {
-                layerMask = LayerTypeMask.Symbol;
-            }
-        }
-
-        for (const i of this._clipLayerIndices) {
-            assert(i < this._mergedOrder.length);
-            const clipLayer: ClipStyleLayer = (this._mergedLayers[this._mergedOrder[i]] as any);
-            if (!clipLayer) continue;
-
-            const extraLayersToBeClipped = [];
-
-            for (const extra of clipLayer.layout.get('clip-layer-types'))
-                extraLayersToBeClipped.push(extra === 'model' ? LayerTypeMask.Model : (extra === 'symbol' ? LayerTypeMask.Symbol : LayerTypeMask.FillExtrusion));
-
-            for (const mask of extraLayersToBeClipped)
-                if (layerMask & mask)
-                    return true;
+        } else if (layer.type === 'symbol') {
+            return true;
         }
 
         return false;
     }
 
     _clearWorkerCaches() {
-        // @ts-expect-error - TS2554 - Expected 2-3 arguments, but got 1.
         this.dispatcher.broadcast('clearCaches');
+    }
+
+    /**
+     * Returns the Bill of Materials (BOM) for this style, containing information
+     * about all styles and tilesets used by this style and its imports.
+     *
+     * @private
+     * @returns {StyleBOM} Array of BOM entries with style URLs, tileset URLs, and modified dates.
+     */
+    getBOMObject(): StyleBOM {
+        return StyleBOMUtils.getBOMObject(this);
     }
 
     destroy() {
         this._clearWorkerCaches();
+        this.imageManager.imageAtlasCache.clear();
         this.fragments.forEach(fragment => {
             fragment.style._remove();
         });
@@ -3686,10 +5116,85 @@ class Style extends Evented {
             delete this.stylesheet.terrain;
         }
     }
+
+    // Callbacks from web workers
+
+    async getImages(mapId: undefined, params: MainInbox['getImages']['params']): Promise<MainInbox['getImages']['result']> {
+        const resultPromise = new Promise<MainInbox['getImages']['result']>((resolve, reject) => {
+            this.imageManager.getImages(params.icons.concat(params.patterns), params.scope, (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+            });
+        });
+
+        // Apply queued image changes before setting the tile's dependencies so that the tile
+        // is not reloaded unecessarily. Without this forced update the reload could happen in cases
+        // like this one:
+        // - icons contains "my-image"
+        // - imageManager.getImages(...) triggers `onstyleimagemissing`
+        // - the user adds "my-image" within the callback
+        // - addImage adds "my-image" to this._changes.changedImages
+        // - the next frame triggers a reload of this tile even though it already has the latest version
+        this._updateTilesForChangedImages();
+
+        const iconDeps = params.icons.map(id => ImageId.toString(id));
+        const patternDeps = params.patterns.map(id => ImageId.toString(id));
+        const setDependencies = (sourceCache: SourceCache) => {
+            if (sourceCache) {
+                sourceCache.setDependencies(params.tileID.key, 'icons', iconDeps);
+                sourceCache.setDependencies(params.tileID.key, 'patterns', patternDeps);
+            }
+        };
+
+        const fqid = makeFQID(params.source, params.scope);
+        setDependencies(this._mergedOtherSourceCaches[fqid]);
+        setDependencies(this._mergedSymbolSourceCaches[fqid]);
+
+        if (params.icons.some(id => id.iconsetId) || params.patterns.some(id => id.iconsetId)) {
+            // If the image is an iconset, we need another render cycle
+            // to mark the raster-array tiles as used so we will
+            // request them during Style#updateImageProviders
+            this.fire(new Event('data', {dataType: 'style'}));
+        }
+
+        return resultPromise;
+    }
+
+    async rasterizeImages(mapId: undefined, params: MainInbox['rasterizeImages']['params']): Promise<MainInbox['rasterizeImages']['result']> {
+        return new Promise((resolve, reject) => {
+            this.imageManager.rasterizeImages(params, (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+            });
+        });
+    }
+
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async checkAtlasCache(mapId: undefined, params: MainInbox['checkAtlasCache']['params']): Promise<MainInbox['checkAtlasCache']['result']> {
+        // Check if we have a cached atlas matching this descriptor
+        const cachedAtlas = this.imageManager.imageAtlasCache.findCachedAtlas(params.descriptor);
+
+        if (cachedAtlas && cachedAtlas.contentDescriptor) {
+            return {
+                iconPositions: cachedAtlas.iconPositions,
+                patternPositions: cachedAtlas.patternPositions,
+                sourceHash: cachedAtlas.contentDescriptor.hash
+            };
+        }
+
+        return null;
+    }
+
+    async getGlyphs(mapId: undefined, params: MainInbox['getGlyphs']['params']): Promise<MainInbox['getGlyphs']['result']> {
+        return new Promise((resolve, reject) => {
+            this.glyphManager.getGlyphs(params.stacks, (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+            });
+        });
+    }
 }
 
-Style.getSourceType = getSourceType;
-Style.setSourceType = setSourceType;
 Style.registerForPluginStateChange = registerForPluginStateChange;
 
 export default Style;

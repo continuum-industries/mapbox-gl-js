@@ -2,9 +2,9 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body { margin: 0; padding: 0 }
         html, body, #map { height: 100%; }
@@ -23,13 +23,13 @@
 </head>
 
 <body>
-<div id='map'></div>
-<div id='container'></div>
+<div id="map"></div>
+<div id="container"></div>
 
-<script type='text/javascript' src='https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js'></script>
-<script src='../dist/mapbox-gl-dev.js'></script>
-<script src='access_token_generated.js'></script>
-<script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
+<script type="module">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
 
 var GUIParams = function() {
     this.enableFog = true;
@@ -48,11 +48,13 @@ var GUIParams = function() {
     this.showTileBoundaries = false;
     this.showCollisionBoxes = false;
     this.fov = 36.86989764584402;
+    this.enableGlobe = false;
 };
 
 var guiParams = new GUIParams();
 
 var map = window.map = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'map',
     devtools: true,
     zoom: 10,
@@ -62,6 +64,7 @@ var map = window.map = new mapboxgl.Map({
     style: 'mapbox://styles/mapbox/satellite-streets-v11',
     hash: true
 });
+map.repaint = true;
 
 window.onload = function() {
     var gui = new dat.GUI({autoPlace: false}); // eslint-disable-line
@@ -95,6 +98,10 @@ window.onload = function() {
     var enableSky = gui.add(guiParams, 'enableSky');
     enableSky.onFinishChange((value) => {
         map.setLayoutProperty('sky', 'visibility', value ? 'visible' : 'none');
+    });
+    var enableGlobe = gui.add(guiParams, 'enableGlobe');
+    enableGlobe.onFinishChange((value) => {
+        map.setProjection(value ? 'globe' : 'mercator');
     });
     var fov = gui.add(guiParams, 'fov', 5, 60);
     fov.onChange((value) => {

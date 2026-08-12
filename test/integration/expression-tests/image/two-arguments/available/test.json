@@ -1,0 +1,27 @@
+{
+  "expression": ["to-boolean", ["image", "first", "second"]],
+  "propertySpec": {"type": "boolean"},
+  "inputs": [
+    [{}, {}],
+    [{"availableImages": [{"name": "first"}]}, {}],
+    [{"availableImages": [{"name": "second"}]}, {}],
+    [{"availableImages": [{"name": "first"}, {"name": "second"}]}, {}]
+  ],
+  "expected": {
+    "compiled": {
+      "result": "success",
+      "isFeatureConstant": true,
+      "isZoomConstant": true,
+      "type": "boolean"
+    },
+    "outputs": [false, false, false, true],
+    "serialized": ["to-boolean", ["image", "first", "second"]]
+  },
+  "metadata": {
+    "test": {
+      "skip-test": [
+        {"platform-tag-contains": "web", "reason": "https://mapbox.atlassian.net/browse/GLJS-1005"}
+      ]
+    }
+  }
+}

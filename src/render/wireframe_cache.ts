@@ -1,10 +1,11 @@
 import IndexBuffer from '../gl/index_buffer';
-import Context from '../gl/context';
 import {LineIndexArray} from '../data/index_array_type';
 
+import type Context from '../gl/context';
+
 class CacheEntry {
-    buf: IndexBuffer;
-    lastUsedFrameIdx: number;
+    buf!: IndexBuffer;
+    lastUsedFrameIdx!: number;
 }
 
 const TimeoutFrames = 30;
@@ -27,7 +28,9 @@ export class WireframeDebugCache {
 
         const gl = context.gl;
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const bufSize = gl.getBufferParameter(gl.ELEMENT_ARRAY_BUFFER, gl.BUFFER_SIZE);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const bufTmp = new ArrayBuffer(bufSize);
         const intView = new Int16Array(bufTmp);
         gl.getBufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, new Int16Array(bufTmp));

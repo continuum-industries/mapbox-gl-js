@@ -2,7 +2,12 @@
   "version": 8,
   "metadata": {
     "test": {
-      "height": 256
+      "height": 256,
+      "skip-test": [
+        {"platform-tag-contains": "web", "reason": "Deferred for globe view"},
+        {"platform-tag-contains": "web-macos-safari", "reason": "Inconsistencies with fill pattern. Some are visibly noticeable, others subtle. Possibly nonodeterministic rendering."},
+        {"platform-tag-contains": "native", "reason": "https://github.com/mapbox/mapbox-gl-js/issues/3327"}
+      ]
     }
   },
   "terrain": {
@@ -88,7 +93,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "pitch": 60,
   "zoom": 18,
   "layers": [
@@ -97,7 +102,7 @@
       "type": "fill-extrusion",
       "source": "geojson",
       "paint": {
-        "fill-extrusion-pattern": "generic_icon",
+        "fill-extrusion-pattern": "information",
         "fill-extrusion-opacity": 0.5,
         "fill-extrusion-height": 10
       }

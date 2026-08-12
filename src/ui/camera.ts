@@ -1,6 +1,6 @@
+import {vec3, vec4, mat4} from 'gl-matrix';
 import {
     bindAll,
-    extend,
     warnOnce,
     clamp,
     wrap,
@@ -18,26 +18,29 @@ import {
 } from '../geo/projection/globe_constants';
 import Point from '@mapbox/point-geometry';
 import {Event, Evented} from '../util/evented';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {Debug} from '../util/debug';
 import MercatorCoordinate, {
     mercatorZfromAltitude,
     mercatorXfromLng,
     mercatorYfromLat,
-    latFromMercatorY,
-    lngFromMercatorX
 } from '../geo/mercator_coordinate';
-import {vec3, vec4, mat4} from 'gl-matrix';
-import type {FreeCameraOptions} from './free_camera';
+import {Aabb} from '../util/primitives';
+import {getZoomAdjustment} from '../geo/projection/adjustments';
+
+import type Tile from '../source/tile';
 import type Transform from '../geo/transform';
-import type {LngLatLike, LngLatBoundsLike} from '../geo/lng_lat';
-import type {ElevationQueryOptions} from '../terrain/elevation';
+import type HandlerManager from './handler_manager';
+import type {KeepGesture} from './handler_manager';
 import type {TaskID} from '../util/task_queue';
 import type {Callback} from '../types/callback';
+import type {MapEvents} from './events';
+import type {EventData} from '../util/evented';
 import type {PointLike} from '../types/point-like';
-import {Aabb} from '../util/primitives';
 import type {PaddingOptions} from '../geo/edge_insets';
-import type {MapEvent} from './events';
+import type {FreeCameraOptions} from './free_camera';
+import type {ElevationQueryOptions} from '../terrain/elevation';
+import type {LngLatLike, LngLatBoundsLike} from '../geo/lng_lat';
 
 /**
  * Options common to {@link Map#jumpTo}, {@link Map#easeTo}, and {@link Map#flyTo}, controlling the desired location,
@@ -53,13 +56,15 @@ import type {MapEvent} from './events';
  * measured in degrees with a range between 0 and 85 degrees. For example, pitch: 0 provides the appearance
  * of looking straight down at the map, while pitch: 60 tilts the user's perspective towards the horizon.
  * Increasing the pitch value is often used to display 3D objects.
+ * @property {number} fov The desired vertical field of view in degrees, clamped to [0.01, 60]. This property is experimental.
  * @property {LngLatLike} around The location serving as the origin for a change in `zoom`, `pitch` and/or `bearing`.
  * This location will remain at the same screen position following the transform.
  * This is useful for drawing attention to a location that is not in the screen center.
  * `center` is ignored if `around` is included.
  * @property {PaddingOptions} padding Dimensions in pixels applied on each side of the viewport for shifting the vanishing point.
  * Note that when `padding` is used with `jumpTo`, `easeTo`, and `flyTo`, it also sets the global map padding as a side effect,
- * affecting all subsequent camera movements until the padding is reset.
+ * affecting all subsequent camera movements until the padding is reset. To avoid this, add the `retainPadding: false` option.
+ * @property {boolean} retainPadding If `false`, the value provided with the `padding` option will not be retained as the global map padding. When set to `true` the current camera transform will be modified by the function being called with this option. This is `true` by default.
  * @example
  * // set the map's initial perspective with CameraOptions
  * const map = new mapboxgl.Map({
@@ -80,16 +85,24 @@ export type CameraOptions = {
     zoom?: number;
     bearing?: number;
     pitch?: number;
+    /**
+     * Vertical field of view, measured in degrees. Clamped to [0.01, 60].
+     *
+     * @experimental
+     */
+    fov?: number;
     around?: LngLatLike;
-    padding?: PaddingOptions;
+    padding?: number | PaddingOptions;
+    minZoom?: number;
     maxZoom?: number;
+    retainPadding?: boolean;
 };
 
-export type FullCameraOptions = {
+export type FullCameraOptions = CameraOptions & {
     maxZoom: number;
     offset: PointLike;
     padding: Required<PaddingOptions>;
-} & CameraOptions;
+};
 
 /**
  * Options common to map movement methods that involve animation, such as {@link Map#panBy} and
@@ -125,7 +138,7 @@ export type FullCameraOptions = {
  * @see [Example: Slowly fly to a location](https://docs.mapbox.com/mapbox-gl-js/example/flyto-options/)
  * @see [Example: Customize camera animations](https://docs.mapbox.com/mapbox-gl-js/example/camera-animation/)
  * @see [Example: Navigate the map with game-like controls](https://docs.mapbox.com/mapbox-gl-js/example/game-controls/)
-*/
+ */
 export type AnimationOptions = {
     animate?: boolean;
     curve?: number;
@@ -141,6 +154,13 @@ export type AnimationOptions = {
 };
 
 export type EasingOptions = CameraOptions & AnimationOptions;
+
+type MotionState = {
+    moving?: boolean;
+    zooming?: boolean;
+    rotating?: boolean;
+    pitching?: boolean;
+};
 
 export type ElevationBoxRaycast = {
     minLngLat: LngLat;
@@ -180,31 +200,27 @@ const freeCameraNotSupportedWarning = 'map.setFreeCameraOptions(...) and map.get
  * @see [Example: Fit a map to a bounding box](https://docs.mapbox.com/mapbox-gl-js/example/fitbounds/)
  */
 
-class Camera extends Evented {
+class Camera extends Evented<MapEvents> {
     transform: Transform;
     _moving: boolean;
     _zooming: boolean;
-    _rotating: boolean;
-    _pitching: boolean;
-    _padding: boolean;
+    _rotating!: boolean;
+    _pitching!: boolean;
+    _padding!: boolean;
 
     _bearingSnap: number;
-    _easeStart: number;
-    _easeOptions: {
-        duration: number;
-        easing: (_: number) => number;
-    };
+    _easeStart!: number;
+    _easeOptions!: EasingOptions;
     _easeId: string | undefined;
     _respectPrefersReducedMotion: boolean;
 
-    _onEaseFrame: (_: number) => Transform | void | null | undefined;
-    _onEaseEnd: (easeId?: string) => void | null | undefined;
+    _onEaseFrame!: (_: number) => Transform | void | null | undefined;
+    _onEaseEnd!: (easeId?: string) => void | null | undefined;
     _easeFrameId: TaskID | null | undefined;
 
-    constructor(transform: Transform, options: {
-        bearingSnap: number;
-        respectPrefersReducedMotion?: boolean;
-    }) {
+    handlers?: HandlerManager;
+
+    constructor(transform: Transform, options: {bearingSnap?: number; respectPrefersReducedMotion?: boolean}) {
         super();
         this._moving = false;
         this._zooming = false;
@@ -217,10 +233,12 @@ class Camera extends Evented {
         //addAssertions(this);
     }
 
-    /** @section {Camera}
+    /**
+     * @section {Camera}
      * @method
      * @instance
-     * @memberof Map */
+     * @memberof Map
+     */
 
     /**
      * Returns the map's geographical centerpoint.
@@ -248,7 +266,7 @@ class Camera extends Evented {
      * @example
      * map.setCenter([-74, 38]);
      */
-    setCenter(center: LngLatLike, eventData?: any): this {
+    setCenter(center: LngLatLike, eventData?: EventData): this {
         return this.jumpTo({center}, eventData);
     }
 
@@ -269,9 +287,9 @@ class Camera extends Evented {
      * map.panBy([-74, 38], {duration: 5000});
      * @see [Example: Navigate the map with game-like controls](https://www.mapbox.com/mapbox-gl-js/example/game-controls/)
      */
-    panBy(offset: PointLike, options?: AnimationOptions, eventData?: any): this {
+    panBy(offset: PointLike, options?: AnimationOptions, eventData?: EventData): this {
         offset = Point.convert(offset).mult(-1);
-        return this.panTo(this.transform.center, extend({offset}, options), eventData);
+        return this.panTo(this.transform.center, {offset, ...options}, eventData);
     }
 
     /**
@@ -291,10 +309,8 @@ class Camera extends Evented {
      * map.panTo([-74, 38], {duration: 5000});
      * @see [Example: Update a feature in realtime](https://docs.mapbox.com/mapbox-gl-js/example/live-update-feature/)
      */
-    panTo(lnglat: LngLatLike, options?: AnimationOptions, eventData?: any): this {
-        return this.easeTo(extend({
-            center: lnglat
-        }, options), eventData);
+    panTo(lnglat: LngLatLike, options?: AnimationOptions, eventData?: EventData): this {
+        return this.easeTo({center: lnglat, ...options}, eventData);
     }
 
     /**
@@ -324,7 +340,7 @@ class Camera extends Evented {
      * // Zoom to the zoom level 5 without an animated transition
      * map.setZoom(5);
      */
-    setZoom(zoom: number, eventData?: any): this {
+    setZoom(zoom: number, eventData?: EventData): this {
         this.jumpTo({zoom}, eventData);
         return this;
     }
@@ -352,10 +368,8 @@ class Camera extends Evented {
      *     offset: [100, 50]
      * });
      */
-    zoomTo(zoom: number, options?: AnimationOptions | null, eventData?: any): this {
-        return this.easeTo(extend({
-            zoom
-        }, options), eventData);
+    zoomTo(zoom: number, options?: AnimationOptions | null, eventData?: EventData): this {
+        return this.easeTo({zoom, ...options}, eventData);
     }
 
     /**
@@ -375,7 +389,7 @@ class Camera extends Evented {
      * // zoom the map in one level with a custom animation duration
      * map.zoomIn({duration: 1000});
      */
-    zoomIn(options?: AnimationOptions, eventData?: any): this {
+    zoomIn(options?: AnimationOptions, eventData?: EventData): this {
         this.zoomTo(this.getZoom() + 1, options, eventData);
         return this;
     }
@@ -397,7 +411,7 @@ class Camera extends Evented {
      * // zoom the map out one level with a custom animation offset
      * map.zoomOut({offset: [80, 60]});
      */
-    zoomOut(options?: AnimationOptions, eventData?: any): this {
+    zoomOut(options?: AnimationOptions, eventData?: EventData): this {
         this.zoomTo(this.getZoom() - 1, options, eventData);
         return this;
     }
@@ -432,7 +446,7 @@ class Camera extends Evented {
      * // Rotate the map to 90 degrees.
      * map.setBearing(90);
      */
-    setBearing(bearing: number, eventData?: any): this {
+    setBearing(bearing: number, eventData?: EventData): this {
         this.jumpTo({bearing}, eventData);
         return this;
     }
@@ -462,7 +476,7 @@ class Camera extends Evented {
      * // Sets a left padding of 300px, and a top padding of 50px
      * map.setPadding({left: 300, top: 50});
      */
-    setPadding(padding: PaddingOptions, eventData?: any): this {
+    setPadding(padding: PaddingOptions, eventData?: EventData): this {
         this.jumpTo({padding}, eventData);
         return this;
     }
@@ -485,10 +499,8 @@ class Camera extends Evented {
      * // rotateTo with an animation of 2 seconds.
      * map.rotateTo(30, {duration: 2000});
      */
-    rotateTo(bearing: number, options?: EasingOptions, eventData?: any): this {
-        return this.easeTo(extend({
-            bearing
-        }, options), eventData);
+    rotateTo(bearing: number, options?: EasingOptions, eventData?: EventData): this {
+        return this.easeTo({bearing, ...options}, eventData);
     }
 
     /**
@@ -505,8 +517,8 @@ class Camera extends Evented {
      * // resetNorth with an animation of 2 seconds.
      * map.resetNorth({duration: 2000});
      */
-    resetNorth(options?: EasingOptions, eventData?: any): this {
-        this.rotateTo(0, extend({duration: 1000}, options), eventData);
+    resetNorth(options?: EasingOptions, eventData?: EventData): this {
+        this.rotateTo(0, {duration: 1000, ...options}, eventData);
         return this;
     }
 
@@ -524,12 +536,10 @@ class Camera extends Evented {
      * // resetNorthPitch with an animation of 2 seconds.
      * map.resetNorthPitch({duration: 2000});
      */
-    resetNorthPitch(options?: EasingOptions, eventData?: any): this {
-        this.easeTo(extend({
-            bearing: 0,
+    resetNorthPitch(options?: EasingOptions, eventData?: EventData): this {
+        this.easeTo({bearing: 0,
             pitch: 0,
-            duration: 1000
-        }, options), eventData);
+            duration: 1000, ...options}, eventData);
         return this;
     }
 
@@ -548,7 +558,7 @@ class Camera extends Evented {
      * // snapToNorth with an animation of 2 seconds.
      * map.snapToNorth({duration: 2000});
      */
-    snapToNorth(options?: EasingOptions, eventData?: any): this {
+    snapToNorth(options?: EasingOptions, eventData?: EventData): this {
         if (Math.abs(this.getBearing()) < this._bearingSnap) {
             return this.resetNorth(options, eventData);
         }
@@ -579,10 +589,50 @@ class Camera extends Evented {
      * // setPitch with an animation of 2 seconds.
      * map.setPitch(80, {duration: 2000});
      */
-    setPitch(pitch: number, eventData?: any): this {
+    setPitch(pitch: number, eventData?: EventData): this {
         this.jumpTo({pitch}, eventData);
         return this;
     }
+
+    /**
+     * Returns the map's current vertical field of view, measured in degrees.
+     *
+     * @memberof Map#
+     * @returns {number} The map's current vertical field of view, measured in degrees.
+     * @experimental
+     * @example
+     * const verticalFieldOfView = map.getVerticalFieldOfView();
+     */
+    getVerticalFieldOfView(): number { return this.transform.fov; }
+
+    /**
+     * Sets the map's vertical field of view, measured in degrees. Equivalent to `jumpTo({fov})`.
+     *
+     * @memberof Map#
+     * @param {number} fov The vertical field of view to set, measured in degrees (0.01-60).
+     * @param {Object | null} eventData Additional properties to be added to event objects of events triggered by this method.
+     * @fires Map.event:movestart
+     * @fires Map.event:moveend
+     * @returns {Map} Returns itself to allow for method chaining.
+     * @experimental
+     * @example
+     * map.setVerticalFieldOfView(30);
+     */
+    setVerticalFieldOfView(fov: number, eventData?: EventData): this {
+        return this.jumpTo({fov}, eventData);
+    }
+
+    /**
+     * Returns the map's current horizontal field of view, measured in degrees. This value is
+     * derived from the vertical field of view and the map's aspect ratio, and is read-only.
+     *
+     * @memberof Map#
+     * @returns {number} The map's current horizontal field of view, measured in degrees.
+     * @experimental
+     * @example
+     * const horizontalFieldOfView = map.getHorizontalFieldOfView();
+     */
+    getHorizontalFieldOfView(): number { return this.transform.horizontalFov; }
 
     /**
      * Returns a {@link CameraOptions} object for the highest zoom level
@@ -618,25 +668,22 @@ class Camera extends Evented {
 
     _extendPadding(padding: PaddingOptions | null | undefined | number): Required<PaddingOptions> {
         const defaultPadding = {top: 0, right: 0, bottom: 0, left: 0};
-        if (padding == null) return extend({}, defaultPadding, this.transform.padding);
+        if (padding == null) return {...defaultPadding, ...this.transform.padding};
 
         if (typeof padding === 'number') {
             return {top: padding, bottom: padding, right: padding, left: padding};
         }
 
-        return extend({}, defaultPadding, padding);
+        return {...defaultPadding, ...padding};
     }
 
     _extendCameraOptions(options?: CameraOptions): FullCameraOptions {
-        options = extend({
-            offset: [0, 0],
-            maxZoom: this.transform.maxZoom
-        }, options);
+        options = {offset: [0, 0],
+            maxZoom: this.transform.maxZoom, ...options} as FullCameraOptions;
 
         options.padding = this._extendPadding(options.padding);
 
-        // @ts-expect-error - TS2322 - Type 'CameraOptions' is not assignable to type 'FullCameraOptions'.
-        return options;
+        return options as FullCameraOptions;
     }
 
     _minimumAABBFrustumDistance(tr: Transform, aabb: Aabb): number {
@@ -674,11 +721,11 @@ class Camera extends Evented {
 
         const origin = latLngToECEF(midLat, midLng);
 
-        const zAxis = vec3.normalize([] as any, origin);
-        const xAxis = vec3.normalize([] as any, vec3.cross([] as any, zAxis, [0, 1, 0]));
-        const yAxis = vec3.cross([] as any, xAxis, zAxis);
+        const zAxis = vec3.normalize([], origin);
+        const xAxis = vec3.normalize([], vec3.cross([], zAxis, [0, 1, 0]));
+        const yAxis = vec3.cross([], xAxis, zAxis);
 
-        const aabbOrientation = [
+        const aabbOrientation: mat4 = [
             xAxis[0], xAxis[1], xAxis[2], 0,
             yAxis[0], yAxis[1], yAxis[2], 0,
             zAxis[0], zAxis[1], zAxis[2], 0,
@@ -701,7 +748,7 @@ class Camera extends Evented {
 
         let aabb = Aabb.fromPoints(ecefCoords.map(p => [vec3.dot(xAxis, p), vec3.dot(yAxis, p), vec3.dot(zAxis, p)]));
 
-        const center = vec3.transformMat4([] as any, aabb.center, aabbOrientation as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]);
+        const center = vec3.transformMat4([], aabb.center, aabbOrientation) as [number, number, number];
 
         if (vec3.squaredLength(center) === 0) {
             vec3.set(center, 0, 0, 1);
@@ -709,14 +756,12 @@ class Camera extends Evented {
 
         vec3.normalize(center, center);
         vec3.scale(center, center, GLOBE_RADIUS);
-        // @ts-expect-error - TS2345 - Argument of type 'vec3' is not assignable to parameter of type '[any, any, any]'.
         tr.center = ecefToLatLng(center);
 
         const worldToCamera = tr.getWorldToCameraMatrix();
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         const cameraToWorld = mat4.invert(new Float64Array(16), worldToCamera);
 
-        aabb = Aabb.applyTransform(aabb, mat4.multiply([] as any, worldToCamera, aabbOrientation as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number]));
+        aabb = Aabb.applyTransform(aabb, mat4.multiply([], worldToCamera, aabbOrientation));
         const extendedAabb = this._extendAABB(aabb, tr, eOptions, bearing);
         if (!extendedAabb) {
             warnOnce('Map cannot fit within canvas with the given bounds, padding, and/or offset.');
@@ -729,16 +774,16 @@ class Camera extends Evented {
         const aabbHalfExtentZ = (aabb.max[2] - aabb.min[2]) * 0.5;
         const frustumDistance = this._minimumAABBFrustumDistance(tr, aabb);
 
-        const offsetZ = vec3.scale([] as any, [0, 0, 1], aabbHalfExtentZ);
+        const offsetZ = vec3.scale([], [0, 0, 1], aabbHalfExtentZ);
         const aabbClosestPoint = vec3.add(offsetZ, center, offsetZ);
         const offsetDistance = frustumDistance + (tr.pitch === 0 ? 0 : vec3.distance(center, aabbClosestPoint));
 
         const globeCenter = tr.globeCenterInViewSpace;
-        const normal = vec3.sub([] as any, center, [globeCenter[0], globeCenter[1], globeCenter[2]]);
+        const normal = vec3.sub([], center, [globeCenter[0], globeCenter[1], globeCenter[2]]);
         vec3.normalize(normal, normal);
         vec3.scale(normal, normal, offsetDistance);
 
-        const cameraPosition = vec3.add([] as any, center, normal);
+        const cameraPosition = vec3.add([], center, normal);
 
         vec3.transformMat4(cameraPosition, cameraPosition, cameraToWorld);
 
@@ -786,8 +831,7 @@ class Camera extends Evented {
         const width = tr.width - (left + right);
         const height = tr.height - (top + bottom);
 
-        // @ts-expect-error - TS2322 - Type 'vec3' is not assignable to type '[number, number, number]'.
-        const aabbSize: [number, number, number] = vec3.sub(([] as any), aabb.max, aabb.min);
+        const aabbSize = vec3.sub([], aabb.max, aabb.min) as [number, number, number];
 
         const scaleX = width / aabbSize[0];
         const scaleY = height / aabbSize[1];
@@ -806,10 +850,8 @@ class Camera extends Evented {
             [aabb.max[0] + right * scaleRatio, aabb.max[1] + top * scaleRatio, aabb.max[2]]
         );
 
-        // @ts-expect-error - TS2339 - Property 'x' does not exist on type 'PointLike'. | TS2339 - Property 'y' does not exist on type 'PointLike'.
-        const centerOffset = (typeof options.offset.x === 'number' && typeof options.offset.y === 'number') ?
-        // @ts-expect-error - TS2339 - Property 'x' does not exist on type 'PointLike'. | TS2339 - Property 'y' does not exist on type 'PointLike'.
-            new Point(options.offset.x, options.offset.y) :
+        const centerOffset = (typeof (options.offset as Point).x === 'number' && typeof (options.offset as Point).y === 'number') ?
+            new Point((options.offset as Point).x, (options.offset as Point).y) :
             Point.convert(options.offset);
 
         const rotatedOffset = centerOffset.rotate(-degToRad(bearing));
@@ -820,7 +862,12 @@ class Camera extends Evented {
         return extendedAABB;
     }
 
-    /** @section {Querying features} */
+    /**
+     * @section {Querying features}
+     * @method
+     * @instance
+     * @memberof Map
+     */
 
     /**
      * Queries the currently loaded data for elevation at a geographical location. The elevation is returned in `meters` relative to mean sea-level.
@@ -842,7 +889,7 @@ class Camera extends Evented {
     queryTerrainElevation(lnglat: LngLatLike, options?: ElevationQueryOptions | null): number | null | undefined {
         const elevation = this.transform.elevation;
         if (elevation) {
-            options = extend({}, {exaggerated: true}, options);
+            options = {exaggerated: true, ...options};
             return elevation.getAtPoint(MercatorCoordinate.fromLngLat(lnglat), null, options.exaggerated);
         }
         return null;
@@ -904,16 +951,14 @@ class Camera extends Evented {
         const z2 = this.queryTerrainElevation(coord2);
         const z3 = this.queryTerrainElevation(coord3);
 
-        const worldCoords = [
+        const worldCoords: vec3[] = [
             [p0world.x, p0world.y, Math.min(z0 || 0, z1 || 0, z2 || 0, z3 || 0)],
             [p1world.x, p1world.y, Math.max(z0 || 0, z1 || 0, z2 || 0, z3 || 0)]
         ];
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[][]' is not assignable to parameter of type 'vec3[]'.
         let aabb = Aabb.fromPoints(worldCoords);
 
         const worldToCamera = tr.getWorldToCameraMatrix();
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         const cameraToWorld = mat4.invert(new Float64Array(16), worldToCamera);
 
         aabb = Aabb.applyTransform(aabb, worldToCamera);
@@ -924,30 +969,27 @@ class Camera extends Evented {
         }
 
         aabb = extendedAabb;
-        const size = vec3.sub([] as any, aabb.max, aabb.min);
+        const size = vec3.sub([], aabb.max, aabb.min);
         const aabbHalfExtentZ = size[2] * 0.5;
         const frustumDistance = this._minimumAABBFrustumDistance(tr, aabb);
 
-        const normalZ = [0, 0, 1, 0];
+        const normalZ: vec4 = [0, 0, 1, 0];
 
-        vec4.transformMat4(normalZ as [number, number, number, number], normalZ as [number, number, number, number], worldToCamera);
-        vec4.normalize(normalZ as [number, number, number, number], normalZ as [number, number, number, number]);
+        vec4.transformMat4(normalZ, normalZ, worldToCamera);
+        vec4.normalize(normalZ, normalZ);
 
-        // @ts-expect-error - TS2345 - Argument of type '[number, number, number, number]' is not assignable to parameter of type 'ReadonlyVec3'.
-        const offset = vec3.scale([] as any, normalZ as [number, number, number, number], frustumDistance + aabbHalfExtentZ);
-        const cameraPosition = vec3.add([] as any, aabb.center, offset);
+        const offset = vec3.scale([], normalZ, frustumDistance + aabbHalfExtentZ);
+        const cameraPosition = vec3.add([], aabb.center, offset);
 
         vec3.transformMat4(aabb.center, aabb.center, cameraToWorld);
         vec3.transformMat4(cameraPosition, cameraPosition, cameraToWorld);
 
-        const mercator = [aabb.center[0], aabb.center[1], cameraPosition[2] * tr.pixelsPerMeter];
-        vec3.scale(mercator as [number, number, number], mercator as [number, number, number], 1.0 / tr.worldSize);
+        const center = tr.unproject(new Point(aabb.center[0], aabb.center[1]));
 
-        const lng = lngFromMercatorX(mercator[0]);
-        const lat = latFromMercatorY(mercator[1]);
-
-        const zoom = Math.min(tr._zoomFromMercatorZ(mercator[2]), eOptions.maxZoom);
-        const center = new LngLat(lng, lat);
+        const zoomAdjustment = getZoomAdjustment(tr.projection, center);
+        const scaleAdjustment = Math.pow(2, zoomAdjustment);
+        const mercatorZ = (cameraPosition[2] * tr.pixelsPerMeter * scaleAdjustment) / tr.worldSize;
+        const zoom = Math.min(tr._zoomFromMercatorZ(mercatorZ), eOptions.maxZoom);
 
         const halfZoomTransition = (GLOBE_ZOOM_THRESHOLD_MIN + GLOBE_ZOOM_THRESHOLD_MAX) * 0.5;
 
@@ -988,7 +1030,7 @@ class Camera extends Evented {
      * });
      * @see [Example: Fit a map to a bounding box](https://www.mapbox.com/mapbox-gl-js/example/fitbounds/)
      */
-    fitBounds(bounds: LngLatBoundsLike, options?: EasingOptions, eventData?: any): this {
+    fitBounds(bounds: LngLatBoundsLike, options?: EasingOptions, eventData?: EventData): this {
         const cameraPlacement = this.cameraForBounds(bounds, options);
         return this._fitInternal(cameraPlacement, options, eventData);
     }
@@ -1029,7 +1071,7 @@ class Camera extends Evented {
         p1: PointLike,
         bearing: number,
         options?: EasingOptions,
-        eventData?: any,
+        eventData?: EventData,
     ): this {
         const screen0 = Point.convert(p0);
         const screen1 = Point.convert(p1);
@@ -1046,18 +1088,17 @@ class Camera extends Evented {
         const lnglat2 = this.transform.pointLocation3D(new Point(min.x, max.y));
         const lnglat3 = this.transform.pointLocation3D(new Point(max.x, min.y));
 
-        const p0coord = [
+        const p0coord: LngLatLike = [
             Math.min(lnglat0.lng, lnglat1.lng, lnglat2.lng, lnglat3.lng),
             Math.min(lnglat0.lat, lnglat1.lat, lnglat2.lat, lnglat3.lat),
         ];
-        const p1coord =  [
+        const p1coord: LngLatLike = [
             Math.max(lnglat0.lng, lnglat1.lng, lnglat2.lng, lnglat3.lng),
             Math.max(lnglat0.lat, lnglat1.lat, lnglat2.lat, lnglat3.lat),
         ];
 
         const pitch = options && options.pitch ? options.pitch : this.getPitch();
 
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'LngLatLike'.
         const cameraPlacement = this._cameraForBounds(this.transform, p0coord, p1coord, bearing, pitch, options);
         return this._fitInternal(cameraPlacement, options, eventData);
     }
@@ -1065,12 +1106,12 @@ class Camera extends Evented {
     _fitInternal(
         calculatedOptions?: EasingOptions | null,
         options?: EasingOptions,
-        eventData?: any,
+        eventData?: EventData,
     ): this {
         // cameraForBounds warns + returns undefined if unable to fit:
         if (!calculatedOptions) return this;
 
-        options = extend(calculatedOptions, options);
+        options = Object.assign(calculatedOptions, options);
 
         return options.linear ?
             this.easeTo(options, eventData) :
@@ -1109,13 +1150,10 @@ class Camera extends Evented {
      * @see [Example: Jump to a series of locations](https://docs.mapbox.com/mapbox-gl-js/example/jump-to/)
      * @see [Example: Update a feature in realtime](https://docs.mapbox.com/mapbox-gl-js/example/live-update-feature/)
      */
-    jumpTo(
-        options: CameraOptions & {
-            preloadOnly?: AnimationOptions['preloadOnly'];
-        },
-        eventData?: any,
-    ): this {
-        this.stop();
+    jumpTo(options: CameraOptions & {preloadOnly?: AnimationOptions['preloadOnly']}, eventData?: EventData): this {
+        // a camera setter (setCenter/setPitch/…) called from within a 'drag'/'move' handler
+        // must not tear down the gesture the user is still performing.
+        this._stop({keepGesture: 'ifPointerDown'});
 
         const tr = options.preloadOnly ? this.transform.clone() : this.transform;
         let zoomChanged = false,
@@ -1141,8 +1179,20 @@ class Camera extends Evented {
             tr.pitch = +options.pitch;
         }
 
-        if (options.padding != null && !tr.isPaddingEqual(options.padding)) {
-            tr.padding = options.padding;
+        if ('fov' in options) tr.fov = +options.fov;
+
+        const padding = typeof options.padding === 'number' ?
+            this._extendPadding(options.padding) :
+            options.padding;
+
+        if (options.padding != null && !tr.isPaddingEqual(padding)) {
+            if (options.retainPadding === false) {
+                const transformForPadding = tr.clone();
+                transformForPadding.padding = padding;
+                tr.setLocationAtPoint(tr.center, transformForPadding.centerPoint);
+            } else {
+                tr.padding = padding;
+            }
         }
 
         if (options.preloadOnly) {
@@ -1234,7 +1284,7 @@ class Camera extends Evented {
      *
      * map.setFreeCameraOptions(camera);
      */
-    setFreeCameraOptions(options: FreeCameraOptions, eventData?: any): this {
+    setFreeCameraOptions(options: FreeCameraOptions, eventData?: EventData): this {
         const tr = this.transform;
 
         if (!tr.projection.supportsFreeCamera) {
@@ -1323,16 +1373,17 @@ class Camera extends Evented {
     easeTo(
         options: EasingOptions & {
             easeId?: string;
+            noMoveStart?: boolean;
         },
-        eventData?: any,
+        eventData?: EventData,
     ): this {
-        this._stop(false, options.easeId);
+        this._stop({
+            easeId: options.easeId
+        });
 
-        options = extend({
-            offset: [0, 0],
+        options = {offset: [0, 0],
             duration: 500,
-            easing: defaultEasing
-        }, options);
+            easing: defaultEasing, ...options};
 
         if (options.animate === false || this._prefersReducedMotion(options)) options.duration = 0;
 
@@ -1341,17 +1392,19 @@ class Camera extends Evented {
             startBearing = this.getBearing(),
             startPitch = this.getPitch(),
             startPadding = this.getPadding(),
+            startFov = this.getVerticalFieldOfView(),
 
             zoom = 'zoom' in options ? +options.zoom : startZoom,
             bearing = 'bearing' in options ? this._normalizeBearing(options.bearing, startBearing) : startBearing,
             pitch = 'pitch' in options ? +options.pitch : startPitch,
+            fov = 'fov' in options ? +options.fov : startFov,
             padding = this._extendPadding(options.padding);
 
         const offsetAsPoint = Point.convert(options.offset);
 
-        let pointAtOffset;
-        let from;
-        let delta;
+        let pointAtOffset: Point;
+        let from: Point;
+        let delta: Point;
 
         if (tr.projection.name === 'globe') {
             // Pixel coordinates will be applied directly to translate the globe
@@ -1379,7 +1432,8 @@ class Camera extends Evented {
         }
         const finalScale = tr.zoomScale(zoom - startZoom);
 
-        let around, aroundPoint;
+        let around: LngLat;
+        let aroundPoint: Point;
 
         if (options.around) {
             around = LngLat.convert(options.around);
@@ -1389,7 +1443,10 @@ class Camera extends Evented {
         const zoomChanged = this._zooming || (zoom !== startZoom);
         const bearingChanged = this._rotating || (startBearing !== bearing);
         const pitchChanged = this._pitching || (pitch !== startPitch);
+        const fovChanged = fov !== startFov;
         const paddingChanged = !tr.isPaddingEqual(padding);
+
+        const transformForPadding = options.retainPadding === false ? tr.clone() : tr;
 
         const frame = (tr: Transform) => (k: number) => {
             if (zoomChanged) {
@@ -1401,11 +1458,14 @@ class Camera extends Evented {
             if (pitchChanged) {
                 tr.pitch = interpolate(startPitch, pitch, k);
             }
+            if (fovChanged) {
+                tr.fov = interpolate(startFov, fov, k);
+            }
             if (paddingChanged) {
-                tr.interpolatePadding(startPadding, padding, k);
+                transformForPadding.interpolatePadding(startPadding, padding, k);
                 // When padding is being applied, Transform#centerPoint is changing continuously,
                 // thus we need to recalculate offsetPoint every fra,e
-                pointAtOffset = tr.centerPoint.add(offsetAsPoint);
+                pointAtOffset = transformForPadding.centerPoint.add(offsetAsPoint);
             }
 
             if (around) {
@@ -1433,7 +1493,7 @@ class Camera extends Evented {
             return this;
         }
 
-        const currently = {
+        const currently: MotionState = {
             moving: this._moving,
             zooming: this._zooming,
             rotating: this._rotating,
@@ -1446,19 +1506,17 @@ class Camera extends Evented {
         this._padding = paddingChanged;
 
         this._easeId = options.easeId;
-        // @ts-expect-error - TS2339 - Property 'noMoveStart' does not exist on type 'CameraOptions & AnimationOptions & { easeId?: string; }'.
         this._prepareEase(eventData, options.noMoveStart, currently);
 
         this._ease(frame(tr), (interruptingEaseId?: string) => {
             if (tr.cameraElevationReference === "sea") tr.recenterOnTerrain();
             this._afterEase(eventData, interruptingEaseId);
-            // @ts-expect-error - TS2345 - Argument of type 'CameraOptions & AnimationOptions & { easeId?: string; }' is not assignable to parameter of type '{ animate: boolean; duration: number; easing: (_: number) => number; }'.
         }, options);
 
         return this;
     }
 
-    _prepareEase(eventData: any | null | undefined, noMoveStart: boolean, currently: any = {}) {
+    _prepareEase(eventData: EventData | null | undefined, noMoveStart: boolean, currently: MotionState = {}) {
         this._moving = true;
         this.transform.cameraElevationReference = "sea";
         if (this.transform._orthographicProjectionAtLowPitch && this.transform.pitch  === 0 && this.transform.projection.name !== 'globe') {
@@ -1481,7 +1539,7 @@ class Camera extends Evented {
         }
     }
 
-    _fireMoveEvents(eventData?: any) {
+    _fireMoveEvents(eventData?: EventData) {
         this.fire(new Event('move', eventData));
         if (this._zooming) {
             this.fire(new Event('zoom', eventData));
@@ -1494,7 +1552,7 @@ class Camera extends Evented {
         }
     }
 
-    _afterEase(eventData?: any, easeId?: string) {
+    _afterEase(eventData?: EventData, easeId?: string) {
         // if this easing is being stopped to start another easing with
         // the same id then don't fire any events to avoid extra start/stop events
         if (this._easeId && easeId && this._easeId === easeId) {
@@ -1583,10 +1641,10 @@ class Camera extends Evented {
      * @see [Example: Slowly fly to a location](https://www.mapbox.com/mapbox-gl-js/example/flyto-options/)
      * @see [Example: Fly to a location based on scroll position](https://www.mapbox.com/mapbox-gl-js/example/scroll-fly-to/)
      */
-    flyTo(options: EasingOptions, eventData?: any): this {
+    flyTo(options: EasingOptions, eventData?: EventData): this {
         // Fall through to jumpTo if user has set prefers-reduced-motion
         if (this._prefersReducedMotion(options)) {
-            const coercedOptions = pick(options, ['center', 'zoom', 'bearing', 'pitch', 'around', 'padding']);
+            const coercedOptions = pick(options, ['center', 'zoom', 'bearing', 'pitch', 'fov', 'around', 'padding', 'retainPadding']);
             return this.jumpTo(coercedOptions, eventData);
         }
 
@@ -1600,22 +1658,23 @@ class Camera extends Evented {
 
         this.stop();
 
-        options = extend({
-            offset: [0, 0],
+        options = {offset: [0, 0],
             speed: 1.2,
             curve: 1.42,
-            easing: defaultEasing
-        }, options);
+            easing: defaultEasing, ...options};
 
         const tr = this.transform,
             startZoom = this.getZoom(),
             startBearing = this.getBearing(),
             startPitch = this.getPitch(),
-            startPadding = this.getPadding();
+            startPadding = this.getPadding(),
+            startFov = this.getVerticalFieldOfView();
 
         const zoom = 'zoom' in options ? clamp(+options.zoom, tr.minZoom, tr.maxZoom) : startZoom;
         const bearing = 'bearing' in options ? this._normalizeBearing(options.bearing, startBearing) : startBearing;
         const pitch = 'pitch' in options ? +options.pitch : startPitch;
+        const fov = 'fov' in options ? +options.fov : startFov;
+        const fovChanged = fov !== startFov;
         const padding = this._extendPadding(options.padding);
 
         const scale = tr.zoomScale(zoom - startZoom);
@@ -1639,7 +1698,6 @@ class Camera extends Evented {
             u1 = delta.mag();
 
         if ('minZoom' in options) {
-            // @ts-expect-error - TS2345 - Argument of type 'unknown' is not assignable to parameter of type 'number'.
             const minZoom = clamp(Math.min(options.minZoom, startZoom, zoom), tr.minZoom, tr.maxZoom);
             // w<sub>m</sub>: Maximum visible span, measured in pixels with respect to the initial
             // scale.
@@ -1691,8 +1749,8 @@ class Camera extends Evented {
             const k = w1 < w0 ? -1 : 1;
             S = Math.abs(Math.log(w1 / w0)) / rho;
 
-            u = function() { return 0; };
-            w = function(s) { return Math.exp(k * rho * s); };
+            u = function () { return 0; };
+            w = function (s) { return Math.exp(k * rho * s); };
         }
 
         if ('duration' in options) {
@@ -1711,6 +1769,8 @@ class Camera extends Evented {
         const pitchChanged = (pitch !== startPitch);
         const paddingChanged = !tr.isPaddingEqual(padding);
 
+        const transformForPadding = options.retainPadding === false ? tr.clone() : tr;
+
         const frame = (tr: Transform) => (k: number) => {
             // s: The distance traveled along the flight path, measured in ρ-screenfuls.
             const s = k * S;
@@ -1723,11 +1783,14 @@ class Camera extends Evented {
             if (pitchChanged) {
                 tr.pitch = interpolate(startPitch, pitch, k);
             }
+            if (fovChanged) {
+                tr.fov = interpolate(startFov, fov, k);
+            }
             if (paddingChanged) {
-                tr.interpolatePadding(startPadding, padding, k);
+                transformForPadding.interpolatePadding(startPadding, padding, k);
                 // When padding is being applied, Transform#centerPoint is changing continuously,
                 // thus we need to recalculate offsetPoint every frame
-                pointAtOffset = tr.centerPoint.add(offsetAsPoint);
+                pointAtOffset = transformForPadding.centerPoint.add(offsetAsPoint);
             }
 
             const newCenter = k === 1 ? center : tr.unproject(from.add(delta.mult(u(s))).mult(scale));
@@ -1753,7 +1816,6 @@ class Camera extends Evented {
         this._padding = paddingChanged;
 
         this._prepareEase(eventData, false);
-        // @ts-expect-error - TS2345 - Argument of type 'EasingOptions' is not assignable to parameter of type '{ animate: boolean; duration: number; easing: (_: number) => number; }'.
         this._ease(frame(tr), () => this._afterEase(eventData), options);
 
         return this;
@@ -1775,13 +1837,30 @@ class Camera extends Evented {
         return this._stop();
     }
 
-    // @ts-expect-error - TS2355 - A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.
-    _requestRenderFrame(_callback: () => void): TaskID {}
+    // No-op in the Camera class, implemented by the Map class
+    _requestRenderFrame(_callback: () => void): TaskID | undefined { return undefined; }
 
     // No-op in the Camera class, implemented by the Map class
     _cancelRenderFrame(_: TaskID): void {}
 
-    _stop(allowGestures?: boolean, easeId?: string): this {
+    // Cancels any running camera animation.
+    // `keepGesture` controls whether to keep a gesture that is currently in progress or not:
+    // - 'never' (default behavior):
+    //      Never keep the gesture.
+    //      Used in `stop`.
+    // - 'always':
+    //      Always keep the gesture.
+    //      Used when only want to cancel any animation.
+    // - 'ifPointerDown':
+    //      Keep the gesture only if a pointer is still physically down (see `_isPointerDown` in `HandlerManager`).
+    //      Possible use case: when `jumpTo` called from inside a drag/move handler, do not kill the drag the user is still performing.
+    _stop({
+        easeId,
+        keepGesture
+    }: {
+        easeId?: string;
+        keepGesture?: KeepGesture;
+    } = {}): this {
         if (this._easeFrameId) {
             this._cancelRenderFrame(this._easeFrameId);
             this._easeFrameId = undefined;
@@ -1796,20 +1875,18 @@ class Camera extends Evented {
             this._onEaseEnd = undefined;
             onEaseEnd.call(this, easeId);
         }
-        if (!allowGestures) {
-            const handlers = (this as any).handlers;
-            if (handlers) handlers.stop(false);
-        }
+
+        const handlers = this.handlers;
+        if (handlers) handlers.stop(keepGesture);
+
         return this;
     }
 
-    _ease(frame: (_: number) => Transform | void,
-          finish: () => void,
-          options: {
-              animate: boolean;
-              duration: number;
-              easing: (_: number) => number;
-          }) {
+    _ease(
+        frame: (_: number) => Transform | void,
+        finish: () => void,
+        options: EasingOptions
+    ) {
         if (options.animate === false || options.duration === 0) {
             frame(1);
             finish();
@@ -1864,11 +1941,11 @@ class Camera extends Evented {
     }
 
     // emulates frame function for some transform
-    _emulate(frame: any, duration: number, initialTransform: Transform): Array<Transform> {
+    _emulate(frame: (Transform) => (number) => Transform, duration: number, initialTransform: Transform): Array<Transform> {
         const frameRate = 15;
         const numFrames = Math.ceil(duration * frameRate / 1000);
 
-        const transforms = [];
+        const transforms: Transform[] = [];
         const emulateFrame = frame(initialTransform.clone());
         for (let i = 0; i <= numFrames; i++) {
             const transform = emulateFrame(i / numFrames);
@@ -1879,7 +1956,7 @@ class Camera extends Evented {
     }
 
     // No-op in the Camera class, implemented by the Map class
-    _preloadTiles(_transform: Transform | Array<Transform>, _callback?: Callback<any>): any {}
+    _preloadTiles(_transform: Transform | Array<Transform>, _callback?: Callback<Tile[]>) {}
 }
 
 // In debug builds, check that camera change events are fired in the correct order.
@@ -1887,24 +1964,23 @@ class Camera extends Evented {
 // - another ___start event can't be fired before a ___end event has been fired for the previous one
 function addAssertions(camera: Camera) { //eslint-disable-line
     Debug.run(() => {
-        const inProgress: Record<string, any> = {};
+        const inProgress: Record<string, boolean> = {};
 
-        ['drag', 'zoom', 'rotate', 'pitch', 'move'].forEach(name => {
+        (['drag', 'zoom', 'rotate', 'pitch', 'move'] as const).forEach(name => {
             inProgress[name] = false;
 
-            camera.on((`${name}start` as MapEvent), () => {
+            camera.on(`${name}start`, () => {
                 assert(!inProgress[name], `"${name}start" fired twice without a "${name}end"`);
                 inProgress[name] = true;
                 assert(inProgress.move);
             });
 
-            // @ts-expect-error - TS2345 - Argument of type 'string' is not assignable to parameter of type 'MapEvent'.
             camera.on(name, () => {
                 assert(inProgress[name]);
                 assert(inProgress.move);
             });
 
-            camera.on((`${name}end` as MapEvent), () => {
+            camera.on(`${name}end`, () => {
                 assert(inProgress.move);
                 assert(inProgress[name]);
                 inProgress[name] = false;
@@ -1912,10 +1988,10 @@ function addAssertions(camera: Camera) { //eslint-disable-line
         });
 
         // Canary used to test whether this function is stripped in prod build
-        canary = 'canary debug run'; //eslint-disable-line
+        canary = 'canary debug run';
     });
 }
 
-let canary; //eslint-disable-line
+let canary: string; //eslint-disable-line
 
 export default Camera;

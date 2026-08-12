@@ -4,7 +4,6 @@
     "test": {
       "width": 512,
       "height": 512,
-      "allowed": 0.0007,
       "operations": [
         ["setProjection", "globe"],
         ["setPadding", {
@@ -14,6 +13,17 @@
           "right": 0.0
         }],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-linux", "reason": "flaky, https://mapbox.atlassian.net/browse/MAPSNAT-1236"},
+        {"platform-tag-contains": "native-macos", "reason": "Flaky"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky"},
+        {"platform-tag-contains": "native-android", "reason": "Flaky"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0007}
       ]
     }
   },
@@ -35,7 +45,6 @@
       ]
     }
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "background",

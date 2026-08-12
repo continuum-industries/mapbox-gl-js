@@ -44,6 +44,22 @@
     "line": 53
   },
   {
+    "message": "sources.invalid-bounds-too-few.bounds: array length 4 expected, length 3 found",
+    "line": 64
+  },
+  {
+    "message": "sources.invalid-bounds-too-many.bounds: array length 4 expected, length 5 found",
+    "line": 69
+  },
+  {
+    "message": "sources.invalid-bounds-values.bounds[2]: number expected, string found",
+    "line": 74
+  },
+  {
+    "message": "sources.invalid-extra-bounds-values.extra_bounds[0]: Expected number but found string.",
+    "line": 100
+  },
+  {
     "message": "sources[0].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]"
   },
   {
@@ -57,28 +73,12 @@
     "message": "sources[1].url: Expected a valid Mapbox tileset url"
   },
   {
-    "message": "source.tiles: Unsupported property \"tiles\"",
-    "line": 12
-  },
-  {
     "message": "sources[2].url: Expected a valid Mapbox tileset url",
     "line": 11
   },
   {
-    "message": "source.foo: Unsupported property \"foo\"",
-    "line": 17
-  },
-  {
     "message": "sources[3].url: Expected a valid Mapbox tileset url",
     "line": 16
-  },
-  {
-    "message": "source.urls: Unsupported property \"urls\"",
-    "line": 21
-  },
-  {
-    "message": "source.coordinates: Unsupported property \"coordinates\"",
-    "line": 22
   },
   {
     "message": "sources[4].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]",
@@ -88,23 +88,11 @@
     "message": "sources[4].url: Expected a valid Mapbox tileset url"
   },
   {
-    "message": "source.urls: Unsupported property \"urls\"",
-    "line": 28
-  },
-  {
     "message": "sources[5].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]",
     "line": 27
   },
   {
     "message": "sources[5].url: Expected a valid Mapbox tileset url"
-  },
-  {
-    "message": "source.urls: Unsupported property \"urls\"",
-    "line": 32
-  },
-  {
-    "message": "source.coordinates: Unsupported property \"coordinates\"",
-    "line": 33
   },
   {
     "message": "sources[6].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]",
@@ -114,31 +102,11 @@
     "message": "sources[6].url: Expected a valid Mapbox tileset url"
   },
   {
-    "message": "source.canvas: Unsupported property \"canvas\"",
-    "line": 39
-  },
-  {
-    "message": "source.coordinates: Unsupported property \"coordinates\"",
-    "line": 40
-  },
-  {
     "message": "sources[7].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]",
     "line": 38
   },
   {
     "message": "sources[7].url: Expected a valid Mapbox tileset url"
-  },
-  {
-    "message": "source.data: Unsupported property \"data\"",
-    "line": 46
-  },
-  {
-    "message": "source.cluster: Unsupported property \"cluster\"",
-    "line": 47
-  },
-  {
-    "message": "source.clusterProperties: Unsupported property \"clusterProperties\"",
-    "line": 48
   },
   {
     "message": "sources[8].type: Expected one of [vector, raster, raster-dem, raster-array, model, batched-model]",
@@ -149,5 +117,41 @@
   },
   {
     "message": "sources[9].url: Expected a valid Mapbox tileset url"
+  },
+  {
+    "message": "sources[10].url: Expected a valid Mapbox tileset url",
+    "line": 58
+  },
+  {
+    "message": "sources[11].url: Expected a valid Mapbox tileset url",
+    "line": 63
+  },
+  {
+    "message": "sources[12].url: Expected a valid Mapbox tileset url",
+    "line": 68
+  },
+  {
+    "message": "sources[13].url: Expected a valid Mapbox tileset url",
+    "line": 73
+  },
+  {
+    "message": "sources[14].url: Expected a valid Mapbox tileset url",
+    "line": 78
+  },
+  {
+    "message": "sources[15].url: Expected a valid Mapbox tileset url",
+    "line": 86
+  },
+  {
+    "message": "sources[16].url: Expected a valid Mapbox tileset url",
+    "line": 91
+  },
+  {
+    "message": "sources[17].url: Expected a valid Mapbox tileset url",
+    "line": 98
+  },
+  {
+    "message": "sources[18].url: Expected a valid Mapbox tileset url",
+    "line": 105
   }
 ]

@@ -4,7 +4,13 @@
     "test": {
       "collisionDebug": true,
       "height": 256,
-      "width" : 256
+      "width" : 256,
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "https://github.com/mapbox/mapbox-gl-native/issues/3841"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "metal", "threshold": 0.0003}
+      ]
     }
   },
   "center": [
@@ -31,7 +37,7 @@
     }
   },
   "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
-  "sprite": "local://sprites/sprite",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
@@ -45,7 +51,7 @@
       "type": "symbol",
       "source": "geojson",
       "layout": {
-        "icon-image": "fav-airport-18",
+        "icon-image": "information",
         "icon-size": [
           "interpolate",
           ["linear"],
@@ -53,7 +59,7 @@
           12,
           1,
           13,
-          2
+          3
         ],
         "text-field": "abc",
         "text-size": [

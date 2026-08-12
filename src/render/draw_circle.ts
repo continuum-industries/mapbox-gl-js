@@ -1,12 +1,13 @@
 import StencilMode from '../gl/stencil_mode';
 import DepthMode from '../gl/depth_mode';
 import CullFaceMode from '../gl/cull_face_mode';
-import Program from './program';
 import {circleUniformValues, circleDefinesValues} from './program/circle_program';
 import SegmentVector from '../data/segment';
-import {OverscaledTileID} from '../source/tile_id';
 import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
+import assert from '../style-spec/util/assert';
 
+import type {OverscaledTileID} from '../source/tile_id';
+import type Program from './program';
 import type Painter from './painter';
 import type SourceCache from '../source/source_cache';
 import type CircleStyleLayer from '../style/style_layer/circle_style_layer';
@@ -23,9 +24,9 @@ export default drawCircles;
 
 type TileRenderState = {
     programConfiguration: ProgramConfiguration;
-    program: Program<any>;
+    program: Program<CircleUniformsType>;
     layoutVertexBuffer: VertexBuffer;
-    globeExtVertexBuffer: VertexBuffer | null | undefined;
+    dynamicBuffers: VertexBuffer[];
     indexBuffer: IndexBuffer;
     uniformValues: UniformValues<CircleUniformsType>;
     tile: Tile;
@@ -55,14 +56,19 @@ function drawCircles(painter: Painter, sourceCache: SourceCache, layer: CircleSt
     const gl = context.gl;
     const tr = painter.transform;
 
-    const depthMode = painter.depthModeForSublayer(0, DepthMode.ReadOnly);
+    const terrainEnabled = !!(painter.terrain && painter.terrain.enabled);
+    const elevationReference = layer.layout.get('circle-elevation-reference');
+    const depthModeForLayer = painter.depthModeForSublayer(0, DepthMode.ReadOnly);
+    const depthModeFor3D = new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadOnly, painter.depthRangeFor3D);
+    const depthMode = elevationReference !== 'none' && !terrainEnabled ? depthModeFor3D : depthModeForLayer;
+
     // Turn off stencil testing to allow circles to be drawn across boundaries,
     // so that large circles are not clipped to tiles
     const stencilMode = StencilMode.disabled;
 
     const colorMode = painter.colorModeForDrapableLayerRenderPass(emissiveStrength);
     const isGlobeProjection = tr.projection.name === 'globe';
-    const mercatorCenter = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
+    const mercatorCenter: [number, number] = [mercatorXfromLng(tr.center.lng), mercatorYfromLat(tr.center.lat)];
 
     const segmentsRenderStates: Array<SegmentsTileRenderState> = [];
 
@@ -70,28 +76,40 @@ function drawCircles(painter: Painter, sourceCache: SourceCache, layer: CircleSt
         const coord = coords[i];
 
         const tile = sourceCache.getTile(coord);
-        const bucket: CircleBucket<any> | null | undefined = (tile.getBucket(layer) as any);
+        const bucket = tile.getBucket(layer) as CircleBucket;
         if (!bucket || bucket.projection.name !== tr.projection.name) continue;
 
         const programConfiguration = bucket.programConfigurations.get(layer.id);
+        const layoutVertexBuffer = bucket.layoutVertexBuffer;
+        const globeExtVertexBuffer = bucket.globeExtVertexBuffer;
+        const indexBuffer = bucket.indexBuffer;
         const definesValues = (circleDefinesValues(layer) as DynamicDefinesType[]);
+        const dynamicBuffers = [globeExtVertexBuffer];
         const affectedByFog = painter.isTileAffectedByFog(coord);
         if (isGlobeProjection) {
             definesValues.push('PROJECTION_GLOBE_VIEW');
         }
+        definesValues.push('DEPTH_D24');
+
+        if (painter.terrain && tr.depthOcclusionForSymbolsAndCircles) {
+            definesValues.push('DEPTH_OCCLUSION');
+        }
+
+        if (bucket.hdExt && bucket.hdExt.hasElevation && !painter.terrain) {
+            definesValues.push('ELEVATED_ROADS');
+            assert(bucket.hdExt.elevatedLayoutVertexBuffer);
+            dynamicBuffers.push(bucket.hdExt.elevatedLayoutVertexBuffer);
+        }
+
         const program = painter.getOrCreateProgram('circle', {config: programConfiguration, defines: definesValues, overrideFog: affectedByFog});
-        const layoutVertexBuffer = bucket.layoutVertexBuffer;
-        const globeExtVertexBuffer = bucket.globeExtVertexBuffer;
-        const indexBuffer = bucket.indexBuffer;
         const invMatrix = tr.projection.createInversionMatrix(tr, coord.canonical);
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type '[number, number]'.
         const uniformValues = circleUniformValues(painter, coord, tile, invMatrix, mercatorCenter, layer);
 
         const state: TileRenderState = {
             programConfiguration,
             program,
             layoutVertexBuffer,
-            globeExtVertexBuffer,
+            dynamicBuffers,
             indexBuffer,
             uniformValues,
             tile
@@ -102,7 +120,7 @@ function drawCircles(painter: Painter, sourceCache: SourceCache, layer: CircleSt
             for (const segment of oldSegments) {
                 segmentsRenderStates.push({
                     segments: new SegmentVector([segment]),
-                    sortKey: (segment.sortKey),
+                    sortKey: segment.sortKey,
                     state
                 });
             }
@@ -123,15 +141,17 @@ function drawCircles(painter: Painter, sourceCache: SourceCache, layer: CircleSt
     const terrainOptions = {useDepthForOcclusion: tr.depthOcclusionForSymbolsAndCircles};
 
     for (const segmentsState of segmentsRenderStates) {
-        const {programConfiguration, program, layoutVertexBuffer, globeExtVertexBuffer, indexBuffer, uniformValues, tile} = segmentsState.state;
+        const {programConfiguration, program, layoutVertexBuffer, dynamicBuffers, indexBuffer, uniformValues, tile} = segmentsState.state;
         const segments = segmentsState.segments;
 
-        if (painter.terrain) painter.terrain.setupElevationDraw(tile, program, terrainOptions);
+        if (painter.terrain) {
+            painter.terrain.setupElevationDraw(tile, program, terrainOptions);
+        }
 
         painter.uploadCommonUniforms(context, program, tile.tileID.toUnwrapped());
 
         program.draw(painter, gl.TRIANGLES, depthMode, stencilMode, colorMode, CullFaceMode.disabled,
             uniformValues, layer.id, layoutVertexBuffer, indexBuffer, segments,
-            layer.paint, tr.zoom, programConfiguration, [globeExtVertexBuffer]);
+            layer.paint, tr.zoom, programConfiguration, dynamicBuffers);
     }
 }

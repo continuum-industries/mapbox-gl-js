@@ -1,75 +1,108 @@
 import {default as ValidationError, ValidationWarning} from '../error/validation_error';
-import getType from '../util/get_type';
+import {getType, isObject, isString} from '../util/get_type';
 import validate from './validate';
 import {unbundle} from '../util/unbundle_jsonlint';
+import {TRANSITION_KEY_RE, USE_THEME_KEY_RE} from '../util/properties';
 
-import type {ValidationOptions} from './validate';
+import type {StyleReference} from '../reference/latest';
+import type {StyleSpecification} from '../types';
 
-type Options = ValidationOptions & {
+type LightsValidatorOptions = {
+    key: string;
+    value: unknown;
+    style: Partial<StyleSpecification>;
+    styleSpec: StyleReference;
     arrayIndex: number;
 };
 
-export default function validateLights(options: Options): Array<ValidationError> {
+export default function validateLights(options: LightsValidatorOptions): ValidationError[] {
     const light = options.value;
-    let errors = [];
 
     if (!light) {
-        return errors;
+        return [];
     }
 
-    const type = getType(light);
-    if (type !== 'object') {
-        errors = errors.concat([new ValidationError('light-3d', light, `object expected, ${type} found`)]);
-        return errors;
-    }
-
-    const styleSpec = options.styleSpec;
-    const lightSpec = styleSpec['light-3d'];
     const key = options.key;
+    if (!isObject(light)) {
+        return [new ValidationError(key, light, `object expected, ${getType(light)} found`)];
+    }
+
+    let errors: ValidationError[] = [];
+    const styleSpec = options.styleSpec;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const lightSpec = styleSpec['light-3d'];
     const style = options.style;
     const lights = options.style.lights;
 
-    for (const key of ['type', 'id']) {
-        if (!(key in light)) {
-            errors = errors.concat([new ValidationError('light-3d', light, `missing property ${key} on light`)]);
+    for (const prop of ['type', 'id'] as const) {
+        if (!(prop in light)) {
+            errors = errors.concat([new ValidationError(key, light, `missing property "${prop}"`)]);
             return errors;
         }
     }
 
-    if (light.type && lights) {
+    if (!isString(light.type)) {
+        errors = errors.concat([new ValidationError(`${key}.type`, light.type, `string expected`)]);
+        return errors;
+    }
+
+    if (lights) {
         for (let i = 0; i < options.arrayIndex; i++) {
             const lightType = unbundle(light.type);
-            const otherLight = lights[i];
+            const otherLight = lights[i]!;
             if (unbundle(otherLight.type) === lightType) {
-                // @ts-expect-error - TS2339 - Property '__line__' does not exist on type 'string'.
-                errors.push(new ValidationError(key, light.id, `duplicate light type "${light.type}", previously defined at line ${otherLight.id.__line__}`));
+                errors.push(new ValidationError(key, light.id, `duplicate light type "${light.type}", previously defined at line ${(otherLight.id as {__line__?: number}).__line__}`));
             }
         }
     }
 
-    const lightType = `properties_light_${light['type']}`;
+    const lightType = `properties_light_${light.type}`;
     if (!(lightType in styleSpec)) {
-        errors = errors.concat([new ValidationError('light-3d', light, `Invalid light type ${light['type']}`)]);
+        errors = errors.concat([new ValidationError(`${key}.type`, light, `Invalid light type ${light.type}`)]);
         return errors;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const lightPropertySpec = styleSpec[lightType];
 
     for (const key in light) {
         if (key === 'properties') {
             const properties = light[key];
-            const propertiesType = getType(properties);
-            if (propertiesType !== 'object') {
-                errors = errors.concat([new ValidationError('properties', properties, `object expected, ${propertiesType} found`)]);
+            if (!isObject(properties)) {
+                errors = errors.concat([new ValidationError('properties', properties, `object expected, ${getType(properties)} found`)]);
                 return errors;
             }
             for (const propertyKey in properties) {
-                if (!lightPropertySpec[propertyKey]) {
+                const transitionMatch = propertyKey.match(TRANSITION_KEY_RE);
+                const useThemeMatch = propertyKey.match(USE_THEME_KEY_RE);
+
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                if (useThemeMatch && lightPropertySpec[useThemeMatch[1]!]) {
+                    errors = errors.concat(validate({
+                        key,
+                        value: properties[propertyKey],
+                        valueSpec: {type: 'string'},
+                        style,
+                        styleSpec
+                    }));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                } else if (transitionMatch && lightPropertySpec[transitionMatch[1]!] && lightPropertySpec[transitionMatch[1]!].transition) {
+                    errors = errors.concat(validate({
+                        key,
+                        value: light[key],
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                        valueSpec: styleSpec.transition,
+                        style,
+                        styleSpec
+                    }));
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                } else if (!lightPropertySpec[propertyKey]) {
                     errors = errors.concat([new ValidationWarning(options.key, properties[propertyKey], `unknown property "${propertyKey}"`)]);
                 } else {
                     errors = errors.concat(validate({
                         key: propertyKey,
                         value: properties[propertyKey],
+                        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                         valueSpec: lightPropertySpec[propertyKey],
                         style,
                         styleSpec
@@ -77,19 +110,12 @@ export default function validateLights(options: Options): Array<ValidationError>
                 }
             }
         } else {
-            const transitionMatch = key.match(/^(.*)-transition$/);
-            if (transitionMatch && lightSpec[transitionMatch[1]] && lightSpec[transitionMatch[1]].transition) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (lightSpec[key]) {
                 errors = errors.concat(validate({
                     key,
                     value: light[key],
-                    valueSpec: styleSpec.transition,
-                    style,
-                    styleSpec
-                }));
-            } else if (lightSpec[key]) {
-                errors = errors.concat(validate({
-                    key,
-                    value: light[key],
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
                     valueSpec: lightSpec[key],
                     style,
                     styleSpec

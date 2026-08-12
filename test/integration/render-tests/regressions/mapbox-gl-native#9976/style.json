@@ -6,7 +6,7 @@
       "operations": [
         [
           "addImage",
-          "marker",
+          "custom-marker",
           "./image/marker.png"
         ],
         [
@@ -16,7 +16,7 @@
             "type": "fill",
             "source": "mapbox",
             "paint": {
-              "fill-pattern": "marker"
+              "fill-pattern": "custom-marker"
             }
           }
         ],
@@ -39,19 +39,23 @@
             "source": "mapbox",
             "paint": {
               "line-width": 20,
-              "line-pattern": "generic_icon"
+              "line-pattern": "information"
             }
           }
         ],
         [
           "wait"
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-android", "reason": "Needs to be investigated and fixed."},
+        {"platform-tag-contains": "native-ios", "reason": "Needs to be investigated and fixed."}
       ]
 
     }
   },
-"zoom": 11,
- "sources": {
+  "zoom": 11,
+  "sources": {
      "mapbox": {
        "type": "geojson",
        "maxzoom": 10,
@@ -119,7 +123,7 @@
        }
      }
    },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",

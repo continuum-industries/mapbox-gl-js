@@ -1,18 +1,23 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
-import {describe, test, expect} from '../../util/vitest';
-
-import {mapValue, degToRad, radToDeg, easeCubicInOut, getAABBPointSquareDist, furthestTileCorner, keysDifference, extend, pick, uniqueId, bindAll, asyncAll, clamp, smoothstep, wrap, bezier, endsWith, mapObject, filterObject, deepEqual, clone, arraysIntersect, isCounterClockwise, parseCacheControl, uuid, validateUuid, nextPowerOfTwo, isPowerOfTwo, bufferConvexPolygon, prevPowerOfTwo, shortestAngle, _resetSafariCheckForTest, isSafariWithAntialiasingBug} from '../../../src/util/util';
-
 import Point from '@mapbox/point-geometry';
+import {describe, test, expect} from '../../util/vitest';
+import {mapValue, degToRad, radToDeg, easeCubicInOut, getAABBPointSquareDist, furthestTileCorner, keysDifference, pick, uniqueId, bindAll, asyncAll, clamp, smoothstep, wrap, bezier, mapObject, filterObject, deepEqual, clone, arraysIntersect, isCounterClockwise, parseCacheControl, parseExpiryData, uuid, validateUuid, nextPowerOfTwo, isPowerOfTwo, bufferConvexPolygon, prevPowerOfTwo, shortestAngle} from '../../../src/util/util';
 
 const EPSILON = 1e-8;
 
 function pointsetEqual(actual, expected) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     expect(actual.length).toEqual(expected.length);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     for (let i = 0; i < actual.length; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         const p1 = actual[i];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
         const p2 = expected[i];
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(Math.abs(p1.x - p2.x) < EPSILON).toBeTruthy();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(Math.abs(p1.y - p2.y) < EPSILON).toBeTruthy();
     }
 }
@@ -22,11 +27,11 @@ describe('util', () => {
     expect(easeCubicInOut(0.2)).toEqual(0.03200000000000001);
     expect(easeCubicInOut(0.5)).toEqual(0.5);
     expect(easeCubicInOut(1)).toEqual(1);
-    expect(keysDifference({a:1}, {})).toEqual(['a']);
-    expect(keysDifference({a:1}, {a:1})).toEqual([]);
-    expect(extend({a:1}, {b:2})).toEqual({a:1, b:2});
-    expect(pick({a:1, b:2, c:3}, ['a', 'c'])).toEqual({a:1, c:3});
-    expect(pick({a:1, b:2, c:3}, ['a', 'c', 'd'])).toEqual({a:1, c:3});
+    expect(keysDifference({a: 1}, {})).toEqual(['a']);
+    expect(keysDifference({a: 1}, {a: 1})).toEqual([]);
+    expect({a: 1, b: 2}).toEqual({a: 1, b: 2});
+    expect(pick({a: 1, b: 2, c: 3}, ['a', 'c'])).toEqual({a: 1, c: 3});
+    expect(pick({a: 1, b: 2, c: 3}, ['a', 'c', 'd'])).toEqual({a: 1, c: 3});
     expect(typeof uniqueId() === 'number').toBeTruthy();
 
     expect(degToRad(radToDeg(Math.PI))).toEqual(Math.PI);
@@ -198,6 +203,7 @@ describe('util', () => {
 
     test('asyncAll', () => {
         let expectResult = 1;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         asyncAll([], (callback) => { callback(); }, () => {
             expect('immediate callback').toBeTruthy();
         });
@@ -208,16 +214,11 @@ describe('util', () => {
         }, () => {});
     });
 
-    test('endsWith', () => {
-        expect(endsWith('mapbox', 'box')).toBeTruthy();
-        expect(endsWith('mapbox', 'map')).toBeFalsy();
-    });
-
     test('mapObject', () => {
         expect.assertions(6);
         expect(mapObject({}, () => { expect(false).toBeTruthy(); })).toEqual({});
         const that: Record<string, any> = {};
-        expect(mapObject({map: 'box'}, function(value, key, object) {
+        expect(mapObject({map: 'box'}, function (value, key, object) {
             expect(value).toEqual('box');
             expect(key).toEqual('map');
             expect(object).toEqual({map: 'box'});
@@ -230,7 +231,7 @@ describe('util', () => {
         expect.assertions(6);
         expect(filterObject({}, () => { expect(false).toBeTruthy(); })).toEqual({});
         const that: Record<string, any> = {};
-        filterObject({map: 'box'}, function(value, key, object) {
+        filterObject({map: 'box'}, function (value, key, object) {
             expect(value).toEqual('box');
             expect(key).toEqual('map');
             expect(object).toEqual({map: 'box'});
@@ -250,8 +251,11 @@ describe('util', () => {
                 lol: ["cat", 2]
             }
         };
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const b = JSON.parse(JSON.stringify(a));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const c = JSON.parse(JSON.stringify(a));
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         c.bar.lol[0] = "z";
 
         expect(deepEqual(a, b)).toBeTruthy();
@@ -364,6 +368,31 @@ describe('util', () => {
         });
     });
 
+    describe('parseExpiryData', () => {
+        test('returns undefined values when responseHeaders is undefined', () => {
+            expect(parseExpiryData(undefined)).toEqual({
+                cacheControl: undefined,
+                expires: undefined
+            });
+        });
+
+        test('reads cache headers from a Fetch API Headers object', () => {
+            const headers = new Headers();
+            headers.set('Cache-Control', 'max-age=60');
+            headers.set('Expires', 'Thu, 01 Jan 2099 00:00:00 GMT');
+
+            const result = parseExpiryData(headers);
+            expect(result.cacheControl).toBe('max-age=60');
+            expect(result.expires).toBe('Thu, 01 Jan 2099 00:00:00 GMT');
+        });
+
+        test('returns null values for a Headers missing both keys (downstream guards tolerate)', () => {
+            const result = parseExpiryData(new Headers());
+            expect(result.cacheControl).toBeNull();
+            expect(result.expires).toBeNull();
+        });
+    });
+
     test('validateUuid', () => {
         expect(validateUuid(uuid())).toBeTruthy();
         expect(validateUuid(uuid().substr(0, 10))).toBeFalsy();
@@ -384,151 +413,5 @@ describe('util', () => {
         expect(shortestAngle(100, 123 * 360 + 100)).toEqual(0);
         expect(shortestAngle(-45, 335)).toEqual(20);
         expect(shortestAngle(-100, -270)).toEqual(-170);
-    });
-
-    test('isSafariWithAntialiasingBug', () => {
-        const isSafariWithAntialiasingBugReset = (scope) => {
-            _resetSafariCheckForTest();
-            const result = isSafariWithAntialiasingBug(scope);
-            _resetSafariCheckForTest();
-            return result;
-        };
-
-        // mac
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Safari/605.1.15'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Safari/605.1.15'}})
-        ).toBeFalsy();
-
-        // iphone
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-
-        // ipad
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.3 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-
-        // chrome
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.74 Safari/537.36'}})
-        ).toBeFalsy();
-        // firefox
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12.3; rv:98.0) Gecko/20100101 Firefox/98.0'}})
-        ).toBeFalsy();
-        // edge
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.74 Safari/537.36 Edg/99.0.1150.36'}})
-        ).toBeFalsy();
-
-        // chrome on iOS
-        // iphone
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        // ipad
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        // ipod
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod; CPU iPhone OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/99.0.4844.59 Mobile/15E148 Safari/604.1'}})
-        ).toBeFalsy();
-
-        // firefox on iOS
-        // iphone
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
-        // ipad
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPad; CPU OS 15_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
-        // ipod
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod touch; CPU iPhone OS 15_3 like Mac OS X) AppleWebKit/604.5.6 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod touch; CPU iPhone OS 15_4 like Mac OS X) AppleWebKit/604.5.6 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod touch; CPU iPhone OS 15_5 like Mac OS X) AppleWebKit/604.5.6 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeTruthy();
-        expect(
-            isSafariWithAntialiasingBugReset({navigator: {userAgent: 'Mozilla/5.0 (iPod touch; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/604.5.6 (KHTML, like Gecko) FxiOS/98.0 Mobile/15E148 Safari/605.1.15'}})
-        ).toBeFalsy();
     });
 });

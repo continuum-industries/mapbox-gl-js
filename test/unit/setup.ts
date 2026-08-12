@@ -1,29 +1,22 @@
-// @ts-nocheck
-/* global globalThis */
+window.devicePixelRatio = 1;
 
-import {toHaveBeenCalledBefore, toHaveBeenCalledAfter} from 'jest-extended';
-import {expect} from '../util/vitest';
+import {beforeEach, afterEach} from 'vitest';
+import WorkerClass from '../../src/util/worker_class';
+import {prewarm} from '../../src/util/worker_pool_factory';
+import {markTestBaseline, cleanupTestMaps} from '../util/vitest';
 
-// Load Error Handling
-// https://vitejs.dev/guide/build#load-error-handling
-window.addEventListener('vite:preloadError', (event) => {
-    console.log('vite:preloadError', event);
-    window.location.reload();
-});
-
-import mapboxgl from '../../src/index';
-
-if (!globalThis.defined) {
-    mapboxgl.workerParams = {
-        type: 'module'
-    };
-
-    mapboxgl.workerUrl = '/src/source/worker.ts';
-
-    globalThis.defined = true;
+if (!WorkerClass.workerUrl) {
+    // Internal, test-only: load the untranspiled worker source as an ES module.
+    WorkerClass.workerParams = {type: 'module'};
+    WorkerClass.workerUrl = '/src/source/worker.ts';
 }
 
-expect.extend({
-    toHaveBeenCalledBefore,
-    toHaveBeenCalledAfter
-});
+// Keep the shared WorkerPool alive across all tests in this iframe. Without
+// this, `map.remove()` in `cleanupTestMaps` drives `numActive` to 0 and
+// terminates the workers, forcing every test to spin up a fresh pair. Must
+// run AFTER `WorkerClass.workerUrl` is set, otherwise workers are created
+// with an empty URL and never process messages.
+prewarm();
+
+beforeEach(markTestBaseline);
+afterEach(cleanupTestMaps);

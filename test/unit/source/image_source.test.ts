@@ -1,29 +1,28 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {
     describe,
-    beforeAll,
     beforeEach,
     afterEach,
-    afterAll,
     test,
     expect,
     vi,
     waitFor,
+    doneAsync,
 } from '../../util/vitest';
-import {getNetworkWorker, http, HttpResponse, getPNGResponse} from '../../util/network';
+import {mockFetch, getPNGResponse} from '../../util/network';
 import ImageSource from '../../../src/source/image_source';
 import {Evented} from '../../../src/util/evented';
 import Transform from '../../../src/geo/transform';
-import {extend} from '../../../src/util/util';
 import browser from '../../../src/util/browser';
 import {OverscaledTileID} from '../../../src/source/tile_id';
 import Context from '../../../src/gl/context';
 
 function createSource(options) {
-    options = extend({
-        coordinates: [[0, 0], [1, 0], [1, 1], [0, 1]]
-    }, options);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    options = {coordinates: [[0, 0], [1, 0], [1, 1], [0, 1]], ...options};
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     const source = new ImageSource('id', options, {send() {}}, options.eventedParent);
     return source;
 }
@@ -34,29 +33,17 @@ class StubMap extends Evented {
     constructor() {
         super();
         this.painter = {};
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         this.painter.context = new Context(canvas.getContext('webgl2'));
         this.transform = new Transform();
         this._requestManager = {
             transformRequest: (url) => {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 return {url};
             }
         };
     }
 }
-
-let networkWorker: any;
-
-beforeAll(async () => {
-    networkWorker = await getNetworkWorker(window);
-});
-
-afterEach(() => {
-    networkWorker.resetHandlers();
-});
-
-afterAll(() => {
-    networkWorker.stop();
-});
 
 describe('ImageSource', () => {
     const img: Record<string, any> = {};
@@ -72,7 +59,7 @@ describe('ImageSource', () => {
     });
 
     test('constructor', () => {
-        const source = createSource({url : '/image.png'});
+        const source = createSource({url: '/image.png'});
 
         expect(source.minzoom).toEqual(0);
         expect(source.maxzoom).toEqual(22);
@@ -80,167 +67,167 @@ describe('ImageSource', () => {
     });
 
     test('fires dataloading event', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
-        await new Promise(resolve => {
-            source.on('dataloading', (e) => {
-                expect(e.dataType).toEqual('source');
-                resolve();
-            });
-            source.onAdd(new StubMap());
+        const {wait, withAsync} = doneAsync();
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
         });
+        const source = createSource({url: '/image.png'});
+        source.on('dataloading', withAsync((e, doneRef) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            expect(e.dataType).toEqual('source');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            doneRef.resolve();
+        }));
+        source.onAdd(new StubMap());
+        await wait;
     });
 
-    test('transforms url request', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+    test('transforms url request', () => {
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         const map = new StubMap();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const spy = vi.spyOn(map._requestManager, 'transformRequest');
         source.onAdd(map);
         expect(spy).toHaveBeenCalledTimes(1);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0]).toEqual('/image.png');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][1]).toEqual('Image');
     });
 
-    test('updates url from updateImage', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+    test('updates url from updateImage', () => {
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         const map = new StubMap();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const spy = vi.spyOn(map._requestManager, 'transformRequest');
         source.onAdd(map);
         expect(spy).toHaveBeenCalledTimes(1);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][0]).toEqual('/image.png');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[0][1]).toEqual('Image');
         source.updateImage({url: '/image2.png'});
         expect(spy).toHaveBeenCalledTimes(2);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[1][0]).toEqual('/image2.png');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[1][1]).toEqual('Image');
     });
 
-    test('sets coordinates', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+    test('sets coordinates', () => {
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         const map = new StubMap();
         source.onAdd(map);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const beforeSerialized = source.serialize();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(beforeSerialized.coordinates).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
         source.setCoordinates([[0, 0], [-1, 0], [-1, -1], [0, -1]]);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const afterSerialized = source.serialize();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(afterSerialized.coordinates).toEqual([[0, 0], [-1, 0], [-1, -1], [0, -1]]);
     });
 
     test('sets coordinates via updateImage', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+        const {wait, withAsync} = doneAsync();
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         const map = new StubMap();
         source.onAdd(map);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const beforeSerialized = source.serialize();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(beforeSerialized.coordinates).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
 
-        await new Promise(resolve => {
-            source.on('data', (e) => {
-                if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
-                    const afterSerialized = source.serialize();
-                    expect(afterSerialized.coordinates).toEqual([[0, 0], [-1, 0], [-1, -1], [0, -1]]);
-                    resolve();
-                }
-            });
-            source.updateImage({
-                url: '/image2.png',
-                coordinates: [[0, 0], [-1, 0], [-1, -1], [0, -1]]
-            });
+        source.on('data', withAsync((e, doneRef) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+                const afterSerialized = source.serialize();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+                expect(afterSerialized.coordinates).toEqual([[0, 0], [-1, 0], [-1, -1], [0, -1]]);
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                doneRef.resolve();
+            }
+        }));
+        source.updateImage({
+            url: '/image2.png',
+            coordinates: [[0, 0], [-1, 0], [-1, -1], [0, -1]]
         });
+        await wait;
     });
 
     test('fires data event when content is loaded', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
-
-        await new Promise(resolve => {
-            source.on('data', (e) => {
-                if (e.dataType === 'source' && e.sourceDataType === 'content') {
-                    expect(typeof source.tileID == 'object').toBeTruthy();
-                    resolve();
-                }
-
-            });
-            source.onAdd(new StubMap());
+        const {wait, withAsync} = doneAsync();
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
         });
+        const source = createSource({url: '/image.png'});
+        source.on('data', withAsync((e, doneRef) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (e.dataType === 'source' && e.sourceDataType === 'content') {
+                expect(typeof source.tileID == 'object').toBeTruthy();
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                doneRef.resolve();
+            }
+        }));
+        source.onAdd(new StubMap());
+        await wait;
     });
 
     test('fires data event when metadata is loaded', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
-
-        await new Promise(resolve => {
-            source.on('data', e => {
-                if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
-                    resolve();
-                }
-
-            });
-            source.onAdd(new StubMap());
+        const {wait, withAsync} = doneAsync();
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
         });
+        const source = createSource({url: '/image.png'});
+        source.on('data', withAsync((e, doneRef) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+            if (e.dataType === 'source' && e.sourceDataType === 'metadata') {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+                doneRef.resolve();
+            }
+        }));
+        source.onAdd(new StubMap());
+        await wait;
     });
 
-    test('serialize url and coordinates', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
+    test('serialize url and coordinates', () => {
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
+        });
         const source = createSource({url: '/image.png'});
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const serialized = source.serialize();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(serialized.type).toEqual('image');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(serialized.url).toEqual('/image.png');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(serialized.coordinates).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
     });
 
     test('https://github.com/mapbox/mapbox-gl-js/issues/12209', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         source.tiles[0] = new OverscaledTileID(0, 0, 0, 0, 0);
         const map = new StubMap();
         const coordinates = [[0, 0], [-1, 0], [-1, -1], [0, -1]];
@@ -272,15 +259,11 @@ describe('ImageSource', () => {
     });
 
     test('reloading image retains loaded status', async () => {
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/image.png'});
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/image.png'});
         const map = new StubMap();
         const coordinates = [[0, 0], [-1, 0], [-1, -1], [0, -1]];
         source.onAdd(map);
@@ -297,29 +280,51 @@ describe('ImageSource', () => {
         await waitFor(source, 'data');
     });
 
-    test('cancels image request when onRemove is called', async () => {
-        const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
+    test('aborting an in-flight load never assigns the image', async () => {
+        let resolveBody: () => void;
+        const body = await getPNGResponse();
+        mockFetch({
+            // Resolve the response but hold the body read so the abort lands mid-load.
+            '/image.png': () => Promise.resolve({
+                ok: true,
+                status: 200,
+                statusText: 'OK',
+                headers: new Headers({'Content-Type': 'image/png'}),
+                arrayBuffer: () => new Promise((resolve) => { resolveBody = () => resolve(body); }),
             })
-        );
+        });
+        const source = createSource({url: '/image.png'});
+        source.onAdd(new StubMap());
+
+        await new Promise(r => { setTimeout(r, 0); });
+        expect(typeof resolveBody).toBe('function');
+
+        source.onRemove();
+        resolveBody();
+        await new Promise(r => { setTimeout(r, 0); });
+
+        expect(source.image).toBeUndefined();
+        expect(source._loaded).toBe(false);
+        expect(source._imageRequest).toBe(null);
+    });
+
+    test('cancels image request when onRemove is called', () => {
+        const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse())
+        });
         const source = createSource({url: '/image.png'});
         source.onAdd(new StubMap());
         source.onRemove();
         expect(abortSpy).toHaveBeenCalledTimes(1);
     });
 
-    test('cancels image request when updateImage is called', async () => {
+    test('cancels image request when updateImage is called', () => {
         const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
         const source = createSource({url: '/image.png'});
         source.image = img;
         source.onAdd(new StubMap());
@@ -329,13 +334,11 @@ describe('ImageSource', () => {
         expect(abortSpy).toHaveBeenCalledTimes(1);
     });
 
-    test('does not cancel image request when updateImage is called with the same url', async () => {
+    test('does not cancel image request when updateImage is called with the same url', () => {
         const abortSpy = vi.spyOn(AbortController.prototype, 'abort');
-        networkWorker.use(
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
+        mockFetch({
+            '/image.png': async () => new Response(await getPNGResponse()),
+        });
         const source = createSource({url: '/image.png'});
         source.image = img;
         source.onAdd(new StubMap());
@@ -345,28 +348,26 @@ describe('ImageSource', () => {
     });
 
     test('updates image before first image was loaded', async () => {
-        networkWorker.use(
-            http.get('/notfound.png', async () => {
-                return new HttpResponse(null, {status: 404});
-            }),
-            http.get('/image2.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            }),
-            http.get('/image.png', async () => {
-                return new HttpResponse(await getPNGResponse());
-            })
-        );
-        const source = createSource({url : '/notfound.png'});
+        mockFetch({
+            '/notfound.png': () => new Response(null, {status: 404}),
+            '/image.png': async () => new Response(await getPNGResponse()),
+            '/image2.png': async () => new Response(await getPNGResponse())
+        });
+        const source = createSource({url: '/notfound.png'});
         const map = new StubMap();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const spy = vi.spyOn(map._requestManager, 'transformRequest');
         source.onAdd(map);
         const {error} = await waitFor(source, 'error');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(error.status).toBe(404);
         expect(source.image).toBeFalsy();
         source.updateImage({url: '/image2.png'});
         await waitFor(source, 'data');
         expect(spy).toHaveBeenCalledTimes(2);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[1][0]).toEqual('/image2.png');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expect(spy.mock.calls[1][1]).toEqual('Image');
     });
 });

@@ -12,6 +12,8 @@ export default class DragRotateHandler {
     _mouseRotate: MouseRotateHandler;
     _mousePitch: MousePitchHandler;
     _pitchWithRotate: boolean;
+    _pitchDisabled: boolean;
+    _rotationDisabled: boolean;
 
     /**
      * @param {Object} [options]
@@ -21,11 +23,13 @@ export default class DragRotateHandler {
      * @private
      */
     constructor(options: {
-     pitchWithRotate: boolean;
+        pitchWithRotate: boolean;
     }, mouseRotate: MouseRotateHandler, mousePitch: MousePitchHandler) {
         this._pitchWithRotate = options.pitchWithRotate;
         this._mouseRotate = mouseRotate;
         this._mousePitch = mousePitch;
+        this._pitchDisabled = false;
+        this._rotationDisabled = false;
     }
 
     /**
@@ -35,8 +39,8 @@ export default class DragRotateHandler {
      * map.dragRotate.enable();
      */
     enable() {
-        this._mouseRotate.enable();
-        if (this._pitchWithRotate) this._mousePitch.enable();
+        if (!this._rotationDisabled) this._mouseRotate.enable();
+        if (this._pitchWithRotate && !this._pitchDisabled) this._mousePitch.enable();
     }
 
     /**
@@ -58,7 +62,14 @@ export default class DragRotateHandler {
      * const isDragRotateEnabled = map.dragRotate.isEnabled();
      */
     isEnabled(): boolean {
-        return this._mouseRotate.isEnabled() && (!this._pitchWithRotate || this._mousePitch.isEnabled());
+        // If pitchWithRotate is true, then the dragRotate interaction is considered enabled
+        // if either the rotation or pitch interactions are enabled.
+        if (this._pitchWithRotate) {
+            return (!this._rotationDisabled && this._mouseRotate.isEnabled()) ||
+                (!this._pitchDisabled && this._mousePitch.isEnabled());
+        } else {
+            return !this._rotationDisabled && this._mouseRotate.isEnabled();
+        }
     }
 
     /**
@@ -70,5 +81,75 @@ export default class DragRotateHandler {
      */
     isActive(): boolean {
         return this._mouseRotate.isActive() || this._mousePitch.isActive();
+    }
+
+    /**
+     * Disables the "drag to pitch" interaction, leaving the "drag to rotate"
+     * interaction enabled.
+     *
+     * @example
+     * map.dragRotate.disablePitch();
+     */
+    disablePitch() {
+        this._pitchDisabled = true;
+        this._mousePitch.disable();
+    }
+
+    /**
+     * Enables the "drag to pitch" interaction.
+     *
+     * Has no effect if the handler was constructed with `pitchWithRotate: false`,
+     * or if the parent "drag to rotate" interaction is currently disabled.
+     *
+     * @example
+     * map.dragRotate.enablePitch();
+     */
+    enablePitch() {
+        this._pitchDisabled = false;
+        if (this._pitchWithRotate && this._mouseRotate.isEnabled()) this._mousePitch.enable();
+    }
+
+    /**
+     * Returns a Boolean indicating whether the "drag to pitch" interaction is enabled.
+     *
+     * @returns {boolean} `true` if the "drag to pitch" interaction is enabled.
+     * @example
+     * const isDragPitchEnabled = map.dragRotate.isPitchEnabled();
+     */
+    isPitchEnabled(): boolean {
+        return !this._pitchDisabled && this._mousePitch.isEnabled();
+    }
+
+    /**
+     * Disables the "drag to rotate" interaction, leaving the "drag to pitch"
+     * interaction enabled.
+     *
+     * @example
+     * map.dragRotate.disableRotation();
+     */
+    disableRotation() {
+        this._rotationDisabled = true;
+        this._mouseRotate.disable();
+    }
+
+    /**
+     * Enables the "drag to rotate" interaction.
+     *
+     * @example
+     * map.dragRotate.enableRotation();
+     */
+    enableRotation() {
+        this._rotationDisabled = false;
+        this._mouseRotate.enable();
+    }
+    /**
+     * Returns a Boolean indicating whether the "drag to rotate" interaction is enabled.
+     *
+     * @returns {boolean} `true` if the "drag to rotate" interaction is enabled.
+     * @example
+     * const isDragRotationEnabled = map.dragRotate.isRotationEnabled();
+     */
+    isRotationEnabled(): boolean {
+        return !this._rotationDisabled && this._mouseRotate.isEnabled();
     }
 }

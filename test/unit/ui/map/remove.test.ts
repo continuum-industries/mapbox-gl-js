@@ -1,8 +1,8 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect, waitFor, vi, createMap} from '../../../util/vitest';
 import {createStyle} from './util';
 import {Map} from '../../../../src/ui/map';
-import {extend} from '../../../../src/util/util';
 
 describe('Map#remove', () => {
     test('#remove', () => {
@@ -16,7 +16,7 @@ describe('Map#remove', () => {
         const map = createMap();
         const control = {
             onRemove: vi.fn(),
-            onAdd (_) {
+            onAdd(_) {
                 return window.document.createElement('div');
             }
         };
@@ -31,9 +31,10 @@ describe('Map#remove', () => {
         const control = {
             onRemove(map) {
                 onRemoveCalled++;
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 expect(map.getStyle()).toEqual(style);
             },
-            onAdd (_) {
+            onAdd(_) {
                 return window.document.createElement('div');
             }
         };
@@ -47,7 +48,7 @@ describe('Map#remove', () => {
     });
 
     test('#remove deletes gl resources used by the globe', async () => {
-        const style = extend(createStyle(), {zoom: 1});
+        const style = Object.assign(createStyle(), {zoom: 1});
         const map = createMap({style});
         map.setProjection("globe");
 
@@ -57,6 +58,7 @@ describe('Map#remove', () => {
         const buffers = map.painter.globeSharedBuffers;
         expect(buffers).toBeTruthy();
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         const checkBuffer = (name) => buffers[name] && ('buffer' in buffers[name]);
 
         expect(checkBuffer('_poleIndexBuffer')).toBeFalsy();
@@ -71,7 +73,7 @@ describe('Map#remove', () => {
         const styleWithAtmosphere = {
             'version': 8,
             'sources': {},
-            'fog':  {
+            'fog': {
                 'color': '#0F2127',
                 'high-color': '#000',
                 'horizon-blend': 0.5,
@@ -84,7 +86,7 @@ describe('Map#remove', () => {
             }
         };
 
-        const map = createMap({style:styleWithAtmosphere});
+        const map = createMap({style: styleWithAtmosphere});
 
         await waitFor(map, "style.load");
         await waitFor(map, "render");

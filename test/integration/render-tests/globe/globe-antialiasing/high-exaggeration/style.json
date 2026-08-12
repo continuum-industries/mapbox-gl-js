@@ -2,13 +2,17 @@
   "version": 8,
   "metadata": {
     "test": {
-      "standardDerivatives": true,
       "width": 512,
       "height": 512,
-      "allowed": 0.002,
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web-windows-chrome", "reason": "Globe is sometimes missing"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.002}
       ]
       }
   },

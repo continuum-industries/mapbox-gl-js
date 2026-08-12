@@ -1,5 +1,6 @@
 import {vec3} from 'gl-matrix';
 import {Ray} from '../../util/primitives';
+
 import type Transform from '../transform';
 
 export function farthestPixelDistanceOnPlane(tr: Transform, pixelsPerMeter: number): number {
@@ -11,17 +12,33 @@ export function farthestPixelDistanceOnPlane(tr: Transform, pixelsPerMeter: numb
 
     // Adjust distance to MSL by the minimum possible elevation visible on screen,
     // this way the far plane is pushed further in the case of negative elevation.
-    const minElevationInPixels = tr.elevation ?
-        tr.elevation.getMinElevationBelowMSL() * pixelsPerMeter :
-        0;
+    const demMinElev = tr.elevation ?
+        tr.elevation.getMinElevationBelowMSL() * pixelsPerMeter : 0;
+    // Road elevation adjustment only needed for orthographic where far plane
+    // is proportional to viewport height and can clip underground geometry.
+    // Use a fixed -10m extension which is sufficient for typical road tunnels.
+    const roadMinElev = tr.isOrthographic ? -10 * pixelsPerMeter : 0;
+    const minElevationInPixels = Math.min(demMinElev, roadMinElev);
     const cameraToSeaLevelDistance = ((tr._camera.position[2] * tr.worldSize) - minElevationInPixels) / Math.cos(tr._pitch);
     const topHalfSurfaceDistance = Math.sin(fovAboveCenter) * cameraToSeaLevelDistance / Math.sin(Math.max(Math.PI / 2.0 - tr._pitch - fovAboveCenter, 0.01));
 
     // Calculate z distance of the farthest fragment that should be rendered.
-    const furthestDistance = Math.sin(tr._pitch) * topHalfSurfaceDistance + cameraToSeaLevelDistance;
+    let furthestDistance = Math.sin(tr._pitch) * topHalfSurfaceDistance + cameraToSeaLevelDistance;
     const horizonDistance = cameraToSeaLevelDistance * (1 / tr._horizonShift);
 
     // Add a bit extra to avoid precision problems when a fragment's distance is exactly `furthestDistance`
+    // Due to precision of sources with low maxZoom, content is prone to flickering on zoom above 18.
+    // Use larger furthest distance also on pitch before the horizon, especially on higher zoom to limit
+    // the performance and depth range resolution impact.
+    if (!tr.elevation || tr.elevation.exaggeration() === 0) {
+        let factor = Math.max(tr.zoom - 17, 0);
+        // In case of orthographic projection we don't want to extend the far clip plane that much as the
+        // depth is linear and we would be effectively decreasing precision.
+        if (tr.isOrthographic) {
+            factor /= 10.0;
+        }
+        furthestDistance *= (1.0 + factor);
+    }
     return Math.min(furthestDistance * 1.01, horizonDistance);
 }
 
@@ -36,35 +53,33 @@ export function farthestPixelDistanceOnSphere(tr: Transform, pixelsPerMeter: num
 
     const camera = tr._camera;
     const forward = tr._camera.forward();
-    const cameraPosition = vec3.add([] as any, vec3.scale([] as any, forward, -cameraDistance), [0, 0, centerPixelAltitude]);
+    const cameraPosition = vec3.add([], vec3.scale([], forward, -cameraDistance), [0, 0, centerPixelAltitude]);
 
     const globeRadius = tr.worldSize / (2.0 * Math.PI);
-    const globeCenter = [0, 0, -globeRadius];
+    const globeCenter: vec3 = [0, 0, -globeRadius];
 
     const aspectRatio = tr.width / tr.height;
     const tanFovAboveCenter = Math.tan(tr.fovAboveCenter);
 
-    const up = vec3.scale([] as any, camera.up(), tanFovAboveCenter);
-    const right = vec3.scale([] as any, camera.right(), tanFovAboveCenter * aspectRatio);
-    const dir = vec3.normalize([] as any, vec3.add([] as any, vec3.add([] as any, forward, up), right));
+    const up = vec3.scale([], camera.up(), tanFovAboveCenter);
+    const right = vec3.scale([], camera.right(), tanFovAboveCenter * aspectRatio);
+    const dir = vec3.normalize([], vec3.add([], vec3.add([], forward, up), right));
 
     const pointOnGlobe = [];
     const ray = new Ray(cameraPosition, dir);
 
-    let pixelDistance;
-    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
+    let pixelDistance: number;
     if (ray.closestPointOnSphere(globeCenter, globeRadius, pointOnGlobe)) {
-        // @ts-expect-error - TS2345 - Argument of type '[]' is not assignable to parameter of type 'ReadonlyVec3'.
-        const p0 = vec3.add([] as any, pointOnGlobe as [], globeCenter as [number, number, number]);
-        const p1 = vec3.sub([] as any, p0, cameraPosition);
+        const p0 = vec3.add([], pointOnGlobe, globeCenter);
+        const p1 = vec3.sub([], p0, cameraPosition);
         // Globe is fully covering the view frustum. Project the intersection
         // point to the camera view vector in order to find the pixel distance
         pixelDistance = Math.cos(tr.fovAboveCenter) * vec3.length(p1);
     } else {
         // Background space is visible. Find distance to the point of the
         // globe where surface normal is parallel to the view vector
-        const globeCenterToCamera = vec3.sub([] as any, cameraPosition, globeCenter as [number, number, number]);
-        const cameraToGlobe = vec3.sub([] as any, globeCenter as [number, number, number], cameraPosition);
+        const globeCenterToCamera = vec3.sub([], cameraPosition, globeCenter);
+        const cameraToGlobe = vec3.sub([], globeCenter, cameraPosition);
         vec3.normalize(cameraToGlobe, cameraToGlobe);
 
         const cameraHeight = vec3.length(globeCenterToCamera) - globeRadius;

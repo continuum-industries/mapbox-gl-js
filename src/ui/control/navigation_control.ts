@@ -1,17 +1,18 @@
+
 import * as DOM from '../../util/dom';
-import {extend, bindAll} from '../../util/util';
+import {bindAll} from '../../util/util';
 import {MouseRotateHandler, MousePitchHandler} from '../handler/mouse';
 
-import type {Map} from '../map';
 import type Point from '@mapbox/point-geometry';
+import type {Map, IControl} from '../map';
 
-type Options = {
+export type NavigationControlOptions = {
     showCompass?: boolean;
     showZoom?: boolean;
     visualizePitch?: boolean;
 };
 
-const defaultOptions: Options = {
+const defaultOptions: NavigationControlOptions = {
     showCompass: true,
     showZoom: true,
     visualizePitch: false
@@ -37,18 +38,18 @@ const defaultOptions: Options = {
  * @see [Example: Display map navigation controls](https://www.mapbox.com/mapbox-gl-js/example/navigation/)
  * @see [Example: Add a third party vector tile source](https://www.mapbox.com/mapbox-gl-js/example/third-party/)
  */
-class NavigationControl {
-    _map: Map | null | undefined;
-    options: Options;
+class NavigationControl implements IControl {
+    _map?: Map;
+    options: NavigationControlOptions;
     _container: HTMLElement;
-    _zoomInButton: HTMLButtonElement;
-    _zoomOutButton: HTMLButtonElement;
-    _compass: HTMLButtonElement;
-    _compassIcon: HTMLElement;
-    _handler: MouseRotateWrapper | null | undefined;
+    _zoomInButton!: HTMLButtonElement;
+    _zoomOutButton!: HTMLButtonElement;
+    _compass!: HTMLButtonElement;
+    _compassIcon!: HTMLElement;
+    _handler?: MouseRotateWrapper;
 
-    constructor(options?: Options) {
-        this.options = extend({}, defaultOptions, options);
+    constructor(options: NavigationControlOptions = {}) {
+        this.options = {...defaultOptions, ...options};
 
         this._container = DOM.create('div', 'mapboxgl-ctrl mapboxgl-ctrl-group');
         this._container.addEventListener('contextmenu', (e: MouseEvent) => e.preventDefault());
@@ -58,10 +59,8 @@ class NavigationControl {
                 '_setButtonTitle',
                 '_updateZoomButtons'
             ], this);
-            // @ts-expect-error - TS2345 - Argument of type '(e: any) => void' is not assignable to parameter of type '() => unknown'.
             this._zoomInButton = this._createButton('mapboxgl-ctrl-zoom-in', (e) => { if (this._map) this._map.zoomIn({}, {originalEvent: e}); });
             DOM.create('span', `mapboxgl-ctrl-icon`, this._zoomInButton).setAttribute('aria-hidden', 'true');
-            // @ts-expect-error - TS2345 - Argument of type '(e: any) => void' is not assignable to parameter of type '() => unknown'.
             this._zoomOutButton = this._createButton('mapboxgl-ctrl-zoom-out', (e) => { if (this._map) this._map.zoomOut({}, {originalEvent: e}); });
             DOM.create('span', `mapboxgl-ctrl-icon`, this._zoomOutButton).setAttribute('aria-hidden', 'true');
         }
@@ -69,7 +68,6 @@ class NavigationControl {
             bindAll([
                 '_rotateCompassArrow'
             ], this);
-            // @ts-expect-error - TS2345 - Argument of type '(e: any) => void' is not assignable to parameter of type '() => unknown'.
             this._compass = this._createButton('mapboxgl-ctrl-compass', (e) => {
                 const map = this._map;
                 if (!map) return;
@@ -150,16 +148,14 @@ class NavigationControl {
         this._map = undefined;
     }
 
-    _createButton(className: string, fn: () => unknown): HTMLButtonElement {
+    _createButton(className: string, fn: (e: Event) => unknown): HTMLButtonElement {
         const a = DOM.create('button', className, this._container);
-        // @ts-expect-error - TS2339 - Property 'type' does not exist on type 'HTMLElement'.
         a.type = 'button';
         a.addEventListener('click', fn);
-        // @ts-expect-error - TS2322 - Type 'HTMLElement' is not assignable to type 'HTMLButtonElement'.
         return a;
     }
 
-    _setButtonTitle(button: HTMLButtonElement, title: string) {
+    _setButtonTitle(button: HTMLButtonElement, title: 'ResetBearing' | 'ZoomIn' | 'ZoomOut') {
         if (!this._map) return;
         const str = this._map._getUIString(`NavigationControl.${title}`);
         button.setAttribute('aria-label', str);
@@ -173,7 +169,7 @@ class MouseRotateWrapper {
     _clickTolerance: number;
     element: HTMLElement;
     mouseRotate: MouseRotateHandler;
-    mousePitch: MousePitchHandler;
+    mousePitch!: MousePitchHandler;
     _startPos: Point | null | undefined;
     _lastPos: Point | null | undefined;
 
@@ -213,8 +209,7 @@ class MouseRotateWrapper {
     off() {
         const element = this.element;
         element.removeEventListener('mousedown', this.mousedown);
-        // @ts-expect-error - TS2769 - No overload matches this call.
-        element.removeEventListener('touchstart', this.touchstart, {passive: false});
+        element.removeEventListener('touchstart', this.touchstart);
         element.removeEventListener('touchmove', this.touchmove);
         element.removeEventListener('touchend', this.touchend);
         element.removeEventListener('touchcancel', this.reset);
@@ -228,7 +223,7 @@ class MouseRotateWrapper {
     }
 
     mousedown(e: MouseEvent) {
-        this.down(extend({}, e, {ctrlKey: true, preventDefault: () => e.preventDefault()}), DOM.mousePos(this.element, e));
+        this.down({...e, button: e.button, type: e.type, ctrlKey: true, preventDefault: () => e.preventDefault()}, DOM.mousePos(this.element, e));
         window.addEventListener('mousemove', this.mousemove);
         window.addEventListener('mouseup', this.mouseup);
     }
@@ -257,7 +252,7 @@ class MouseRotateWrapper {
             this.reset();
         } else {
             this._lastPos = DOM.touchPos(this.element, e.targetTouches)[0];
-            this.move(({preventDefault: () => e.preventDefault()} as MouseEvent), this._lastPos);
+            this.move(({buttons: 1, preventDefault: () => e.preventDefault()} as MouseEvent), this._lastPos);
         }
     }
 

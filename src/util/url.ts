@@ -1,18 +1,21 @@
-export function setQueryParameters(
-    url: string,
-    params: {
-        [key: string]: string;
-    },
-): string {
-    const paramStart = url.indexOf('?');
-    if (paramStart < 0) return `${url}?${new URLSearchParams(params).toString()}`;
-
-    const searchParams = new URLSearchParams(url.slice(paramStart));
-    for (const key in params) {
-        searchParams.set(key, params[key]);
+export function getURLExtension(url: string): string {
+    try {
+        const lastSegment = new URL(url).pathname.split('/').pop() || '';
+        const dotIndex = lastSegment.lastIndexOf('.');
+        return dotIndex >= 0 ? lastSegment.slice(dotIndex + 1) : '';
+    } catch {
+        return '';
     }
+}
 
-    return `${url.slice(0, paramStart)}?${searchParams.toString()}`;
+export function setQueryParameters(url: string, params: Record<string, string>): string {
+    const paramStart = url.indexOf('?');
+    const base = paramStart < 0 ? url : url.slice(0, paramStart);
+    const searchParams = new URLSearchParams(paramStart < 0 ? '' : url.slice(paramStart));
+    for (const [key, value] of Object.entries(params)) {
+        searchParams.set(key, value);
+    }
+    return `${base}?${searchParams}`;
 }
 
 type StripQueryParameters = {

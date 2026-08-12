@@ -4,6 +4,7 @@ import './feature_index';
 
 import type {CollisionBoxArray} from './array_types';
 import type Style from '../style/style';
+import type StyleLayer from '../style/style_layer';
 import type {TypedStyleLayer} from '../style/style_layer/typed_style_layer';
 import type FeatureIndex from './feature_index';
 import type Context from '../gl/context';
@@ -17,8 +18,15 @@ import type {ProjectionSpecification} from '../style-spec/types';
 import type {VectorTileFeature, VectorTileLayer} from '@mapbox/vector-tile';
 import type {TileFootprint} from '../../3d-style/util/conflation';
 import type {LUT} from "../util/lut";
+import type {ImageVariant} from '../style-spec/expression/types/image_variant';
+import type {ElevationFeature} from '../../3d-style/elevation/elevation_feature';
+import type {ElevationParams} from '../source/elevation_coverage_snapshot';
+import type {ImageId, StringifiedImageId} from '../style-spec/expression/types/image_id';
+import type {StyleModelMap} from '../style/style_mode';
+import type {GlobalProperties} from '../style-spec/expression';
+import type ImageManager from '../render/image_manager';
 
-export type BucketParameters<Layer extends TypedStyleLayer> = {
+export type BucketParameters<Layer extends StyleLayer> = {
     index: number;
     layers: Array<Layer>;
     zoom: number;
@@ -28,19 +36,40 @@ export type BucketParameters<Layer extends TypedStyleLayer> = {
     overscaling: number;
     collisionBoxArray: CollisionBoxArray;
     sourceLayerIndex: number;
+    sourceLayerName?: string;
     sourceID: string;
     projection: ProjectionSpecification;
     tessellationStep: number | null | undefined;
+    styleDefinedModelURLs: StyleModelMap;
+    worldview: string | undefined;
+    localizable: boolean;
+    availableImages: ImageId[];
+    maxUniformBufferBindings?: number | null;
+    maxUniformBlockSizeDwords?: number | null;
 };
+
+export type ImageDependenciesMap = Map<StringifiedImageId, Array<ImageVariant>>;
+
+export type GlyphDependencies = Record<string, Record<number, boolean>>;
 
 export type PopulateParameters = {
     featureIndex: FeatureIndex;
-    iconDependencies: Record<any, any>;
-    patternDependencies: Record<any, any>;
-    glyphDependencies: Record<any, any>;
-    availableImages: Array<string>;
+    iconDependencies: ImageDependenciesMap;
+    patternDependencies: ImageDependenciesMap;
+    glyphDependencies: GlyphDependencies;
+    availableImages: ImageId[];
     lineAtlas: LineAtlas;
     brightness: number | null | undefined;
+    scaleFactor: number;
+    showElevationIdDebug: boolean;
+    elevationFeatures: ElevationFeature[] | undefined;
+    /// Cross-source elevation registry (line and symbol layers).
+    elevationParams: ElevationParams | null | undefined;
+    /// True when cross-source elevation is active for this style.
+    crossSourceElevationEnabled: boolean;
+    // True when terrain is enabled — HD road-markup lines drape flat.
+    terrainEnabled: boolean;
+    activeFloors: Set<string> | undefined;
 };
 
 export type IndexedFeature = {
@@ -54,13 +83,17 @@ export type BucketFeature = {
     index: number;
     sourceLayerIndex: number;
     geometry: Array<Array<Point>>;
-    properties: any;
-    type: 1 | 2 | 3;
-    id?: any;
-    readonly patterns: {
-        [_: string]: string;
-    };
+    properties: Record<PropertyKey, unknown>;
+    type: 0 | 1 | 2 | 3;
+    id?: string | number | null;
+    // Array<[primaryId, secondaryIs]>
+    readonly patterns: Record<string, string[]>;
     sortKey?: number;
+};
+
+export type AppearanceUpdateResult = {
+    hasLayoutChanges: boolean,
+    hasUboChanges: boolean
 };
 
 /**
@@ -89,25 +122,31 @@ export type BucketFeature = {
 export interface Bucket {
     layerIds: Array<string>;
     hasPattern: boolean;
-    readonly layers: Array<any>;
-    readonly stateDependentLayers: Array<any>;
+    layers: TypedStyleLayer[];
+    stateDependentLayers: Array<TypedStyleLayer>;
+    hasAppearances: boolean | null;
     readonly stateDependentLayerIds: Array<string>;
-    populate(
+    readonly worldview: string | undefined;
+    evaluateQueryRenderedFeaturePadding?: () => number;
+    populate: (
         features: Array<IndexedFeature>,
         options: PopulateParameters,
         canonical: CanonicalTileID,
         tileTransform: TileTransform,
-    ): void;
-    update(
+    ) => void;
+    update: (
         states: FeatureStates,
         vtLayer: VectorTileLayer,
-        availableImages: Array<string>,
+        availableImages: ImageId[],
         imagePositions: SpritePositions,
-        brightness?: number | null | undefined,
-    ): void;
-    isEmpty(): boolean;
-    upload(context: Context): void;
-    uploadPending(): boolean;
+        layers: ReadonlyArray<TypedStyleLayer>,
+        isBrightnessChanged: boolean,
+        brightness?: number | null,
+        canonical?: CanonicalTileID
+    ) => void;
+    isEmpty: () => boolean;
+    upload: (context: Context, canonical?: CanonicalTileID, featureState?: FeatureStates, availableImages?: Array<ImageId>, globalProperties?: GlobalProperties) => void;
+    uploadPending: () => boolean;
     /**
      * Release the WebGL resources associated with the buffers. Note that because
      * buckets are shared between layers having the same layout properties, they
@@ -115,14 +154,22 @@ export interface Bucket {
      *
      * @private
      */
-    destroy(): void;
-    updateFootprints(id: UnwrappedTileID, footprints: Array<TileFootprint>): void;
+    destroy: (reload?: boolean) => void;
+    updateFootprints: (id: UnwrappedTileID, footprints: Array<TileFootprint>) => void;
+    updateAppearances: (canonical?: CanonicalTileID, featureState?: FeatureStates, availableImages?: Array<ImageId>, globalProperties?: GlobalProperties, imageManager?: ImageManager, featureStateChanged?: boolean) => AppearanceUpdateResult;
+    requiresStandardRuntime?: boolean;
+    requiresHDRuntime?: boolean;
+    // Called after deserialize on the main thread to reattach `expression` refs
+    // on attribute binders (omitted from transfer — see `register()` calls in
+    // program_configuration.ts). Each bucket iterates its own
+    // ProgramConfigurationSet instances so nested locations (symbol text/icon,
+    // fill elevatedStructures, fill-extrusion groundEffect) stay covered.
+    // Buckets without binders (ClipBucket, model buckets) don't need it.
+    updateExpressions?: (layers: ReadonlyArray<TypedStyleLayer>) => void;
 }
 
-export function deserialize(input: Array<Bucket>, style: Style): {
-    [_: string]: Bucket;
-} {
-    const output: Record<string, any> = {};
+export function deserialize(input: Array<Bucket>, style: Style): Record<string, Bucket> {
+    const output: Record<string, Bucket> = {};
 
     // Guard against the case where the map's style has been set to null while
     // this bucket has been parsing.
@@ -139,10 +186,11 @@ export function deserialize(input: Array<Bucket>, style: Style): {
 
         // look up StyleLayer objects from layer ids (since we don't
         // want to waste time serializing/copying them from the worker)
-        (bucket as any).layers = layers;
+        bucket.layers = layers;
         if (bucket.stateDependentLayerIds) {
-            (bucket as any).stateDependentLayers = bucket.stateDependentLayerIds.map((lId) => layers.filter((l) => l.id === lId)[0]);
+            bucket.stateDependentLayers = bucket.stateDependentLayerIds.map((lId) => layers.filter((l) => l.id === lId)[0]);
         }
+        if (bucket.updateExpressions) bucket.updateExpressions(layers);
         for (const layer of layers) {
             output[layer.fqid] = bucket;
         }

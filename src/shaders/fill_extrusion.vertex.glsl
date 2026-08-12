@@ -2,21 +2,32 @@
 #include "_prelude_terrain.vertex.glsl"
 #include "_prelude_shadow.vertex.glsl"
 #include "_prelude_lighting.glsl"
+#include "_prelude_material_table.vertex.glsl"
 
 uniform mat4 u_matrix;
+#ifndef LIGHTING_3D_MODE
 uniform vec3 u_lightcolor;
 uniform lowp vec3 u_lightpos;
 uniform lowp float u_lightintensity;
+#endif
 uniform float u_vertical_gradient;
 uniform lowp float u_opacity;
 uniform float u_edge_radius;
+uniform float u_width_scale;
 
-in vec4 a_pos_normal_ed;
-in vec2 a_centroid_pos;
+in ivec4 a_pos_normal_ed;
+
+#if defined(HAS_CENTROID) || defined(TERRAIN)
+in uvec2 a_centroid_pos;
+#endif
+
+#ifdef RENDER_WALL_MODE
+in ivec4 a_join_normal_inside;
+#endif
 
 #ifdef PROJECTION_GLOBE_VIEW
-in vec3 a_pos_3;         // Projected position on the globe
-in vec3 a_pos_normal_3;  // Surface normal at the position
+in ivec4 a_pos_3;         // Projected position on the globe
+in ivec4 a_pos_normal_3;  // Surface normal at the position
 
 uniform mat4 u_inv_rot_matrix;
 uniform vec2 u_merc_center;
@@ -26,7 +37,17 @@ uniform vec3 u_up_dir;
 uniform float u_height_lift;
 #endif
 
+#ifdef TERRAIN
+uniform int u_height_type;
+uniform int u_base_type;
+#endif
+
 uniform highp float u_vertical_scale;
+
+#ifdef RENDER_FRONT_CUTOFF
+uniform vec3 u_front_cutoff_params; // [start, range, opacity]
+out float v_front_cutoff_opacity;
+#endif
 
 out vec4 v_color;
 out vec4 v_flat;
@@ -60,32 +81,52 @@ out float v_has_floodlight;
 
 out float v_height;
 
+#ifdef INDICATOR_CUTOUT
+#ifdef FEATURE_CUTOUT
+out vec4 v_ground_roof;
+#endif
+#endif
+
+// linear to sRGB approximation
+vec3 linearTosRGB(vec3 color) {
+    return pow(color, vec3(1./2.2));
+}
+vec3 sRGBToLinear(vec3 srgbIn) {
+    return pow(srgbIn, vec3(2.2));
+}
+
 #pragma mapbox: define highp float base
 #pragma mapbox: define highp float height
 
 #pragma mapbox: define highp vec4 color
 #pragma mapbox: define highp float flood_light_wall_radius
+#pragma mapbox: define highp float line_width
+#pragma mapbox: define highp float emissive_strength
 
 void main() {
+
+    DECLARE_MATERIAL_TABLE_INFO
+
     #pragma mapbox: initialize highp float base
     #pragma mapbox: initialize highp float height
     #pragma mapbox: initialize highp vec4 color
     #pragma mapbox: initialize highp float flood_light_wall_radius
+    #pragma mapbox: initialize highp float line_width
+    #pragma mapbox: initialize highp float emissive_strength
     
     base *= u_vertical_scale;
     height *= u_vertical_scale;
     
-    vec4 pos_nx = floor(a_pos_normal_ed * 0.5);
+    vec4 top_up_ny_start = vec4(a_pos_normal_ed & 1);
+    vec4 pos_nx = vec4(a_pos_normal_ed >> 1);
     // The least significant bits of a_pos_normal_ed hold:
     // x is 1 if it's on top, 0 for ground.
     // y is 1 if the normal points up, and 0 if it points to side.
     // z is sign of ny: 1 for positive, 0 for values <= 0.
     // w marks edge's start, 0 is for edge end, edgeDistance increases from start to end.
-    vec4 top_up_ny_start = a_pos_normal_ed - 2.0 * pos_nx;
-    vec3 top_up_ny = top_up_ny_start.xyz;
 
     float x_normal = pos_nx.z / 8192.0;
-    vec3 normal = top_up_ny.y == 1.0 ? vec3(0.0, 0.0, 1.0) : normalize(vec3(x_normal, (2.0 * top_up_ny.z - 1.0) * (1.0 - abs(x_normal)), 0.0));
+    vec3 normal = top_up_ny_start.y == 1.0 ? vec3(0.0, 0.0, 1.0) : normalize(vec3(x_normal, (2.0 * top_up_ny_start.z - 1.0) * (1.0 - abs(x_normal)), 0.0));
 #if defined(ZERO_ROOF_RADIUS) || defined(RENDER_SHADOWS) || defined(LIGHTING_3D_MODE)
     v_normal = normal;
 #endif
@@ -93,13 +134,13 @@ void main() {
     base = max(0.0, base);
 
     float attr_height = height;
-    height = max(0.0, top_up_ny.y == 0.0 && top_up_ny.x == 1.0 ? height - u_edge_radius : height);
+    height = max(0.0, top_up_ny_start.y == 0.0 && top_up_ny_start.x == 1.0 ? height - u_edge_radius : height);
 
-    float t = top_up_ny.x;
+    float t = top_up_ny_start.x;
 
     vec2 centroid_pos = vec2(0.0);
 #if defined(HAS_CENTROID) || defined(TERRAIN)
-    centroid_pos = a_centroid_pos;
+    centroid_pos = vec2(a_centroid_pos);
 #endif
 
     float ele = 0.0;
@@ -107,35 +148,67 @@ void main() {
     float c_ele = 0.0;
     vec3 pos;
 #ifdef TERRAIN
-    bool flat_roof = centroid_pos.x != 0.0 && t > 0.0;
+    bool is_flat_height = centroid_pos.x != 0.0 && u_height_type == 1;
+    bool is_flat_base = centroid_pos.x != 0.0 && u_base_type == 1;
     ele = elevation(pos_nx.xy);
-    c_ele = flat_roof ? centroid_pos.y == 0.0 ? elevationFromUint16(centroid_pos.x) : flatElevation(centroid_pos) : ele;
-    // If centroid elevation lower than vertex elevation, roof at least 2 meters height above base.
-    h = flat_roof ? max(c_ele + height, ele + base + 2.0) : ele + (t > 0.0 ? height : base == 0.0 ? -5.0 : base);
-    pos = vec3(pos_nx.xy, h);
+    // Elevation is in centroid_pos.x when y==0 (old encoding) or when y&7==7 (border elevation+position encoding)
+    bool is_elevation_encoded = centroid_pos.y == 0.0 || (centroid_pos.y > 0.0 && (int(centroid_pos.y) & 7) == 7);
+    c_ele = is_flat_height || is_flat_base ? (is_elevation_encoded ? elevationFromUint16(centroid_pos.x) : flatElevation(centroid_pos)) : ele;
+    float h_height = is_flat_height ? max(c_ele + height, ele + base + 2.0) : ele + height;
+    float h_base = is_flat_base ? max(c_ele + base, ele + base) : ele + (base == 0.0 ? -5.0 : base);
+    h = t > 0.0 ? max(h_base, h_height) : h_base;
 #else
     h = t > 0.0 ? height : base;
-    pos = vec3(pos_nx.xy, h);
 #endif
+    pos = vec3(pos_nx.xy, h);
 
 #ifdef PROJECTION_GLOBE_VIEW
     // If t > 0 (top) we always add the lift, otherwise (ground) we only add it if base height is > 0
     float lift = float((t + base) > 0.0) * u_height_lift;
     h += lift;
-    vec3 globe_normal = normalize(mix(a_pos_normal_3 / 16384.0, u_up_dir, u_zoom_transition));
-    vec3 globe_pos = a_pos_3 + globe_normal * (u_tile_up_scale * h);
+    vec3 globe_normal = normalize(mix(vec3(a_pos_normal_3) / 16384.0, u_up_dir, u_zoom_transition));
+    vec3 globe_pos = vec3(a_pos_3) + globe_normal * (u_tile_up_scale * h);
     vec3 merc_pos = mercator_tile_position(u_inv_rot_matrix, pos.xy, u_tile_id, u_merc_center) + u_up_dir * u_tile_up_scale * pos.z;
     pos = mix_globe_mercator(globe_pos, merc_pos, u_zoom_transition);
 #endif
 
     float cutoff = 1.0;
     vec3 scaled_pos = pos;
+
+#if defined(RENDER_CUTOFF) || defined(RENDER_FRONT_CUTOFF)
+    vec2 centroid_decoded = pos.xy;
+    bool isBorderCentroid = false;
+    if (centroid_pos.x > 0.0 && centroid_pos.y > 0.0) {
+        int iy = int(centroid_pos.y);
+        int spanYbits = iy & 7;
+        if (spanYbits == 7) {
+            // Border elevation+position encoding: no span available
+            isBorderCentroid = true;
+            int borderID = (iy >> 3) & 3;
+            float coordAlongBorder = float(iy >> 5) * 4.0;
+            if (borderID == 0) centroid_decoded = vec2(0.0, coordAlongBorder);
+            else if (borderID == 1) centroid_decoded = vec2(EXTENT, coordAlongBorder);
+            else if (borderID == 2) centroid_decoded = vec2(coordAlongBorder, 0.0);
+            else centroid_decoded = vec2(coordAlongBorder, EXTENT);
+        } else {
+            centroid_decoded = floor(centroid_pos / 8.0);
+        }
+    }
+#endif
+
+#if defined(RENDER_CUTOFF) || defined(RENDER_FRONT_CUTOFF)
+    vec4 ground = u_matrix * vec4(centroid_decoded, ele, 1.0);
+#endif
+
 #ifdef RENDER_CUTOFF
-    vec3 centroid_random = vec3(centroid_pos.xy, centroid_pos.x + centroid_pos.y + 1.0);
-    vec3 ground_pos = centroid_pos.x == 0.0 ? pos.xyz : (centroid_random / 8.0);
-    vec4 ground = u_matrix * vec4(ground_pos.xy, ele, 1.0);
-    cutoff = max(0.01, cutoff_opacity(u_cutoff_params, ground.z));
+#ifdef CLIP_ZERO_TO_ONE
+    cutoff = cutoff_opacity(u_cutoff_params, ground.z * 2.0 - ground.w);
+#else
+    cutoff = cutoff_opacity(u_cutoff_params, ground.z);
+#endif
     if (centroid_pos.y != 0.0 && centroid_pos.x != 0.0) {
+        vec3 centroid_random = vec3(centroid_pos.xy, centroid_pos.x + centroid_pos.y + 1.0);
+        vec3 ground_pos = centroid_random / 8.0;
         vec3 g = floor(ground_pos);
         vec3 mod_ = centroid_random - g * 8.0;
         float seed = min(1.0, 0.1 * (min(3.5, max(mod_.x + mod_.y, 0.2 * attr_height)) * 0.35 + mod_.z));
@@ -144,11 +217,33 @@ void main() {
         }
     }
     float cutoff_scale = cutoff;
+    v_cutoff_opacity = cutoff;
 
     scaled_pos.z = mix(c_ele, h, cutoff_scale);
 #endif
-    float hidden = float((centroid_pos.x == 0.0 && centroid_pos.y == 1.0) || (cutoff < 0.01 && centroid_pos.x != 0.0));
+    float hidden = float((centroid_pos.x == 0.0 && centroid_pos.y == 1.0) || (cutoff == 0.0 && centroid_pos.x != 0.0) || (color.a == 0.0));
 
+#ifdef RENDER_FRONT_CUTOFF
+    v_front_cutoff_opacity = 1.0;
+    if (centroid_pos.x > 0.0 && centroid_pos.y > 0.0) {
+        hidden = max(hidden, float(ground.w <= 0.0));
+        float ndc_y = ground.y / max(ground.w, 0.001);
+        float threshold = u_front_cutoff_params.x * 2.0 - 1.0;
+        float range_ndc = u_front_cutoff_params.y * 2.0;
+        if (!isBorderCentroid) {
+            hidden = max(hidden, float(ndc_y < threshold - range_ndc));
+        }
+        float t = clamp((ndc_y - (threshold - range_ndc)) / max(range_ndc, 0.001), 0.0, 1.0);
+        v_front_cutoff_opacity = mix(u_front_cutoff_params.z, 1.0, t);
+    }
+#endif
+
+#ifdef RENDER_WALL_MODE
+    vec3 join_normal_inside = vec3(a_join_normal_inside);
+    vec2 wall_offset = u_width_scale * line_width * (join_normal_inside.xy / EXTENT);
+    scaled_pos.xy += (1.0 - join_normal_inside.z) * wall_offset * 0.5;
+    scaled_pos.xy -= join_normal_inside.z * wall_offset * 0.5;
+#endif
     gl_Position = mix(u_matrix * vec4(scaled_pos, 1), AWAY, hidden);
     h = h - ele;
     v_height = h;
@@ -207,7 +302,7 @@ void main() {
     y_ground += y_ground * 5.0 / max(3.0, top_height);
 #endif // TERRAIN
     v_ao = vec2(mix(concave, -concave, start), y_ground);
-    NdotL *= (1.0 + 0.05 * (1.0 - top_up_ny.y) * u_ao[0]); // compensate sides faux ao shading contribution
+    NdotL *= (1.0 + 0.05 * (1.0 - top_up_ny_start.y) * u_ao[0]); // compensate sides faux ao shading contribution
 
 #ifdef PROJECTION_GLOBE_VIEW
     top_height += u_height_lift;
@@ -218,13 +313,16 @@ void main() {
 #ifdef LIGHTING_3D_MODE
 
 #ifdef FLOOD_LIGHT
-    float is_wall = 1.0 - float(t > 0.0 && top_up_ny.y > 0.0);
+    float is_wall = 1.0 - float(t > 0.0 && top_up_ny_start.y > 0.0);
     v_has_floodlight = float(flood_light_wall_radius > 0.0 && is_wall > 0.0);
     v_flood_radius = flood_light_wall_radius * u_vertical_scale;
 #endif // FLOOD_LIGHT
 
     v_color = vec4(color.rgb, 1.0);
-    v_flat = vec4(linearProduct(color.rgb, vec3(calculate_NdotL(normal))), 1.0);
+    float ndotl = calculate_NdotL(normal);
+    v_flat.rgb = sRGBToLinear(color.rgb);
+    v_flat.rgb = v_flat.rgb * (ndotl + (1.0 - min(ndotl * 57.29, 1.0)) * emissive_strength);
+    v_flat = vec4(linearTosRGB(v_flat.rgb), 1.0);
 #else // LIGHTING_3D_MODE
     // Assign final color based on surface + ambient light color, diffuse light NdotL, and light color
     // with lower bounds adjusted to hue of light
@@ -245,4 +343,13 @@ void main() {
 #ifdef FOG
     v_fog_pos = fog_position(pos);
 #endif
+
+#ifdef INDICATOR_CUTOUT
+#ifdef FEATURE_CUTOUT
+    vec4 pos_ground = u_matrix * vec4(pos.xy, ele, 1.0);
+    vec4 pos_roof = u_matrix * vec4(pos.xy, ele + height, 1.0);
+    v_ground_roof = vec4(pos_ground.xy / pos_ground.w, pos_roof.xy / pos_roof.w);
+#endif
+#endif
+
 }

@@ -1,19 +1,21 @@
 import ValidationError from '../error/validation_error';
-import getType from '../util/get_type';
-import {parseCSSColor} from 'csscolorparser';
+import {getType, isString} from '../util/get_type';
+import {unbundle} from '../util/unbundle_jsonlint';
+import Color from '../util/color';
 
-import type {ValidationOptions} from './validate';
+type ColorValidatorOptions = {
+    key: string;
+    value: unknown;
+};
 
-export default function validateColor(options: ValidationOptions): Array<ValidationError> {
-    const key = options.key;
-    const value = options.value;
-    const type = getType(value);
-
-    if (type !== 'string') {
-        return [new ValidationError(key, value, `color expected, ${type} found`)];
+export default function validateColor({key, value}: ColorValidatorOptions): ValidationError[] {
+    if (!isString(value)) {
+        return [new ValidationError(key, value, `color expected, ${getType(value)} found`)];
     }
 
-    if (parseCSSColor(value) === null) {
+    // `value` may be a jsonlint-lines-primitives `String` wrapper; unbundle to a
+    // primitive so `Color.parse`'s `typeof input === 'string'` check passes.
+    if (Color.parse(unbundle(value) as string) === undefined) {
         return [new ValidationError(key, value, `color expected, "${value}" found`)];
     }
 

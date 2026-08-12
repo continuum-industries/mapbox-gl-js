@@ -1,16 +1,20 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, expect} from '../../util/vitest';
 import VideoSource from '../../../src/source/video_source';
-import {extend} from '../../../src/util/util';
 
 function createSource(options) {
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     const c = (options && options.video) || window.document.createElement('video');
 
-    options = extend({coordinates: [[0, 0], [1, 0], [1, 1], [0, 1]]}, options);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    options = {coordinates: [[0, 0], [1, 0], [1, 1], [0, 1]], ...options};
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     const source = new VideoSource('id', options, {send() {}}, options.eventedParent);
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     source.video = c;
     return source;
 }
@@ -18,7 +22,7 @@ function createSource(options) {
 describe('VideoSource', () => {
     const source = createSource({
         type: 'video',
-        urls : [ "cropped.mp4", "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm" ],
+        urls: ["cropped.mp4", "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm"],
         coordinates: [
             [-76.54, 39.18],
             [-76.52, 39.18],
@@ -41,13 +45,23 @@ describe('VideoSource', () => {
         expect(serialized.coordinates).toEqual(newCoordinates);
     });
 
+    test('serialize reports configured urls before load resolves the transform', () => {
+        const urls = ["cropped.mp4", "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm"];
+        const source = createSource({type: 'video', urls});
+
+        // urls is empty until load() resolves its async transforms; serialize() must still
+        // report the configured urls so getStyle()/diffing never sees a transient empty list.
+        expect(source.urls).toBeUndefined();
+        expect(source.serialize().urls).toEqual(urls);
+    });
+
     //test video retrieval by first supplying the video element directly
     test('gets video', () => {
         const el = window.document.createElement('video');
         const source = createSource({
             type: 'video',
             video: el,
-            urls : [ "cropped.mp4", "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm" ],
+            urls: ["cropped.mp4", "https://static-assets.mapbox.com/mapbox-gl-js/drone.webm"],
             coordinates: [
                 [-76.54, 39.18],
                 [-76.52, 39.18],

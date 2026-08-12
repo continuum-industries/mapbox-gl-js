@@ -18,13 +18,15 @@ import type {StylePropertySpecification} from '../../style-spec/style-spec';
 
 export type LayoutProps = {
     "circle-sort-key": DataDrivenProperty<number>;
+    "circle-elevation-reference": DataConstantProperty<"none" | "hd-road-markup">;
     "visibility": DataConstantProperty<"visible" | "none">;
 };
-
-const layout: Properties<LayoutProps> = new Properties({
+let layout: Properties<LayoutProps>;
+export const getLayoutProperties = (): Properties<LayoutProps> => layout || (layout = new Properties({
     "circle-sort-key": new DataDrivenProperty(styleSpec["layout_circle"]["circle-sort-key"]),
+    "circle-elevation-reference": new DataConstantProperty(styleSpec["layout_circle"]["circle-elevation-reference"]),
     "visibility": new DataConstantProperty(styleSpec["layout_circle"]["visibility"]),
-});
+}));
 
 export type PaintProps = {
     "circle-radius": DataDrivenProperty<number>;
@@ -39,9 +41,12 @@ export type PaintProps = {
     "circle-stroke-color": DataDrivenProperty<Color>;
     "circle-stroke-opacity": DataDrivenProperty<number>;
     "circle-emissive-strength": DataConstantProperty<number>;
+    "circle-color-use-theme": DataDrivenProperty<string>;
+    "circle-stroke-color-use-theme": DataDrivenProperty<string>;
 };
 
-const paint: Properties<PaintProps> = new Properties({
+let paint: Properties<PaintProps>;
+export const getPaintProperties = (): Properties<PaintProps> => paint || (paint = new Properties({
     "circle-radius": new DataDrivenProperty(styleSpec["paint_circle"]["circle-radius"]),
     "circle-color": new DataDrivenProperty(styleSpec["paint_circle"]["circle-color"]),
     "circle-blur": new DataDrivenProperty(styleSpec["paint_circle"]["circle-blur"]),
@@ -54,6 +59,6 @@ const paint: Properties<PaintProps> = new Properties({
     "circle-stroke-color": new DataDrivenProperty(styleSpec["paint_circle"]["circle-stroke-color"]),
     "circle-stroke-opacity": new DataDrivenProperty(styleSpec["paint_circle"]["circle-stroke-opacity"]),
     "circle-emissive-strength": new DataConstantProperty(styleSpec["paint_circle"]["circle-emissive-strength"]),
-});
-
-export default { paint, layout };
+    "circle-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+    "circle-stroke-color-use-theme": new DataDrivenProperty({"type":"string","default":"default","property-type":"data-driven"}),
+}));

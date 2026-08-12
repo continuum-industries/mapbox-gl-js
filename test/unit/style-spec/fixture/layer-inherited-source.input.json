@@ -1,0 +1,16 @@
+{
+  "version": 8,
+  "sources": {},
+  "layers": [
+    {
+      "id": "uses-inherited-source",
+      "type": "line",
+      "source": "constructor"
+    },
+    {
+      "id": "uses-other-inherited-source",
+      "type": "fill",
+      "source": "toString"
+    }
+  ]
+}

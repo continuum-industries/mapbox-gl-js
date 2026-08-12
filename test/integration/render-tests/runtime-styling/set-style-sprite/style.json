@@ -3,7 +3,6 @@
   "metadata": {
     "test": {
       "height": 256,
-      "allowed": 0.0014,
       "operations": [
         [
           "setStyle",
@@ -14,6 +13,7 @@
               52.499167
             ],
             "zoom": 14,
+            "camera": {"camera-projection": "orthographic"},
             "sources": {
               "mapbox": {
                 "type": "vector",
@@ -58,6 +58,14 @@
         [
           "wait"
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web-macos-chrome", "reason": "Due to incorrect resampling or antialasing, shifted icons appear pixelated. Likely related to the above issue. Difs here are small, but the appearance is worse."},
+        {"platform-tag-contains": "web-windows-chrome", "reason": "Due to incorrect resampling or antialasing, shifted icons appear pixelated. Likely related to the above issue. Difs here are small, but the appearance is worse."}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0014},
+        {"platform-tag-contains": "native", "threshold": 0.0016}
       ]
     }
   },
@@ -75,7 +83,7 @@
       ]
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
@@ -98,7 +106,7 @@
         "symbol-placement": "point",
         "icon-allow-overlap": true,
         "icon-ignore-placement": true,
-        "icon-image": "generic_icon"
+        "icon-image": "information"
       },
       "paint": {
         "icon-opacity": 1

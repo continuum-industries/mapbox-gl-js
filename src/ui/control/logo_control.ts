@@ -1,8 +1,8 @@
 import * as DOM from '../../util/dom';
 import {bindAll} from '../../util/util';
 
-import type {Map, ControlPosition} from '../map';
-import type {MapSourceDataEvent} from '../events';
+import type {MapEventOf} from '../events';
+import type {Map, IControl, ControlPosition} from '../map';
 
 /**
  * A `LogoControl` is a control that adds the Mapbox watermark
@@ -14,9 +14,9 @@ import type {MapSourceDataEvent} from '../events';
  * @private
 **/
 
-class LogoControl {
-    _map: Map;
-    _container: HTMLElement;
+class LogoControl implements IControl {
+    _map!: Map;
+    _container!: HTMLElement;
 
     constructor() {
         bindAll(['_updateLogo', '_updateCompact'], this);
@@ -26,11 +26,8 @@ class LogoControl {
         this._map = map;
         this._container = DOM.create('div', 'mapboxgl-ctrl');
         const anchor = DOM.create('a', 'mapboxgl-ctrl-logo');
-        // @ts-expect-error - TS2339 - Property 'target' does not exist on type 'HTMLElement'.
         anchor.target = "_blank";
-        // @ts-expect-error - TS2339 - Property 'rel' does not exist on type 'HTMLElement'.
         anchor.rel = "noopener nofollow";
-        // @ts-expect-error - TS2339 - Property 'href' does not exist on type 'HTMLElement'.
         anchor.href = "https://www.mapbox.com/";
         anchor.setAttribute("aria-label", this._map._getUIString('LogoControl.Title'));
         anchor.setAttribute("rel", "noopener nofollow");
@@ -56,7 +53,7 @@ class LogoControl {
         return 'bottom-left';
     }
 
-    _updateLogo(e?: MapSourceDataEvent) {
+    _updateLogo(e?: MapEventOf<'sourcedata'>) {
         if (!e || e.sourceDataType === 'metadata') {
             this._container.style.display = this._logoRequired() ? 'block' : 'none';
         }
@@ -68,7 +65,7 @@ class LogoControl {
         if (Object.entries(sourceCaches).length === 0) return true;
         for (const id in sourceCaches) {
             const source = sourceCaches[id].getSource();
-            if (source.hasOwnProperty('mapbox_logo') && !source.mapbox_logo) {
+            if (Object.hasOwn(source, 'mapbox_logo') && !source.mapbox_logo) {
                 return false;
             }
         }

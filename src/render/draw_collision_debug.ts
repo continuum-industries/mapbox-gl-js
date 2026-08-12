@@ -1,39 +1,50 @@
 import DepthMode from '../gl/depth_mode';
 import StencilMode from '../gl/stencil_mode';
 import CullFaceMode from '../gl/cull_face_mode';
-import {collisionUniformValues, collisionCircleUniformValues} from './program/collision_program';
+import {collisionUniformValues, collisionCircleUniformValues, type CollisionDebugDefinesType} from './program/collision_program';
 import {QuadTriangleArray, CollisionCircleLayoutArray} from '../data/array_types';
 import {collisionCircleLayout} from '../data/bucket/symbol_attributes';
 import SegmentVector from '../data/segment';
 import {mat4} from 'gl-matrix';
 import {getCollisionDebugTileProjectionMatrix} from '../geo/projection/projection_util';
-import VertexBuffer from '../gl/vertex_buffer';
-import IndexBuffer from '../gl/index_buffer';
+import {globeToMercatorTransition} from '../geo/projection/globe_util';
+import {mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate';
 
+import type VertexBuffer from '../gl/vertex_buffer';
+import type IndexBuffer from '../gl/index_buffer';
 import type Painter from './painter';
 import type SourceCache from '../source/source_cache';
-import type StyleLayer from '../style/style_layer';
 import type {OverscaledTileID} from '../source/tile_id';
 import type SymbolBucket from '../data/bucket/symbol_bucket';
 import type Projection from '../geo/projection/projection';
+import type SymbolStyleLayer from '../style/style_layer/symbol_style_layer';
 
 export default drawCollisionDebug;
 
 type TileBatch = {
     circleArray: Array<number>;
     circleOffset: number;
-    transform: Float32Array;
-    invTransform: Float32Array;
+    transform: mat4;
+    invTransform: mat4;
     projection: Projection;
 };
 
 let quadTriangles: QuadTriangleArray | null | undefined;
 
-function drawCollisionDebug(painter: Painter, sourceCache: SourceCache, layer: StyleLayer, coords: Array<OverscaledTileID>, translate: [number, number], translateAnchor: 'map' | 'viewport', isText: boolean) {
+function drawCollisionDebug(painter: Painter, sourceCache: SourceCache, layer: SymbolStyleLayer, coords: Array<OverscaledTileID>, translate: [number, number], translateAnchor: 'map' | 'viewport', isText: boolean) {
     const context = painter.context;
     const gl = context.gl;
     const tr = painter.transform;
-    const program = painter.getOrCreateProgram('collisionBox');
+    const mercatorCenter: [number, number] = [
+        mercatorXfromLng(tr.center.lng),
+        mercatorYfromLat(tr.center.lat)
+    ];
+    const symbolPlacement = layer.layout.get('symbol-placement');
+    const textVariableAnchor = layer.layout.get('text-variable-anchor');
+    const iconRotateWithMap = layer.layout.get('icon-rotation-alignment') === 'map';
+    const textRotateWithMap = layer.layout.get('text-rotation-alignment') === 'map';
+
+    const alongLine = symbolPlacement !== 'point';
     const tileBatches: Array<TileBatch> = [];
     let circleCount = 0;
     let circleOffset = 0;
@@ -41,10 +52,29 @@ function drawCollisionDebug(painter: Painter, sourceCache: SourceCache, layer: S
     for (let i = 0; i < coords.length; i++) {
         const coord = coords[i];
         const tile = sourceCache.getTile(coord);
-        const bucket: SymbolBucket | null | undefined = (tile.getBucket(layer) as any);
+        const bucket = tile.getBucket(layer) as SymbolBucket;
         if (!bucket) continue;
 
+        const invMatrix = bucket.getProjection().createInversionMatrix(tr, coord.canonical);
+        const defines: CollisionDebugDefinesType[] = [];
         const tileMatrix = getCollisionDebugTileProjectionMatrix(coord, bucket, tr);
+        const isIconPlacedAlongLine = !isText && iconRotateWithMap && alongLine;
+        const isTextPlacedAlongLine = isText && textRotateWithMap && alongLine;
+        const hasVariableAnchors = textVariableAnchor && bucket.hasTextData();
+        const updateIconTextFit = bucket.hasIconTextFit() && hasVariableAnchors && bucket.hasIconData();
+        const projectedPosOnLabelSpace = isIconPlacedAlongLine || isTextPlacedAlongLine || (isText && hasVariableAnchors) || updateIconTextFit;
+        const bucketIsGlobeProjection = bucket.projection.name === 'globe';
+        const globeToMercator = bucketIsGlobeProjection ? globeToMercatorTransition(tr.zoom) : 0.0;
+
+        if (bucketIsGlobeProjection) {
+            defines.push('PROJECTION_GLOBE_VIEW');
+
+            if (projectedPosOnLabelSpace) {
+                defines.push('PROJECTED_POS_ON_VIEWPORT');
+            }
+        }
+
+        const program = painter.getOrCreateProgram('collisionBox', {defines});
 
         let posMatrix = tileMatrix;
         if (translate[0] !== 0 || translate[1] !== 0) {
@@ -67,7 +97,6 @@ function drawCollisionDebug(painter: Painter, sourceCache: SourceCache, layer: S
                 circleArray,
                 circleOffset,
                 transform,
-                // @ts-expect-error - TS2322 - Type 'mat4' is not assignable to type 'Float32Array'.
                 invTransform,
                 projection: bucket.getProjection()
             });
@@ -77,11 +106,12 @@ function drawCollisionDebug(painter: Painter, sourceCache: SourceCache, layer: S
         }
         if (!buffers) continue;
         if (painter.terrain) painter.terrain.setupElevationDraw(tile, program);
+        const tileId: [number, number, number] = bucketIsGlobeProjection ? [coord.canonical.x, coord.canonical.y, 1 << coord.canonical.z] : [0, 0, 0];
         program.draw(painter, gl.LINES,
             DepthMode.disabled, StencilMode.disabled,
             painter.colorModeForRenderPass(),
             CullFaceMode.disabled,
-            collisionUniformValues(posMatrix, tr, tile, bucket.getProjection()),
+            collisionUniformValues(posMatrix, invMatrix, tr, globeToMercator, mercatorCenter, tile, tileId, bucket.getProjection()),
             layer.id, buffers.layoutVertexBuffer, buffers.indexBuffer,
             buffers.segments, null, tr.zoom, null,
             [buffers.collisionVertexBuffer, buffers.collisionVertexBufferExt]);

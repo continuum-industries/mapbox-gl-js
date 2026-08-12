@@ -1,8 +1,5 @@
 import LngLat from '../../src/geo/lng_lat';
-import Color from '../../src/style-spec/util/color';
 import Texture from '../../src/render/texture';
-import {ModelLayoutArray, TriangleIndexArray, NormalLayoutArray, TexcoordLayoutArray, FeatureVertexArray} from '../../src/data/array_types';
-import {StructArray} from '../../src/util/struct_array';
 import {Aabb} from '../../src/util/primitives';
 import {mat4, vec4} from 'gl-matrix';
 import {modelAttributes, normalAttributes, texcoordAttributes, color3fAttributes, color4fAttributes, featureAttributes} from './model_attributes';
@@ -11,7 +8,11 @@ import {globeToMercatorTransition} from '../../src/geo/projection/globe_util';
 import {number as interpolate} from '../../src/style-spec/util/interpolate';
 import MercatorCoordinate, {getMetersPerPixelAtLatitude, getLatitudeScale, mercatorZfromAltitude} from '../../src/geo/mercator_coordinate';
 import {rotationScaleYZFlipMatrix, getBoxBottomFace, rotationFor3Points, convertModelMatrixForGlobe} from '../util/model_util';
+import {degToRad} from '../../src/util/util';
 
+import type {StructArray} from '../../src/util/struct_array';
+import type {ModelLayoutArray, TriangleIndexArray, NormalLayoutArray, TexcoordLayoutArray, FeatureVertexArray} from '../../src/data/array_types';
+import type Color from '../../src/style-spec/util/color';
 import type {vec2, vec3, quat} from 'gl-matrix';
 import type Context from '../../src/gl/context';
 import type IndexBuffer from '../../src/gl/index_buffer';
@@ -20,6 +21,8 @@ import type VertexBuffer from '../../src/gl/vertex_buffer';
 import type {TextureImage, TextureWrap, TextureFilter} from '../../src/render/texture';
 import type Transform from '../../src/geo/transform';
 import type {Footprint} from '../util/conflation';
+import type {ModelBVH} from '../source/model_bvh';
+import type {LightOverrides} from '../render/lights';
 
 export type Sampler = {
     minFilter: TextureFilter;
@@ -34,6 +37,8 @@ export type ModelTexture = {
     gfxTexture?: Texture;
     uploaded: boolean;
     offsetScale?: [number, number, number, number];
+    index?: number;
+    extensions?: Record<string, {offset: [number, number], scale: [number, number]}>;
 };
 
 export type PbrMetallicRoughness = {
@@ -44,16 +49,43 @@ export type PbrMetallicRoughness = {
     metallicRoughnessTexture: ModelTexture | null | undefined;
 };
 
+export type MaterialDescription = {
+    name: string | undefined;
+    emissiveFactor: [number, number, number];
+    alphaMode: string;
+    alphaCutoff: number;
+    normalTexture: ModelTexture;
+    occlusionTexture: ModelTexture;
+    emissiveTexture: ModelTexture;
+    doubleSided: boolean;
+    pbrMetallicRoughness: PbrMetallicRoughness;
+    defined?: boolean;
+};
+
 export type Material = {
+    name: string | undefined;
     normalTexture: ModelTexture | null | undefined;
     occlusionTexture: ModelTexture | null | undefined;
     emissionTexture: ModelTexture | null | undefined;
     pbrMetallicRoughness: PbrMetallicRoughness;
-    emissiveFactor: [number, number, number];
+    emissiveFactor: Color;
     alphaMode: string;
     alphaCutoff: number;
     doubleSided: boolean;
     defined: boolean;
+};
+
+export type MaterialOverride = {
+    color: Color;
+    colorMix: number;
+    emissionStrength: number;
+    opacity: number;
+};
+
+export type NodeOverride = {
+    orientation?: vec3; // euler ZXY
+    minZoom?: number;
+    maxZoom?: number;
 };
 
 export const HEIGHTMAP_DIM = 64;
@@ -70,7 +102,7 @@ export type Mesh = {
     texcoordBuffer: VertexBuffer;
     colorArray: StructArray;
     colorBuffer: VertexBuffer;
-    featureData: ArrayBufferView;
+    featureData: Uint32Array | Float32Array;
     featureArray: FeatureVertexArray;
     pbrBuffer: VertexBuffer;
     material: Material;
@@ -91,23 +123,36 @@ export type AreaLight = {
     points: vec4;
 };
 
-export type Node = {
+export type ModelNode = {
     id: string;
-    matrix: mat4;
+    name: string | null | undefined;
+    globalMatrix: mat4;
+    localMatrix: mat4;
     meshes: Array<Mesh>;
-    children: Array<Node>;
+    lodMeshes?: Array<Mesh>;
+    meshBVH?: ModelBVH;
+    children: Array<ModelNode>;
     footprint: Footprint | null | undefined;
     lights: Array<AreaLight>;
     lightMeshIndex: number;
     elevation: number | null | undefined;
     anchor: vec2;
     hidden: boolean;
+    isGeometryBloom: boolean;
+    minZoom?: number;
+    maxZoom?: number;
+    footprintDebugMesh?: {
+        vertexBuffer: VertexBuffer;
+        indexBuffer: IndexBuffer;
+        segments: SegmentVector;
+        color: Color;
+    };
 };
 
 export const ModelTraits = {
-    CoordinateSpaceTile : 1,
-    CoordinateSpaceYUp : 2, // not used yet.
-    HasMapboxMeshFeatures : 1 << 2,
+    CoordinateSpaceTile: 1,
+    CoordinateSpaceYUp: 2, // not used yet.
+    HasMapboxMeshFeatures: 1 << 2,
     HasMeshoptCompression: 1 << 3
 } as const;
 
@@ -163,8 +208,8 @@ export function calculateModelMatrix(matrix: mat4, model: Readonly<Model>, state
     const modelMetersPerPixel = getMetersPerPixelAtLatitude(position.lat, zoom);
     const modelPixelsPerMeter = 1.0 / modelMetersPerPixel;
     mat4.identity(matrix);
-    const offset = [projectedPoint.x + translation[0] * modelPixelsPerMeter, projectedPoint.y + translation[1] * modelPixelsPerMeter, translation[2]];
-    mat4.translate(matrix, matrix, offset as [number, number, number]);
+    const offset: [number, number, number] = [projectedPoint.x + translation[0] * modelPixelsPerMeter, projectedPoint.y + translation[1] * modelPixelsPerMeter, translation[2]];
+    mat4.translate(matrix, matrix, offset);
     let scaleXY = 1.0;
     let scaleZ = 1.0;
     const worldSize = state.worldSize;
@@ -174,18 +219,16 @@ export function calculateModelMatrix(matrix: mat4, model: Readonly<Model>, state
             if (state.elevation) {
                 elevation = state.elevation.getAtPointOrZero(new MercatorCoordinate(projectedPoint.x / worldSize, projectedPoint.y / worldSize), 0.0);
             }
-            // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array | Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-            const mercProjPos = vec4.transformMat4([] as any, [projectedPoint.x, projectedPoint.y, elevation, 1.0], state.projMatrix);
+            const mercProjPos = vec4.transformMat4([], [projectedPoint.x, projectedPoint.y, elevation, 1.0], state.projMatrix);
             const mercProjectionScale = mercProjPos[3] / state.cameraToCenterDistance;
             const viewMetersPerPixel = getMetersPerPixelAtLatitude(state.center.lat, zoom);
             scaleXY = mercProjectionScale;
             scaleZ = mercProjectionScale * viewMetersPerPixel;
         } else if (state.projection.name === 'globe') {
             const globeMatrix = convertModelMatrixForGlobe(matrix, state);
-            // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array | Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-            const worldViewProjection = mat4.multiply([] as any, state.projMatrix, globeMatrix);
-            const globeProjPos =  [0, 0, 0, 1];
-            vec4.transformMat4(globeProjPos as [number, number, number, number], globeProjPos as [number, number, number, number], worldViewProjection);
+            const worldViewProjection = mat4.multiply([], state.projMatrix, globeMatrix);
+            const globeProjPos: [number, number, number, number] = [0, 0, 0, 1];
+            vec4.transformMat4(globeProjPos, globeProjPos, worldViewProjection);
             const globeProjectionScale = globeProjPos[3] / state.cameraToCenterDistance;
             const transition = globeToMercatorTransition(zoom);
             const modelPixelConv = state.projection.pixelsPerMeter(position.lat, worldSize) * getMetersPerPixelAtLatitude(position.lat, zoom);
@@ -209,32 +252,30 @@ export function calculateModelMatrix(matrix: mat4, model: Readonly<Model>, state
 
     // When applying physics (rotation) we need to insert rotation matrix
     // between model rotation and transforms above. Keep the intermediate results.
-    const modelMatrixBeforeRotationScaleYZFlip = [...matrix];
+    const modelMatrixBeforeRotationScaleYZFlip = [...matrix] as mat4;
 
     const orientation = model.orientation;
 
-    // @ts-expect-error - TS2322 - Type '[]' is not assignable to type 'mat4'.
-    const rotationScaleYZFlip: mat4 = [];
-    rotationScaleYZFlipMatrix(rotationScaleYZFlip,
-                          [orientation[0] + rotation[0],
-                              orientation[1] + rotation[1],
-                              orientation[2] + rotation[2]],
-                           scale);
-    // @ts-expect-error - TS2345 - Argument of type '[number]' is not assignable to parameter of type 'ReadonlyMat4'. | TS2352 - Conversion of type 'mat4' to type '[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-    mat4.multiply(matrix, modelMatrixBeforeRotationScaleYZFlip as [number], rotationScaleYZFlip as []);
+    const rotationScaleYZFlip = [];
+    rotationScaleYZFlipMatrix(
+        rotationScaleYZFlip,
+        [
+            orientation[0] + (rotation ? rotation[0] : 0),
+            orientation[1] + (rotation ? rotation[1] : 0),
+            orientation[2] + (rotation ? rotation[2] : 0)
+        ],
+        scale
+    );
+    mat4.multiply(matrix, modelMatrixBeforeRotationScaleYZFlip, rotationScaleYZFlip);
 
     if (applyElevation && state.elevation) {
         let elevate = 0;
         const rotateOnTerrain = [];
         if (followTerrainSlope && state.elevation) {
-            // @ts-expect-error - TS2345 - Argument of type 'any[]' is not assignable to parameter of type 'quat'.
             elevate = positionModelOnTerrain(rotateOnTerrain, state, model.aabb, matrix, position);
-            // @ts-expect-error - TS2345 - Argument of type '[]' is not assignable to parameter of type 'ReadonlyQuat'.
-            const rotationOnTerrain = mat4.fromQuat([] as any, rotateOnTerrain as []);
-            // @ts-expect-error - TS2345 - Argument of type '[]' is not assignable to parameter of type 'ReadonlyMat4'. | TS2352 - Conversion of type 'mat4' to type '[]' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-            const appendRotation = mat4.multiply([] as any, rotationOnTerrain, rotationScaleYZFlip as []);
-            // @ts-expect-error - TS2345 - Argument of type '[number]' is not assignable to parameter of type 'ReadonlyMat4'.
-            mat4.multiply(matrix, modelMatrixBeforeRotationScaleYZFlip as [number], appendRotation);
+            const rotationOnTerrain = mat4.fromQuat([], rotateOnTerrain);
+            const appendRotation = mat4.multiply([], rotationOnTerrain, rotationScaleYZFlip);
+            mat4.multiply(matrix, modelMatrixBeforeRotationScaleYZFlip, appendRotation);
         } else {
             elevate = state.elevation.getAtPointOrZero(new MercatorCoordinate(projectedPoint.x / worldSize, projectedPoint.y / worldSize), 0.0);
         }
@@ -244,46 +285,84 @@ export function calculateModelMatrix(matrix: mat4, model: Readonly<Model>, state
     }
 }
 
+function rotationYZX(out: mat4, rotation: vec3) {
+    mat4.identity(out);
+    mat4.rotateY(out, out, degToRad(rotation[1]));
+    mat4.rotateZ(out, out, degToRad(rotation[2]));
+    mat4.rotateX(out, out, degToRad(rotation[0]));
+}
+
+export type ModelMaterialOverrides = Map<string, MaterialOverride>;
+export type ModelNodeOverrides = Map<string, NodeOverride>;
+
 export default class Model {
     id: string;
     position: LngLat;
     orientation: [number, number, number];
-    nodes: Array<Node>;
+    nodes: Array<ModelNode>;
     matrix: mat4;
     uploaded: boolean;
     aabb: Aabb;
 
-    constructor(id: string, position: [number, number] | null | undefined, orientation: [number, number, number] | null | undefined, nodes: Array<Node>) {
+    materialOverrides: ModelMaterialOverrides = new Map();
+    nodeOverrides: ModelNodeOverrides = new Map();
+
+    materialOverrideNames: string[] = [];
+    nodeOverrideNames: string[] = [];
+    featureProperties: Record<string, unknown> = {};
+    lightOverrides?: LightOverrides;
+
+    uri: string;
+
+    constructor(id: string, uri: string, position: [number, number] | null | undefined, orientation: [number, number, number] | null | undefined, nodes: Array<ModelNode>) {
         this.id = id;
+        this.uri = uri;
         this.position = position != null ? new LngLat(position[0], position[1]) : new LngLat(0, 0);
 
-        this.orientation = orientation != null ? orientation : [0, 0, 0];
+        this.orientation = orientation ?? [0, 0, 0];
         this.nodes = nodes;
         this.uploaded = false;
         this.aabb = new Aabb([Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]);
-        // @ts-expect-error - TS2322 - Type '[]' is not assignable to type 'mat4'.
         this.matrix = [];
     }
 
-    _applyTransformations(node: Node, parentMatrix: mat4) {
+    _applyTransformations(node: ModelNode, parentMatrix: mat4) {
         // update local matrix
-        mat4.multiply(node.matrix, parentMatrix, node.matrix);
+        mat4.multiply(node.globalMatrix, parentMatrix, node.localMatrix);
+
+        const nodeOverride = this.nodeOverrides.get(node.name);
+        if (nodeOverride !== undefined) {
+            // Apply orientation override
+            if (nodeOverride.orientation) {
+                const m = [] as unknown as mat4;
+                rotationYZX(m, nodeOverride.orientation);
+                mat4.multiply(node.globalMatrix, node.globalMatrix, m);
+            }
+            if (nodeOverride.minZoom) {
+                node.minZoom = nodeOverride.minZoom;
+            }
+            if (nodeOverride.maxZoom) {
+                node.maxZoom = nodeOverride.maxZoom;
+            }
+        }
+
         // apply local transform to bounding volume
         if (node.meshes) {
             for (const mesh of node.meshes) {
-                const enclosingBounds = Aabb.applyTransform(mesh.aabb, node.matrix);
+                const enclosingBounds = Aabb.applyTransformFast(mesh.aabb, node.globalMatrix);
                 this.aabb.encapsulate(enclosingBounds);
             }
         }
         if (node.children) {
             for (const child of node.children) {
-                this._applyTransformations(child, node.matrix);
+                this._applyTransformations(child, node.globalMatrix);
             }
         }
     }
 
     computeBoundsAndApplyParent() {
-        const localMatrix =  mat4.identity([] as any);
+        const localMatrix = mat4.identity([]);
+        this.aabb = new Aabb([Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]);
         for (const node of this.nodes) {
             this._applyTransformations(node, localMatrix);
         }
@@ -316,12 +395,12 @@ export default class Model {
 }
 
 export function uploadTexture(texture: ModelTexture, context: Context, useSingleChannelTexture: boolean = false) {
-    const textureFormat = useSingleChannelTexture ? context.gl.R8 : context.gl.RGBA;
+    const textureFormat = useSingleChannelTexture ? context.gl.R8 : context.gl.RGBA8;
     if (!texture.uploaded) {
         const useMipmap = texture.sampler.minFilter >= context.gl.NEAREST_MIPMAP_NEAREST;
         texture.gfxTexture = new Texture(context, texture.image, textureFormat, {useMipmap});
         texture.uploaded = true;
-        texture.image = (null as any);
+        texture.image = null;
     }
 }
 
@@ -364,9 +443,14 @@ export function uploadMesh(mesh: Mesh, context: Context, useSingleChannelOcclusi
     }
 }
 
-export function uploadNode(node: Node, context: Context, useSingleChannelOcclusionTexture?: boolean) {
+export function uploadNode(node: ModelNode, context: Context, useSingleChannelOcclusionTexture?: boolean) {
     if (node.meshes) {
         for (const mesh of node.meshes) {
+            uploadMesh(mesh, context, useSingleChannelOcclusionTexture);
+        }
+    }
+    if (node.lodMeshes) {
+        for (const mesh of node.lodMeshes) {
             uploadMesh(mesh, context, useSingleChannelOcclusionTexture);
         }
     }
@@ -377,17 +461,26 @@ export function uploadNode(node: Node, context: Context, useSingleChannelOcclusi
     }
 }
 
-export function destroyNodeArrays(node: Node) {
+function destroyMeshArrays(mesh: Mesh) {
+    mesh.indexArray.destroy();
+    mesh.vertexArray.destroy();
+    if (mesh.colorArray) mesh.colorArray.destroy();
+    if (mesh.normalArray) mesh.normalArray.destroy();
+    if (mesh.texcoordArray) mesh.texcoordArray.destroy();
+    if (mesh.featureArray) {
+        mesh.featureArray.destroy();
+    }
+}
+
+export function destroyNodeArrays(node: ModelNode) {
     if (node.meshes) {
         for (const mesh of node.meshes) {
-            mesh.indexArray.destroy();
-            mesh.vertexArray.destroy();
-            if (mesh.colorArray) mesh.colorArray.destroy();
-            if (mesh.normalArray) mesh.normalArray.destroy();
-            if (mesh.texcoordArray) mesh.texcoordArray.destroy();
-            if (mesh.featureArray) {
-                mesh.featureArray.destroy();
-            }
+            destroyMeshArrays(mesh);
+        }
+    }
+    if (node.lodMeshes) {
+        for (const mesh of node.lodMeshes) {
+            destroyMeshArrays(mesh);
         }
     }
     if (node.children) {
@@ -415,30 +508,43 @@ export function destroyTextures(material: Material) {
     }
 }
 
-export function destroyBuffers(node: Node) {
+function destroyMeshBuffers(mesh: Mesh) {
+    if (!mesh.vertexBuffer) return;
+    mesh.vertexBuffer.destroy();
+    mesh.indexBuffer.destroy();
+    if (mesh.normalBuffer) {
+        mesh.normalBuffer.destroy();
+    }
+    if (mesh.texcoordBuffer) {
+        mesh.texcoordBuffer.destroy();
+    }
+    if (mesh.colorBuffer) {
+        mesh.colorBuffer.destroy();
+    }
+    if (mesh.pbrBuffer) {
+        mesh.pbrBuffer.destroy();
+    }
+    mesh.segments.destroy();
+    if (mesh.material) {
+        destroyTextures(mesh.material);
+    }
+}
+
+export function destroyBuffers(node: ModelNode) {
     if (node.meshes) {
         for (const mesh of node.meshes) {
-            if (!mesh.vertexBuffer) continue;
-            mesh.vertexBuffer.destroy();
-            mesh.indexBuffer.destroy();
-            if (mesh.normalBuffer) {
-                mesh.normalBuffer.destroy();
-            }
-            if (mesh.texcoordBuffer) {
-                mesh.texcoordBuffer.destroy();
-            }
-            if (mesh.colorBuffer) {
-                mesh.colorBuffer.destroy();
-            }
-            if (mesh.pbrBuffer) {
-                mesh.pbrBuffer.destroy();
-            }
-
-            mesh.segments.destroy();
-            if (mesh.material) {
-                destroyTextures(mesh.material);
-            }
+            destroyMeshBuffers(mesh);
         }
+    }
+    if (node.lodMeshes) {
+        for (const mesh of node.lodMeshes) {
+            destroyMeshBuffers(mesh);
+        }
+    }
+    if (node.footprintDebugMesh) {
+        node.footprintDebugMesh.vertexBuffer.destroy();
+        node.footprintDebugMesh.indexBuffer.destroy();
+        node.footprintDebugMesh.segments.destroy();
     }
     if (node.children) {
         for (const child of node.children) {

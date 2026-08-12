@@ -3,9 +3,13 @@
   "metadata": {
     "test": {
       "width": 64,
-      "height": 64
+      "height": 64,
+      "image-threshold": [
+        {"platform-tag-contains": "native", "threshold": 0.0005}
+      ]
     }
   },
+  "camera": {"camera-projection": "orthographic"},
   "sources": {
     "geojson": {
       "type": "geojson",

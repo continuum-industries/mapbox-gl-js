@@ -6,15 +6,15 @@ import {
     hillshadeUniformValues,
     hillshadeUniformPrepareValues
 } from './program/hillshade_program';
+import ColorMode from '../gl/color_mode';
+import assert from '../style-spec/util/assert';
 
 import type Painter from './painter';
 import type SourceCache from '../source/source_cache';
 import type Tile from '../source/tile';
 import type HillshadeStyleLayer from '../style/style_layer/hillshade_style_layer';
-import ColorMode from '../gl/color_mode';
 import type {OverscaledTileID} from '../source/tile_id';
-import assert from 'assert';
-import DEMData from '../data/dem_data';
+import type DEMData from '../data/dem_data';
 import type {DynamicDefinesType} from './program/program_uniforms';
 
 export default drawHillshade;
@@ -59,10 +59,15 @@ function renderHillshade(painter: Painter, coord: OverscaledTileID, tile: Tile, 
     painter.prepareDrawTile();
 
     const affectedByFog = painter.isTileAffectedByFog(coord);
-    const program = painter.getOrCreateProgram('hillshade', {overrideFog: affectedByFog});
+    const definesValues: DynamicDefinesType[] = [];
+    const isDraping = painter.terrain && painter.terrain.renderingToTexture;
+    if (isDraping && painter.emissiveMode === 'mrt-fallback') {
+        definesValues.push('USE_MRT1');
+    }
+    const program = painter.getOrCreateProgram('hillshade', {overrideFog: affectedByFog, defines: definesValues});
 
     context.activeTexture.set(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, fbo.colorAttachment.get());
+    gl.bindTexture(gl.TEXTURE_2D, fbo.colorAttachment0.get());
 
     const uniformValues = hillshadeUniformValues(painter, tile, layer, painter.terrain ? coord.projMatrix : null);
 
@@ -70,7 +75,6 @@ function renderHillshade(painter: Painter, coord: OverscaledTileID, tile: Tile, 
 
     const {tileBoundsBuffer, tileBoundsIndexBuffer, tileBoundsSegments} = painter.getTileBoundsBuffers(tile);
 
-    // @ts-expect-error - TS2554 - Expected 12-16 arguments, but got 11.
     program.draw(painter, gl.TRIANGLES, depthMode, stencilMode, colorMode, CullFaceMode.disabled,
         uniformValues, layer.id, tileBoundsBuffer,
         tileBoundsIndexBuffer, tileBoundsSegments);
@@ -114,11 +118,11 @@ function prepareHillshade(painter: Painter, tile: Tile, layer: HillshadeStyleLay
     context.activeTexture.set(gl.TEXTURE0);
     let fbo = tile.hillshadeFBO;
     if (!fbo) {
-        const renderTexture = new Texture(context, {width: tileSize, height: tileSize, data: null}, gl.RGBA);
+        const renderTexture = new Texture(context, {width: tileSize, height: tileSize, data: null}, gl.RGBA8);
         renderTexture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
 
-        fbo = tile.hillshadeFBO = context.createFramebuffer(tileSize, tileSize, true, 'renderbuffer');
-        fbo.colorAttachment.set(renderTexture.texture);
+        fbo = tile.hillshadeFBO = context.createFramebuffer(tileSize, tileSize, 1, 'renderbuffer');
+        fbo.colorAttachment0.set(renderTexture.texture);
     }
 
     context.bindFramebuffer.set(fbo.framebuffer);
@@ -129,7 +133,11 @@ function prepareHillshade(painter: Painter, tile: Tile, layer: HillshadeStyleLay
     const definesValues: DynamicDefinesType[] = [];
     if (painter.linearFloatFilteringSupported()) definesValues.push('TERRAIN_DEM_FLOAT_FORMAT');
 
-    // @ts-expect-error - TS2554 - Expected 12-16 arguments, but got 11.
+    const isDraping = painter.terrain && painter.terrain.renderingToTexture;
+    if (isDraping && painter.emissiveMode === 'mrt-fallback') {
+        definesValues.push('USE_MRT1');
+    }
+
     painter.getOrCreateProgram('hillshadePrepare', {defines: definesValues}).draw(painter, gl.TRIANGLES,
         DepthMode.disabled, StencilMode.disabled, ColorMode.unblended, CullFaceMode.disabled,
         hillshadeUniformPrepareValues(tile.tileID, dem),

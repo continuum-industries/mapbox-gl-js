@@ -34,8 +34,19 @@ export type ResolvedImageTypeT = {
 
 export type EvaluationKind = 'constant' | 'source' | 'camera' | 'composite';
 
-export type Type = NullTypeT | NumberTypeT | StringTypeT | BooleanTypeT | ColorTypeT | ObjectTypeT | ValueTypeT | // eslint-disable-line no-use-before-define
-ArrayType | ErrorTypeT | CollatorTypeT | FormattedTypeT | ResolvedImageTypeT;
+export type Type =
+    | NullTypeT
+    | NumberTypeT
+    | StringTypeT
+    | BooleanTypeT
+    | ColorTypeT
+    | ObjectTypeT
+    | ValueTypeT
+    | ArrayType
+    | ErrorTypeT
+    | CollatorTypeT
+    | FormattedTypeT
+    | ResolvedImageTypeT;
 
 export type ArrayType = {
     kind: 'array';
@@ -120,7 +131,7 @@ export function isValidType(provided: Type, allowedTypes: Array<Type>): boolean 
     return allowedTypes.some(t => t.kind === provided.kind);
 }
 
-export function isValidNativeType(provided: any, allowedTypes: Array<NativeType>): boolean {
+export function isValidNativeType(provided: unknown, allowedTypes: Array<NativeType>): boolean {
     return allowedTypes.some(t => {
         if (t === 'null') {
             return provided === null;
@@ -132,4 +143,12 @@ export function isValidNativeType(provided: any, allowedTypes: Array<NativeType>
             return t === typeof provided;
         }
     });
+}
+
+export function typeEquals(a: Type, b: Type): boolean {
+    if (a.kind === 'array' && b.kind === 'array') {
+        return a.N === b.N && typeEquals(a.itemType, b.itemType);
+    } else {
+        return a.kind === b.kind;
+    }
 }

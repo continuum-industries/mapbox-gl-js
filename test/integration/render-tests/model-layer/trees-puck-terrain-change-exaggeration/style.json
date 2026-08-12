@@ -2,10 +2,10 @@
   "version": 8,
   "metadata": {
     "test": {
-      "allowed": 0.00085,
+      
       "height": 1024,
+      "pixelRatio": 0.5,
       "width": 1024,
-      "standardDerivatives": true,
       "operations": [
         ["wait"],
         [
@@ -81,6 +81,12 @@
           "exaggeration": 2.5
         }],
         ["wait"]
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00085}
       ]
     }
   },

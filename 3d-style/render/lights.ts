@@ -1,13 +1,21 @@
-import Context from '../../src/gl/context';
 import {Uniform3f} from '../../src/render/uniform_binding';
 import {sRGBToLinearAndScale, linearVec3TosRGB, clamp} from '../../src/util/util';
+import {lerp} from '../../src/style-spec/util/lerp';
 import {vec3} from 'gl-matrix';
-import type Style from '../../src/style/style';
 
-import Lights from '../style/lights';
+import type Context from '../../src/gl/context';
+import type Style from '../../src/style/style';
+import type Lights from '../style/lights';
 import type {UniformValues} from '../../src/render/uniform_binding';
 import type {LightProps as Ambient} from '../style/ambient_light_properties';
 import type {LightProps as Directional} from '../style/directional_light_properties';
+
+export type LightOverrides = {
+    ambientIntensity?: number,
+    ambientColor?: [number, number, number],
+    directionalIntensity?: number,
+    directionalColor?: [number, number, number]
+};
 
 export type LightsUniformsType = {
     ['u_lighting_ambient_color']: Uniform3f;
@@ -33,8 +41,6 @@ function calculateAmbientDirectionalFactor(dir: vec3, normal: vec3, dirColor: ve
     const dirLuminance = vec3.dot(dirColor, [0.2126, 0.7152, 0.0722]);
     const directionalFactorMin = 1.0 - factorReductionMax * Math.min(dirLuminance, 1.0);
 
-    const lerp = (a: number, b: number, t: number) => { return (1 - t) * a + t * b; };
-
     // If dirColor is (1, 1, 1), then the return value range is
     // NdotL=-1: 1.0 - factorReductionMax
     // NdotL>=0: 1.0
@@ -51,40 +57,54 @@ function calculateAmbientDirectionalFactor(dir: vec3, normal: vec3, dirColor: ve
     return verticalFactor * ambientDirectionalFactor;
 }
 
-function calculateGroundRadiance(dir: vec3, dirColor: vec3, ambientColor: vec3): [number, number, number] {
-    const groundNormal = [0.0, 0.0, 1.0];
-    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
+function calculateGroundRadiance(dir: vec3, dirColor: [number, number, number], ambientColor: [number, number, number]): [number, number, number] {
+    const groundNormal: [number, number, number] = [0.0, 0.0, 1.0];
     const ambientDirectionalFactor = calculateAmbientDirectionalFactor(dir, groundNormal, dirColor);
 
-    const ambientContrib = [0, 0, 0];
-    // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array' is not assignable to parameter of type 'ReadonlyVec3'.
-    vec3.scale(ambientContrib as [number, number, number], ambientColor.slice(0, 3), ambientDirectionalFactor);
-    const dirConrib = [0, 0, 0];
-    // @ts-expect-error - TS2345 - Argument of type 'number[] | Float32Array' is not assignable to parameter of type 'ReadonlyVec3'.
-    vec3.scale(dirConrib as [number, number, number], dirColor.slice(0, 3), dir[2]);
+    const ambientContrib: [number, number, number] = [0, 0, 0];
+    vec3.scale(ambientContrib, ambientColor.slice(0, 3), ambientDirectionalFactor);
+    const dirContrib: [number, number, number] = [0, 0, 0];
+    vec3.scale(dirContrib, dirColor.slice(0, 3), dir[2]);
 
-    const radiance = [0, 0, 0];
-    vec3.add(radiance as [number, number, number], ambientContrib as [number, number, number], dirConrib as [number, number, number]);
+    const radiance: [number, number, number] = [0, 0, 0];
+    vec3.add(radiance, ambientContrib, dirContrib);
 
-    // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type '[number, number, number]'.
     return linearVec3TosRGB(radiance);
 }
 
-export const lightsUniformValues = (directional: Lights<Directional>, ambient: Lights<Ambient>, style: Style): UniformValues<LightsUniformsType> => {
+export const lightsUniformValues = (directional: Lights<Directional>, ambient: Lights<Ambient>, style: Style, lightOverrides?: LightOverrides): UniformValues<LightsUniformsType> => {
+
     const direction = directional.properties.get('direction');
 
-    const directionalColor = directional.properties.get('color').toRenderColor(style.getLut(directional.scope)).toArray01();
-    const directionalIntensity = directional.properties.get('intensity');
+    const dirIgnoreLut = directional.properties.get('color-use-theme') === 'none';
+    const directionalColor = directional.properties.get('color').toNonPremultipliedRenderColor(dirIgnoreLut ? null : style.getLut(directional.scope)).toArray01();
+    let directionalIntensity = directional.properties.get('intensity');
 
-    const ambientColor = ambient.properties.get('color').toRenderColor(style.getLut(ambient.scope)).toArray01();
-    const ambientIntensity = ambient.properties.get('intensity');
+    const ambIgnoreLut = ambient.properties.get('color-use-theme') === 'none';
+    const ambientColor = ambient.properties.get('color').toNonPremultipliedRenderColor(ambIgnoreLut ? null : style.getLut(ambient.scope)).toArray01();
+    let ambientIntensity = ambient.properties.get('intensity');
 
     const dirVec: [number, number, number] = [direction.x, direction.y, direction.z];
+
+    if (lightOverrides) {
+        if (lightOverrides.ambientIntensity !== undefined) ambientIntensity = lightOverrides.ambientIntensity;
+        if (lightOverrides.directionalIntensity !== undefined) directionalIntensity = lightOverrides.directionalIntensity;
+        if (lightOverrides.ambientColor !== undefined) {
+            ambientColor[0] = lightOverrides.ambientColor[0];
+            ambientColor[1] = lightOverrides.ambientColor[1];
+            ambientColor[2] = lightOverrides.ambientColor[2];
+        }
+        if (lightOverrides.directionalColor !== undefined) {
+            directionalColor[0] = lightOverrides.directionalColor[0];
+            directionalColor[1] = lightOverrides.directionalColor[1];
+            directionalColor[2] = lightOverrides.directionalColor[2];
+        }
+    }
 
     const ambientColorLinear = sRGBToLinearAndScale(ambientColor, ambientIntensity);
 
     const directionalColorLinear = sRGBToLinearAndScale(directionalColor, directionalIntensity);
-    const groundRadianceSrgb = calculateGroundRadiance((dirVec as any), (directionalColorLinear as any), (ambientColorLinear as any));
+    const groundRadianceSrgb = calculateGroundRadiance(dirVec, directionalColorLinear, ambientColorLinear);
     return {
         'u_lighting_ambient_color': ambientColorLinear,
         'u_lighting_directional_dir': dirVec,

@@ -1,7 +1,7 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {describe, test, beforeEach, expect, vi} from '../../util/vitest';
 import {default as createFilter, isExpressionFilter, isDynamicFilter, extractStaticFilter} from '../../../src/style-spec/feature_filter/index';
-
 import convertFilter from '../../../src/style-spec/feature_filter/convert';
 import Point from '@mapbox/point-geometry';
 import MercatorCoordinate from '../../../src/geo/mercator_coordinate';
@@ -67,15 +67,19 @@ describe('filter', () => {
 
     test('expression, within', () => {
         const  getPointFromLngLat = (lng, lat, canonical) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const p = MercatorCoordinate.fromLngLat({lng, lat}, 0);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
             const tilesAtZoom = Math.pow(2, canonical.z);
             return new Point(
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 (p.x * tilesAtZoom - canonical.x) * EXTENT,
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 (p.y * tilesAtZoom - canonical.y) * EXTENT);
         };
         const withinFilter =  createFilter(['within', {'type': 'Polygon', 'coordinates': [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]]}]);
         expect(withinFilter.needGeometry).toEqual(true);
-        const canonical = {z: 3, x: 3, y:3};
+        const canonical = {z: 3, x: 3, y: 3};
         expect(
             withinFilter.filter({zoom: 3}, {type: 1, geometry: [[getPointFromLngLat(2, 2, canonical)]]}, canonical)
         ).toEqual(true);
@@ -107,8 +111,8 @@ describe('filter', () => {
                 ["<", ["pitch"], 60], ["<", ["get", "filter_rank"], 2],
                 [">", ["get", "filter_rank"], 4],
             ],
-            ["all", ["<", ["get", "filter_rank"], 2 ], [ "<", ["pitch"], 60]],
-            ["any", ["<", ["get", "filter_rank"], 2 ], [ "<", ["pitch"], 60]],
+            ["all", ["<", ["get", "filter_rank"], 2], ["<", ["pitch"], 60]],
+            ["any", ["<", ["get", "filter_rank"], 2], ["<", ["pitch"], 60]],
             ["<", ["pitch"], 60],
             ["all",
                 [
@@ -567,14 +571,14 @@ describe('filter', () => {
                     {
                         dynamic: ["match",
                             ["pitch"],
-                            [10, 20, 30], [ "<", ["get", "filterrank"], 2],
-                            [70, 80], [ ">", ["get", "filterrank"], 5],
-                            ["all", [ ">", ["get", "filterrank"], 2], [ "<", ["get", "filterrank"], 5]]
+                            [10, 20, 30], ["<", ["get", "filterrank"], 2],
+                            [70, 80], [">", ["get", "filterrank"], 5],
+                            ["all", [">", ["get", "filterrank"], 2], ["<", ["get", "filterrank"], 5]]
                         ],
                         static: ["any",
-                            [ "<", ["get", "filterrank"], 2],
-                            [ ">", ["get", "filterrank"], 5],
-                            ["all", [ ">", ["get", "filterrank"], 2], [ "<", ["get", "filterrank"], 5]]
+                            ["<", ["get", "filterrank"], 2],
+                            [">", ["get", "filterrank"], 5],
+                            ["all", [">", ["get", "filterrank"], 2], ["<", ["get", "filterrank"], 5]]
                         ]
                     },
                     {
@@ -1051,6 +1055,7 @@ describe('convert legacy filters to expressions', () => {
     });
 
     legacyFilterTests((f) => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         const converted = convertFilter(f);
         return createFilter(converted);
     });
@@ -1136,256 +1141,433 @@ describe('convert legacy filters to expressions', () => {
 
 function legacyFilterTests(createFilterExpr) {
     test('degenerate', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(createFilterExpr().filter()).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(createFilterExpr(undefined).filter()).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         expect(createFilterExpr(null).filter()).toEqual(true);
     });
 
     test('==, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['==', 'foo', 'bar']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'bar'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'baz'}})).toEqual(false);
     });
 
     test('==, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['==', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('==, null', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['==', 'foo', null]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
         // t.equal(f({zoom: 0}, {properties: {foo: undefined}}), false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('==, $type', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['==', '$type', 'LineString']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 1})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 2})).toEqual(true);
     });
 
     test('==, $id', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['==', '$id', 1234]).filter;
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {id: 1234})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {id: '1234'})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {id: 1234}})).toEqual(false);
     });
 
     test('!=, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!=', 'foo', 'bar']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'bar'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'baz'}})).toEqual(true);
     });
 
     test('!=, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!=', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(true);
     });
 
     test('!=, null', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!=', 'foo', null]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
         // t.equal(f({zoom: 0}, {properties: {foo: undefined}}), true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(true);
     });
 
     test('!=, $type', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!=', '$type', 'LineString']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 1})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 2})).toEqual(false);
     });
 
     test('<, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['<', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('<, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['<', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
     });
 
     test('<=, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['<=', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('<=, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['<=', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
     });
 
     test('>, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['>', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('>, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['>', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
     });
 
     test('>=, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['>=', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('>=, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['>=', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: -1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '1'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '-1'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
     });
 
     test('in, degenerate', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
     });
 
     test('in, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('in, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
     });
 
     test('in, null', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo', null]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
     });
 
     test('in, multiple', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo', 0, 1]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 3}})).toEqual(false);
     });
 
     test('in, large_multiple', () => {
         const values = Array.from({length: 2000}).map(Number.call, Number);
         values.reverse();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo'].concat(values)).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1999}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 2000}})).toEqual(false);
     });
 
@@ -1393,141 +1575,228 @@ function legacyFilterTests(createFilterExpr) {
         const values = Array.from({length: 2000}).map(Number.call, Number);
         values.push('a');
         values.unshift('b');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', 'foo'].concat(values)).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'b'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 'a'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1999}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 2000}})).toEqual(false);
     });
 
     test('in, $type', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['in', '$type', 'LineString', 'Polygon']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 1})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 2})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 3})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f1 = createFilterExpr(['in', '$type', 'Polygon', 'LineString', 'Point']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {type: 1})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {type: 2})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {type: 3})).toEqual(true);
     });
 
     test('!in, degenerate', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
     });
 
     test('!in, string', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo', '0']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(true);
     });
 
     test('!in, number', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo', 0]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(true);
     });
 
     test('!in, null', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo', null]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
     });
 
     test('!in, multiple', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo', 0, 1]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 3}})).toEqual(true);
     });
 
     test('!in, large_multiple', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', 'foo'].concat(Array.from({length: 2000}).map(Number.call, Number))).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1999}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 2000}})).toEqual(true);
     });
 
     test('!in, $type', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!in', '$type', 'LineString', 'Polygon']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 1})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 2})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {type: 3})).toEqual(false);
     });
 
     test('any', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f1 = createFilterExpr(['any']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f2 = createFilterExpr(['any', ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f2({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f3 = createFilterExpr(['any', ['==', 'foo', 0]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f3({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f4 = createFilterExpr(['any', ['==', 'foo', 0], ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f4({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
     });
 
     test('all', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f1 = createFilterExpr(['all']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f2 = createFilterExpr(['all', ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f2({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f3 = createFilterExpr(['all', ['==', 'foo', 0]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f3({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f4 = createFilterExpr(['all', ['==', 'foo', 0], ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f4({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
     });
 
     test('none', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f1 = createFilterExpr(['none']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f1({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f2 = createFilterExpr(['none', ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f2({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f3 = createFilterExpr(['none', ['==', 'foo', 0]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f3({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f4 = createFilterExpr(['none', ['==', 'foo', 0], ['==', 'foo', 1]]).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f4({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
     });
 
     test('has', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['has', 'foo']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: true}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(true);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(false);
     });
 
     test('!has', () => {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const f = createFilterExpr(['!has', 'foo']).filter;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 0}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: 1}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: '0'}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: false}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: null}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {foo: undefined}})).toEqual(false);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
         expect(f({zoom: 0}, {properties: {}})).toEqual(true);
     });
 }

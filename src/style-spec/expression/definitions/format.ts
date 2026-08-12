@@ -6,6 +6,7 @@ import {
     StringType,
     ColorType,
     ResolvedImageType,
+    typeEquals,
 } from '../types';
 import Formatted, {FormattedSection} from '../types/formatted';
 import {toString, typeOf} from '../values';
@@ -33,55 +34,52 @@ export default class FormatExpression implements Expression {
         this.sections = sections;
     }
 
-    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | undefined {
+    static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Expression | null | void {
         if (args.length < 2) {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
             return context.error(`Expected at least one argument.`);
         }
 
         const firstArg = args[1];
-        if (!Array.isArray(firstArg) && typeof firstArg === 'object')  {
-            // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
+        if (!Array.isArray(firstArg) && typeof firstArg === 'object') {
             return context.error(`First argument must be an image or text section.`);
         }
 
         const sections: Array<FormattedSectionExpression> = [];
         let nextTokenMayBeObject = false;
         for (let i = 1; i <= args.length - 1; ++i) {
-            const arg = (args[i] as any);
+            const arg = args[i] as Record<string, unknown> | unknown[] | string | number | boolean | null | undefined;
 
             if (nextTokenMayBeObject && typeof arg === "object" && !Array.isArray(arg)) {
                 nextTokenMayBeObject = false;
 
                 let scale = null;
-                if (arg['font-scale']) {
-                    scale = context.parse(arg['font-scale'], 1, NumberType);
+                if (arg!['font-scale']) {
+                    scale = context.parseObjectValue(arg!['font-scale'], i, 'font-scale', NumberType);
                     if (!scale) return null;
                 }
 
                 let font = null;
-                if (arg['text-font']) {
-                    font = context.parse(arg['text-font'], 1, array(StringType));
+                if (arg!['text-font']) {
+                    font = context.parseObjectValue(arg!['text-font'], i, 'text-font', array(StringType));
                     if (!font) return null;
                 }
 
                 let textColor = null;
-                if (arg['text-color']) {
-                    textColor = context.parse(arg['text-color'], 1, ColorType);
+                if (arg!['text-color']) {
+                    textColor = context.parseObjectValue(arg!['text-color'], i, 'text-color', ColorType);
                     if (!textColor) return null;
                 }
 
-                const lastExpression = sections[sections.length - 1];
+                const lastExpression = sections.at(-1)!;
                 lastExpression.scale = scale;
                 lastExpression.font = font;
                 lastExpression.textColor = textColor;
             } else {
-                const content = context.parse(args[i], 1, ValueType);
+                const content = context.parse(args[i], i, ValueType);
                 if (!content) return null;
 
                 const kind = content.type.kind;
                 if (kind !== 'string' && kind !== 'value' && kind !== 'null' && kind !== 'resolvedImage')
-                // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Expression'.
                     return context.error(`Formatted text type must be 'string', 'value', 'image' or 'null'.`);
 
                 nextTokenMayBeObject = true;
@@ -94,16 +92,22 @@ export default class FormatExpression implements Expression {
 
     evaluate(ctx: EvaluationContext): Formatted {
         const evaluateSection = (section: FormattedSectionExpression) => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const evaluatedContent = section.content.evaluate(ctx);
-            if (typeOf(evaluatedContent) === ResolvedImageType) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            if (typeEquals(typeOf(evaluatedContent), ResolvedImageType)) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                 return new FormattedSection('', evaluatedContent, null, null, null);
             }
 
             return new FormattedSection(
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                     toString(evaluatedContent),
                     null,
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                     section.scale ? section.scale.evaluate(ctx) : null,
-                    section.font ? section.font.evaluate(ctx).join(',') : null,
+                    section.font ? (section.font.evaluate(ctx) as string[]).join(',') : null,
+                    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
                     section.textColor ? section.textColor.evaluate(ctx) : null
             );
         };
@@ -133,11 +137,10 @@ export default class FormatExpression implements Expression {
     }
 
     serialize(): SerializedExpression {
-        const serialized = ["format"];
+        const serialized: Array<unknown> = ["format"];
         for (const section of this.sections) {
-            // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
             serialized.push(section.content.serialize());
-            const options: Record<string, any> = {};
+            const options: Record<string, SerializedExpression> = {};
             if (section.scale) {
                 options['font-scale'] = section.scale.serialize();
             }
@@ -147,7 +150,6 @@ export default class FormatExpression implements Expression {
             if (section.textColor) {
                 options['text-color'] = section.textColor.serialize();
             }
-            // @ts-expect-error - TS2345 - Argument of type 'Record<string, any>' is not assignable to parameter of type 'string'.
             serialized.push(options);
         }
         return serialized;

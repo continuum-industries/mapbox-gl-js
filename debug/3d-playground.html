@@ -2,9 +2,9 @@
 <html>
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body { margin: 0; padding: 0 }
         html, body, #map { height: 100%; }
@@ -54,17 +54,17 @@
 </head>
 
 <body>
-<div id='map'></div>
-<div id='elevationDebug'></div>
-<div id='config'></div>
+<div id="map"></div>
+<div id="elevationDebug"></div>
+<div id="config"></div>
 
 <!-- TODO: USE MODULE BUNDLER HERE -->
 <script type='text/javascript' src="https://cdn.jsdelivr.net/npm/tweakpane@3.1.9/dist/tweakpane.min.js"></script>
 <script type='text/javascript' src="https://unpkg.com/csscolorparser@1.0.3/csscolorparser.js"></script>
-<script src='/debug/dynamic.js'></script>
-<script src='../dist/mapbox-gl-dev.js'></script>
-<script src='../debug/access_token_generated.js'></script>
-<script>
+<script src="/debug/dynamic.js"></script>
+<script type="module">
+import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+import {getAccessToken} from './access_token_generated.js';
 
 const Demo3D = function() {
     this.enableTerrain = false;
@@ -113,6 +113,7 @@ const Demo3D = function() {
 
     this.mapProjection = 'globe';
     this.orthographicProjectionAtLowPitch = false;
+    this.nearClipOffset = 0;
     this.buildingExtrusion = "extrusion";
     this.enableBuildings = true;
 
@@ -262,6 +263,11 @@ window.onload = function() {
     camera.addInput(demo3d, 'orthographicProjectionAtLowPitch').on('change', (ev) => {
         map.setCamera({'camera-projection': ev.value ? 'orthographic' : 'perspective'});
     });
+    camera.addInput(demo3d, 'nearClipOffset', {min:-1000.0, max:1000.0}).on('change', (ev) => {
+        map.setNearClipOffset(ev.value);
+    });
+
+
 
     // Sky
     const sky = gui.addFolder({title:'Sky', expanded:false});
@@ -361,6 +367,7 @@ window.onload = function() {
 };
 
 var map = window.map = new mapboxgl.Map({
+    accessToken: getAccessToken(),
     container: 'map',
     zoom: 13.5,
     center: [-122.45814, 37.76159],

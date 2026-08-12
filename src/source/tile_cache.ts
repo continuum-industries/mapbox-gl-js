@@ -1,4 +1,4 @@
-import {OverscaledTileID} from './tile_id';
+import type {OverscaledTileID} from './tile_id';
 import type Tile from './tile';
 
 /**
@@ -10,11 +10,11 @@ import type Tile from './tile';
  */
 class TileCache {
     max: number;
-    data: Partial<Record<string | number, Array<{
+    data!: Partial<Record<string | number, Array<{
         value: Tile;
         timeout: number | null | undefined;
     }>>>;
-    order: Array<number>;
+    order!: Array<number>;
     onRemove: (element: Tile) => void;
     /**
      * @param {number} max The max number of permitted values.
@@ -204,7 +204,7 @@ class TileCache {
      * @param {function} filterFn Determines whether the tile is filtered. If the supplied function returns false, the tile will be filtered out.
      */
     filter(filterFn: (tile: Tile) => boolean) {
-        const removed = [];
+        const removed: Array<{value: Tile; timeout: number | null | undefined}> = [];
         for (const key in this.data) {
             for (const entry of this.data[key]) {
                 if (!filterFn(entry.value)) {

@@ -4,13 +4,12 @@ import DepthMode from '../gl/depth_mode';
 import StencilMode from '../gl/stencil_mode';
 import {warnOnce} from '../util/util';
 import {globeToMercatorTransition} from './../geo/projection/globe_util';
+import assert from '../style-spec/util/assert';
 
 import type Painter from './painter';
 import type {OverscaledTileID} from '../source/tile_id';
 import type SourceCache from '../source/source_cache';
 import type CustomStyleLayer from '../style/style_layer/custom_style_layer';
-import MercatorCoordinate from '../geo/mercator_coordinate';
-import assert from 'assert';
 
 function drawCustom(painter: Painter, sourceCache: SourceCache, layer: CustomStyleLayer, coords: Array<OverscaledTileID>) {
 
@@ -32,9 +31,9 @@ function drawCustom(painter: Painter, sourceCache: SourceCache, layer: CustomSty
 
             if (painter.transform.projection.name === "globe") {
                 const center = painter.transform.pointMerc;
-                prerender.call(implementation, context.gl, painter.transform.customLayerMatrix(), painter.transform.getProjection(), painter.transform.globeToMercatorMatrix(),  globeToMercatorTransition(painter.transform.zoom), [center.x, center.y], painter.transform.pixelsPerMeterRatio);
+                prerender.call(implementation, context.gl, painter.transform.customLayerMatrix() as number[], painter.transform.getProjection(), painter.transform.globeToMercatorMatrix(),  globeToMercatorTransition(painter.transform.zoom), [center.x, center.y], painter.transform.pixelsPerMeterRatio);
             } else {
-                prerender.call(implementation, context.gl, painter.transform.customLayerMatrix());
+                prerender.call(implementation, context.gl, painter.transform.customLayerMatrix() as number[]);
             }
 
             context.setDirty();
@@ -49,14 +48,39 @@ function drawCustom(painter: Painter, sourceCache: SourceCache, layer: CustomSty
             const renderToTile = implementation.renderToTile;
             if (renderToTile) {
                 const c = coords[0].canonical;
-                const unwrapped = new MercatorCoordinate(c.x + coords[0].wrap * (1 << c.z), c.y, c.z);
+                const renderCoords = {
+                    /*
+                     * We intentionally baked wrap into x coordinate before and
+                     * we need to keep backward-compatibility.
+                     *
+                     * https://github.com/mapbox/mapbox-gl-js/pull/12182/commits/8b9071f751b9ed9ae4389dce7fb2e30aae984f9d
+                     */
+                    x: c.x + coords[0].wrap * (implementation.wrapTileId ? 0 : (1 << c.z)),
+                    y: c.y,
+                    z: c.z
+                };
 
                 context.setDepthMode(DepthMode.disabled);
                 context.setStencilMode(StencilMode.disabled);
                 context.setColorMode(painter.colorModeForRenderPass());
                 painter.setCustomLayerDefaults();
 
-                renderToTile.call(implementation, context.gl, unwrapped);
+                const gl = context.gl;
+                if (painter.emissiveMode === 'mrt-fallback') {
+                    // In the emissive MRT-fallback path the proxy tile FBO is bound with two draw
+                    // buffers ([COLOR_ATTACHMENT0, COLOR_ATTACHMENT1]). A custom layer's fragment
+                    // shader only declares a single color output, so with both buffers enabled its
+                    // color never lands in attachment 0. Restrict the custom draw to attachment 0.
+                    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+                }
+
+                renderToTile.call(implementation, context.gl, renderCoords);
+
+                if (painter.emissiveMode === 'mrt-fallback') {
+                    // Restore the draw buffer state expected by the rest of the render pipeline.
+                    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+                }
+
                 context.setDirty();
                 painter.setBaseState();
             }
@@ -76,9 +100,9 @@ function drawCustom(painter: Painter, sourceCache: SourceCache, layer: CustomSty
 
         if (painter.transform.projection.name === "globe") {
             const center = painter.transform.pointMerc;
-            implementation.render(context.gl, painter.transform.customLayerMatrix(), painter.transform.getProjection(), painter.transform.globeToMercatorMatrix(), globeToMercatorTransition(painter.transform.zoom), [center.x, center.y], painter.transform.pixelsPerMeterRatio);
+            implementation.render(context.gl, painter.transform.customLayerMatrix() as number[], painter.transform.getProjection(), painter.transform.globeToMercatorMatrix(), globeToMercatorTransition(painter.transform.zoom), [center.x, center.y], painter.transform.pixelsPerMeterRatio);
         } else {
-            implementation.render(context.gl, painter.transform.customLayerMatrix());
+            implementation.render(context.gl, painter.transform.customLayerMatrix() as number[]);
         }
 
         context.setDirty();

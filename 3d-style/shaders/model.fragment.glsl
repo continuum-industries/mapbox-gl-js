@@ -1,12 +1,20 @@
 #include "_prelude_fog.fragment.glsl"
 #include "_prelude_shadow.fragment.glsl"
 #include "_prelude_lighting.glsl"
+#include "_prelude_indicator_cutout.fragment.glsl"
+#include "_prelude_feature_cutout.fragment.glsl"
 
 uniform float u_opacity;
 
+#ifdef DITHERED_DISCARD
+uniform float u_dithered_discard_threshold;
+#endif
+
+#ifndef LIGHTING_3D_MODE
 uniform vec3 u_lightcolor;
 uniform vec3 u_lightpos;
 uniform float u_lightintensity;
+#endif
 
 uniform vec4 u_baseColorFactor;
 uniform vec4 u_emissiveFactor;
@@ -19,8 +27,8 @@ in highp vec4 v_position_height;
 in lowp vec4 v_color_mix;
 
 #ifdef RENDER_SHADOWS
-in vec4 v_pos_light_view_0;
-in vec4 v_pos_light_view_1;
+in highp vec4 v_pos_light_view_0;
+in highp vec4 v_pos_light_view_1;
 in float v_depth_shadows;
 #endif
 
@@ -68,14 +76,45 @@ uniform sampler2D u_emissionTexture;
 uniform highp sampler3D u_lutTexture;
 #endif
 
+#ifdef FEATURE_CUTOUT_VERTEX
+in highp float v_cutout_factor;
+#endif
+
 #ifdef TERRAIN_FRAGMENT_OCCLUSION
 in highp float v_depth;
-uniform sampler2D u_depthTexture;
-uniform vec2 u_inv_depth_size;
+uniform highp sampler2D u_depthTexture;
+uniform highp vec2 u_inv_depth_size;
+uniform highp vec2 u_depth_range_unpack;
+
+#ifdef DEPTH_D24
+    highp float unpack_depth(highp float depth) {
+        return  depth * u_depth_range_unpack.x + u_depth_range_unpack.y;
+    }
+#else
+    // Unpack depth from RGBA. A piece of code copied in various libraries and WebGL
+    // shadow mapping examples.
+    // https://aras-p.info/blog/2009/07/30/encoding-floats-to-rgba-the-final/
+    highp float unpack_depth_rgba(highp vec4 rgba_depth)
+    {
+        const highp vec4 bit_shift = vec4(1.0 / (255.0 * 255.0 * 255.0), 1.0 / (255.0 * 255.0), 1.0 / 255.0, 1.0);
+        return dot(rgba_depth, bit_shift) * 2.0 - 1.0;
+    }
+#endif
 
 bool isOccluded() {
-    vec2 coord = gl_FragCoord.xy * u_inv_depth_size;
-    highp float depth = unpack_depth(texture(u_depthTexture, coord));
+    highp vec2 coord = gl_FragCoord.xy * u_inv_depth_size;
+
+    #ifdef FLIP_Y
+        coord.y = 1.0 - coord.y;
+    #endif
+
+
+    #ifdef DEPTH_D24
+        highp float depth = unpack_depth(texture(u_depthTexture, coord).r);
+    #else
+        highp float depth = unpack_depth_rgba(texture(u_depthTexture, coord));
+    #endif
+
     // Add some marging to avoid depth precision issues
     return v_depth > depth + 0.0005;
 }
@@ -147,10 +186,7 @@ vec4 getBaseColor() {
 
 #ifdef UNPREMULT_TEXTURE_IN_SHADER
     // Unpremultiply alpha for decals and opaque materials.
-    if(texColor.w > 0.0) {
-        texColor.rgb /= texColor.w;
-    }
-    texColor.w = 1.0;
+    texColor = vec4(unpremultiplyColor(texColor), 1.0);
 #endif
 
     if(u_baseTextureIsAlpha) {
@@ -187,6 +223,11 @@ highp mat3 cotangentFrame(highp vec3 N, highp vec3 p, highp vec2 uv ) {
     highp vec3 dp1perp = cross( N, dp1 );
     highp vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     highp vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+#ifdef FLIP_Y
+    T = -T;
+    B = -B;
+#endif
+
     // construct a scale-invariant frame
     // Some Adrenos GPU needs to set explicitely highp
     highp float lengthT = dot(T,T);
@@ -210,7 +251,11 @@ highp vec3 getNormal(){
     highp vec3 fdx = vec3(dFdx(v_position_height.x), dFdx(v_position_height.y), dFdx(v_position_height.z));
     highp vec3 fdy = vec3(dFdy(v_position_height.x), dFdy(v_position_height.y), dFdy(v_position_height.z));
     // Z flipped so it is towards the camera.
+#ifdef FLIP_Y
+    n = normalize(cross(fdx,fdy));
+#else
     n = normalize(cross(fdx,fdy)) * -1.0;
+#endif
 #endif
 
 #if defined(HAS_TEXTURE_u_normalTexture) && defined(HAS_ATTRIBUTE_a_uv_2f)
@@ -246,7 +291,7 @@ Material getPBRMaterial() {
     mat.metallic = v_roughness_metallic_emissive_alpha.y;
     mat.baseColor.w *= v_roughness_metallic_emissive_alpha.w;
 #endif
-#if defined(HAS_TEXTURE_u_metallicRoughnessTexture) && defined(HAS_ATTRIBUTE_a_uv_2f) 
+#if defined(HAS_TEXTURE_u_metallicRoughnessTexture) && defined(HAS_ATTRIBUTE_a_uv_2f)
     vec4 mrSample = texture(u_metallicRoughnessTexture, uv_2f);
     mat.perceptualRoughness *= mrSample.g;
     mat.metallic *= mrSample.b;
@@ -426,8 +471,8 @@ void main() {
     }
 #endif
 
-    vec3 lightDir = u_lightpos;
-    vec3 lightColor = u_lightcolor;
+    vec3 lightDir;
+    vec3 lightColor;
 
 #ifdef LIGHTING_3D_MODE
     lightDir = u_lighting_directional_dir;
@@ -435,6 +480,9 @@ void main() {
     // as a new citizen, better to not change legacy code convention.
     lightDir.xy = -lightDir.xy;
     lightColor = u_lighting_directional_color;
+#else
+    lightDir = u_lightpos;
+    lightColor = u_lightcolor;
 #endif
 
 vec4 finalColor;
@@ -473,6 +521,12 @@ vec4 finalColor;
 #if defined(HAS_TEXTURE_u_emissionTexture) && defined(HAS_ATTRIBUTE_a_uv_2f)
     emissive.rgb *= sRGBToLinear(texture(u_emissionTexture, uv_2f).rgb);
 #endif
+#ifdef APPLY_LUT_ON_GPU
+    // Note: the color is multiplied by the length of u_emissiveFactor
+    // which avoids increasing the brightness if the LUT doesn't have pure black.
+    float emissiveFactorLength = max(length(u_emissiveFactor.rgb), 0.001);
+    emissive.rgb = sRGBToLinear(applyLUT(u_lutTexture, linearTosRGB(emissive.rgb / emissiveFactorLength).rbg)) * emissiveFactorLength;
+#endif
     color += emissive.rgb;
 
     // Apply transparency
@@ -494,10 +548,6 @@ vec4 finalColor;
     distance +=  mix(0.5, 0.0, clamp(resEmission - 1.0, 0.0, 1.0));
     opacity *= v_roughness_metallic_emissive_alpha.w * saturate(1.0 - distance * distance);
 #endif
-#else
-#ifdef APPLY_LUT_ON_GPU
-    color = applyLUT(u_lutTexture, color);
-#endif
 #endif
     // Use emissive strength as interpolation between lit and unlit color
     // for coherence with other layer types.
@@ -508,6 +558,27 @@ vec4 finalColor;
     finalColor = vec4(color, opacity);
 #endif // !DIFFUSE_SHADED
 
+#ifdef DITHERED_DISCARD
+    // fade in/out using discard and 4x4 Bayer matrix for dithering
+    // creates a smooth transition without alpha blending
+    // if u_dithered_discard_threshold == 1 or -1, the model gets fully rendered, at 0 it is fully discarded
+    // values between 0 and +1/-1 get partically discarded, using the ditherValue or the negated dither value as the threshold
+    // this allows to cross-fade between two models
+    if (abs(u_dithered_discard_threshold) < 1.0) {
+
+        // Get dither value for pixel at coordinate using "Interleaved gradient noise"
+        float ditherValue = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
+
+        // Fade in: discard if threshold < ditherValue
+        // Fade out: discard if -threshold < 1.0 - ditherValue
+        // Use mix to select values without branching
+        float compareValue = mix(1.0 - ditherValue, ditherValue, step(0.0, u_dithered_discard_threshold));
+        if (abs(u_dithered_discard_threshold) < compareValue) {
+            discard;
+        }
+    }
+#endif
+
 #ifdef FOG
     finalColor = fog_dither(fog_apply_premultiplied(finalColor, v_fog_pos, v_position_height.w));
 #endif
@@ -517,7 +588,16 @@ vec4 finalColor;
 #endif
 
 #ifdef INDICATOR_CUTOUT
-    finalColor = applyCutout(finalColor);
+    finalColor = applyCutout(finalColor, v_position_height.w);
+#endif
+
+#ifdef FEATURE_CUTOUT_VERTEX
+    // Apply pre-calculated cutout factor
+    apply_feature_cutout_dither(gl_FragCoord, v_cutout_factor);
+#else
+#ifdef FEATURE_CUTOUT
+    finalColor = apply_feature_cutout(finalColor, gl_FragCoord, get_cutout_factors(gl_FragCoord).x, 0.0);
+#endif
 #endif
 
     glFragColor = finalColor;

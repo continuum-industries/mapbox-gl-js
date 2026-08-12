@@ -1,10 +1,13 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 import {beforeEach, describe, test, expect, waitFor, vi, createMap} from '../../../util/vitest';
 import {fixedLngLat} from '../../../util/fixed';
 
 function pointToFixed(p, n = 8) {
     return {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         'x': p.x.toFixed(n),
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         'y': p.y.toFixed(n)
     };
 }
@@ -118,6 +121,11 @@ describe('Map#projection', () => {
 
             await waitFor(map, "load");
 
+            // Ensure the deferred globe terrain renderer has been created and its setup
+            // render (_calcMatrices) has already fired before we install the spy, so
+            // the subsequent setZoom(7) produces exactly the expected count of 3.
+            await vi.waitUntil(() => !!map.painter._terrain, {timeout: 3000});
+
             vi.spyOn(map.transform, 'setMercatorFromTransition');
             vi.spyOn(map.transform, '_calcMatrices');
 
@@ -150,7 +158,7 @@ describe('Map#projection', () => {
             expect(map._showingGlobe()).toBeFalsy();
 
             map.setProjection({name: 'mercator'});
-            expect(map.painter.clearBackgroundTiles).not.toHaveBeenCalled();
+            expect(map.painter.clearBackgroundTiles).to.toHaveBeenCalledTimes(1);
             expect(map.getProjection().name).toEqual('mercator');
             expect(map.transform.getProjection().name).toEqual(`mercator`);
             expect(map._showingGlobe()).toBeFalsy();
@@ -158,7 +166,7 @@ describe('Map#projection', () => {
             map.setZoom(3);
             await waitFor(map, "render");
             map.setProjection({name: 'globe'});
-            expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(1);
+            expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(2);
             expect(map.getProjection().name).toEqual('globe');
             expect(map.transform.getProjection().name).toEqual(`globe`);
             expect(map._showingGlobe()).toBeTruthy();
@@ -191,7 +199,7 @@ describe('Map#projection', () => {
             expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(2);
 
             // Runtime api overrides stylesheet projection
-            style.setState(Object.assign({}, style.serialize(), {projection: {name: 'naturalEarth'}}));
+            style.setState({...style.serialize(), projection: {name: 'naturalEarth'}});
             expect(style.serialize().projection.name).toEqual('naturalEarth');
             expect(map.transform.getProjection().name).toEqual('winkelTripel');
             expect(map.painter.clearBackgroundTiles).toHaveBeenCalledTimes(2);
@@ -314,7 +322,7 @@ describe('Map#projection', () => {
             expect(map.getProjection().name).toEqual('albers');
 
             // setStyle with diffing
-            map.setStyle(Object.assign({}, map.getStyle(), {projection: {name: 'winkelTripel'}}));
+            map.setStyle({...map.getStyle(), projection: {name: 'winkelTripel'}});
             expect(map.getProjection().name).toEqual('albers');
             expect(map.style.stylesheet.projection.name).toEqual('winkelTripel');
 
@@ -341,22 +349,33 @@ describe('Map#projection', () => {
         });
 
         test('In Mercator', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: 0, lat: 0}))).toEqual({x: "100.00000000", y: "100.00000000"});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: -70.3125, lat: 57.326521225}))).toEqual({x: "0.00000000", y: "0.00000000"});
         });
         test('In Globe', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('globe');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: 0, lat: 0}))).toEqual({x: "100.00000000", y: "100.00000000"});
-            expect(pointToFixed(map.project({lng:  -72.817409474, lat: 43.692434709}))).toEqual({x: "38.86205343", y: "38.86205343"});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+            expect(pointToFixed(map.project({lng: -72.817409474, lat: 43.692434709}))).toEqual({x: "38.86205343", y: "38.86205343"});
         });
         test('In Natural Earth', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('naturalEarth');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: 0, lat: 0}))).toEqual({x: "100.00000000", y: "100.00000000"});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: -86.861020716, lat: 61.500721712}))).toEqual({x: "0.00000000", y: "-0.00000000"});
         });
         test('In Albers', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('albers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: 0, lat: 0}))).toEqual({x: "100.00000000", y: "100.00000000"});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(pointToFixed(map.project({lng: 44.605340721, lat: 79.981951054}))).toEqual({x: "-0.00000000", y: "-0.00000000"});
         });
     });
@@ -369,22 +388,33 @@ describe('Map#projection', () => {
         });
 
         test('In Mercator', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([100, 100]))).toEqual({lng: -0, lat: 0});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([0, 0]))).toEqual({lng: -70.3125, lat: 57.326521225});
         });
         test('In Globe', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('globe');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([100, 100]))).toEqual({lng: -0, lat: 0});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([0, 0]))).toEqual({lng: -67.77848443, lat: 42.791315106});
         });
         test('In Natural Earth', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('naturalEarth');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([100, 100]))).toEqual({lng: -0, lat: 0});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([0, 0]))).toEqual({lng: -86.861020716, lat: 61.500721712});
         });
         test('In Albers', () => {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             map.setProjection('albers');
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([100, 100]))).toEqual({lng: 0, lat: -0});
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
             expect(fixedLngLat(map.unproject([0, 0]))).toEqual({lng: 44.605340721, lat: 79.981951054});
         });
     });

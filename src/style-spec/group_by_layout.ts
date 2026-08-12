@@ -1,8 +1,10 @@
-import type {LayerSpecification} from './types';
-
 import refProperties from './util/ref_properties';
 
-function stringify(obj: any) {
+import type {LayerSpecification} from './types';
+
+type IndexableLayer = LayerSpecification & Record<string, unknown>;
+
+function stringify(obj: unknown) {
     if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'string' || obj === undefined || obj === null)
         return JSON.stringify(obj);
 
@@ -16,17 +18,36 @@ function stringify(obj: any) {
 
     let str = '{';
     for (const key of Object.keys(obj).sort()) {
-        str += `${key}:${stringify((obj)[key])},`;
+        str += `${key}:${stringify((obj as Record<string, unknown>)[key])},`;
     }
     return `${str}}`;
 }
 
-function getKey(layer: LayerSpecification) {
+function getKey(layer: IndexableLayer) {
     let key = '';
     for (const k of refProperties) {
-        key += `/${stringify((layer as any)[k])}`;
+        key += `/${stringify(layer[k])}`;
     }
     return key;
+}
+
+function containsKey(obj: unknown, key: string) {
+    function recursiveSearch(item: unknown): boolean {
+        if (typeof item === 'string' && item === key) {
+            return true;
+        }
+
+        if (Array.isArray(item)) {
+            return item.some(recursiveSearch);
+        }
+
+        if (item && typeof item === 'object') {
+            return Object.values(item).some(recursiveSearch);
+        }
+
+        return false;
+    }
+    return recursiveSearch(obj);
 }
 
 /**
@@ -50,26 +71,50 @@ export default function groupByLayout(
         [id: string]: string;
     },
 ): Array<Array<LayerSpecification>> {
-    const groups: Record<string, any> = {};
+    const groups = Object.create(null) as Record<string, LayerSpecification[]>;
 
     for (let i = 0; i < layers.length; i++) {
+        const layer = layers[i]!;
+        let k = cachedKeys && cachedKeys[layer.id];
 
-        const k = (cachedKeys && cachedKeys[layers[i].id]) || getKey(layers[i]);
+        if (!k) {
+            // Do not group symbol layers together, as their paint properties affect placement
+            if (layer.type === 'symbol') {
+                k = layer.id;
+            } else {
+                k =  getKey(layer);
+                // The usage of "line-progress" inside "line-width" or "line-emissive-strength"
+                // makes the property act like a layout property: the bucket needs to evaluate it
+                // per-vertex against the first layer's paint, so layers that disagree on whether
+                // line-progress is used can't share a bucket.
+                if (layer.type === 'line' && layer["paint"]) {
+                    const lineWidth = layer["paint"]['line-width'];
+                    if (containsKey(lineWidth, 'line-progress')) {
+                        k += `/${stringify(layer["paint"]['line-width'])}`;
+                    }
+                    const lineEmissiveStrength = layer["paint"]['line-emissive-strength'];
+                    if (containsKey(lineEmissiveStrength, 'line-progress')) {
+                        k += `/${stringify(layer["paint"]['line-emissive-strength'])}`;
+                    }
+                }
+            }
+        }
+
         // update the cache if there is one
         if (cachedKeys)
-            cachedKeys[layers[i].id] = k;
+            cachedKeys[layer.id] = k;
 
         let group = groups[k];
         if (!group) {
             group = groups[k] = [];
         }
-        group.push(layers[i]);
+        group.push(layer);
     }
 
-    const result = [];
+    const result: LayerSpecification[][] = [];
 
     for (const k in groups) {
-        result.push(groups[k]);
+        result.push(groups[k]!);
     }
 
     return result;

@@ -3,7 +3,10 @@
   "metadata": {
     "test": {
       "height": 128,
-      "width": 128
+      "width": 128,
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky, under development"}
+      ]
     }
   },
   "lights": [
@@ -24,7 +27,7 @@
     }
   ],
   "zoom": 2,
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "sources": {
     "a": {
       "type": "geojson",
@@ -123,10 +126,10 @@
               ]
             ],
             "street",
-            "generic_icon",
+            "information",
             "path",
-            "generic_metro",
-            "school_icon"
+            "car",
+            "school"
           ]
         ]
       }

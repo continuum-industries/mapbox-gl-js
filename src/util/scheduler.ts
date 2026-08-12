@@ -1,12 +1,13 @@
 import ThrottledInvoker from './throttled_invoker';
 import {bindAll, isWorker} from './util';
 import {PerformanceUtils} from './performance';
+import {RenderSourceType} from '../source/render_source_type';
 
 import type {Cancelable} from '../types/cancelable';
 
-type TaskMetadata = {
+export type TaskMetadata = {
     type: 'message' | 'maybePrepare' | 'parseTile';
-    isSymbolTile: boolean | null | undefined;
+    renderSourceType?: RenderSourceType | null;
     zoom?: number;
 };
 
@@ -21,19 +22,14 @@ type Task = {
 
 class Scheduler {
 
-    tasks: {
-        [key: number]: Task;
-    };
-    taskQueue: Array<number>;
+    tasks: Map<number, Task>;
     invoker: ThrottledInvoker;
     nextId: number;
 
     constructor() {
-        this.tasks = {};
-        this.taskQueue = [];
+        this.tasks = new Map();
         bindAll(['process'], this);
         this.invoker = new ThrottledInvoker(this.process);
-
         this.nextId = 0;
     }
 
@@ -43,7 +39,7 @@ class Scheduler {
 
         if (priority === 0) {
             // Process tasks with priority 0 immediately. Do not yield to the event loop.
-            const m = isWorker() ? PerformanceUtils.beginMeasure('workerTask') : undefined;
+            const m = isWorker(self) ? PerformanceUtils.beginMeasure('workerTask') : undefined;
             try {
                 fn();
             } finally {
@@ -53,38 +49,27 @@ class Scheduler {
             return null;
         }
 
-        this.tasks[id] = {fn, metadata, priority, id};
-        this.taskQueue.push(id);
+        this.tasks.set(id, {fn, metadata, priority, id});
         this.invoker.trigger();
         return {
             cancel: () => {
-                delete this.tasks[id];
+                this.tasks.delete(id);
             }
         };
     }
 
     process() {
-        const m = isWorker() ? PerformanceUtils.beginMeasure('workerTask') : undefined;
+        const m = isWorker(self) ? PerformanceUtils.beginMeasure('workerTask') : undefined;
         try {
-            this.taskQueue = this.taskQueue.filter(id => !!this.tasks[id]);
+            const task = this.pick();
+            if (!task) return;
 
-            if (!this.taskQueue.length) {
-                return;
-            }
-            const id = this.pick();
-            if (id === null) return;
-
-            const task = this.tasks[id];
-            delete this.tasks[id];
+            this.tasks.delete(task.id);
             // Schedule another process call if we know there's more to process _before_ invoking the
             // current task. This is necessary so that processing continues even if the current task
             // doesn't execute successfully.
-            if (this.taskQueue.length) {
+            if (this.tasks.size > 0) {
                 this.invoker.trigger();
-            }
-            if (!task) {
-                // If the task ID doesn't have associated task data anymore, it was canceled.
-                return;
             }
 
             task.fn();
@@ -93,41 +78,32 @@ class Scheduler {
         }
     }
 
-    pick(): null | number {
-        let minIndex = null;
+    pick(): Task | null {
+        let result: Task | null = null;
         let minPriority = Infinity;
-        for (let i = 0; i < this.taskQueue.length; i++) {
-            const id = this.taskQueue[i];
-            const task = this.tasks[id];
+        for (const task of this.tasks.values()) {
             if (task.priority < minPriority) {
                 minPriority = task.priority;
-                minIndex = i;
+                result = task;
             }
         }
-        if (minIndex === null) return null;
-        const id = this.taskQueue[minIndex];
-        this.taskQueue.splice(minIndex, 1);
-        return id;
+        return result;
     }
 
     remove() {
+        this.tasks.clear();
         this.invoker.remove();
     }
 }
 
-function getPriority(
-    {
-        type,
-        isSymbolTile,
-        zoom,
-    }: TaskMetadata,
-): number {
+function getPriority({type, renderSourceType, zoom}: TaskMetadata): number {
     zoom = zoom || 0;
+    const isSymbol = renderSourceType === RenderSourceType.Symbol;
     if (type === 'message') return 0;
-    if (type === 'maybePrepare' && !isSymbolTile) return 100 - zoom;
-    if (type === 'parseTile' && !isSymbolTile) return 200 - zoom;
-    if (type === 'parseTile' && isSymbolTile) return 300 - zoom;
-    if (type === 'maybePrepare' && isSymbolTile) return 400 - zoom;
+    if (type === 'maybePrepare' && !isSymbol) return 100 - zoom;
+    if (type === 'parseTile' && !isSymbol) return 200 - zoom;
+    if (type === 'parseTile' && isSymbol) return 300 - zoom;
+    if (type === 'maybePrepare' && isSymbol) return 400 - zoom;
     return 500;
 }
 

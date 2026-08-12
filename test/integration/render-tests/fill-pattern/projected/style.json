@@ -5,8 +5,17 @@
       "height": 256,
       "width": 256,
       "operations": [
-        ["setProjection", "albers"],
-        ["wait"]
+        [
+          "setProjection",
+          "albers"
+        ],
+        [
+          "wait"
+        ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web", "reason": "Pattern should be seamless across tile edges https://github.com/mapbox/mapbox-gl-js/issues/11221"},
+        {"platform-tag-contains": "native", "reason": "skip - https://github.com/mapbox/mapbox-gl-native-internal/issues/2534"}
       ]
     }
   },
@@ -47,7 +56,7 @@
       "data": "local://data/graticule.geojson"
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "fill",
@@ -55,7 +64,7 @@
       "source": "geojson",
       "paint": {
         "fill-antialias": false,
-        "fill-pattern": "generic_icon"
+        "fill-pattern": "information"
       }
     },
     {
@@ -63,8 +72,8 @@
       "source": "graticule",
       "type": "line",
       "paint": {
-          "line-width": 1,
-          "line-color": "#aaa"
+        "line-width": 1,
+        "line-color": "#aaa"
       }
     }
   ]

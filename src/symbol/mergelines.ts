@@ -1,14 +1,14 @@
 import type Point from '@mapbox/point-geometry';
 import type {SymbolFeature} from '../data/bucket/symbol_bucket';
 
-export default function(features: Array<SymbolFeature>): Array<SymbolFeature> {
+export default function (features: Array<SymbolFeature>): Array<SymbolFeature> {
     const leftIndex: {
         [_: string]: number;
     } = {};
     const rightIndex: {
         [_: string]: number;
     } = {};
-    const mergedFeatures = [];
+    const mergedFeatures: (SymbolFeature | undefined)[] = [];
     let mergedIndex = 0;
 
     function add(k: number) {
@@ -22,6 +22,7 @@ export default function(features: Array<SymbolFeature>): Array<SymbolFeature> {
         rightIndex[rightKey] = i;
 
         mergedFeatures[i].geometry[0].pop();
+
         mergedFeatures[i].geometry[0] = mergedFeatures[i].geometry[0].concat(geom[0]);
         return i;
     }
@@ -32,12 +33,13 @@ export default function(features: Array<SymbolFeature>): Array<SymbolFeature> {
         leftIndex[leftKey] = i;
 
         mergedFeatures[i].geometry[0].shift();
+
         mergedFeatures[i].geometry[0] = geom[0].concat(mergedFeatures[i].geometry[0]);
         return i;
     }
 
     function getKey(text: string, geom: Array<Array<Point>>, onRight?: boolean | null) {
-        const point = onRight ? geom[0][geom[0].length - 1] : geom[0][0];
+        const point = onRight ? geom[0].at(-1) : geom[0][0];
         return `${text}:${point.x}:${point.y}`;
     }
 
@@ -46,24 +48,26 @@ export default function(features: Array<SymbolFeature>): Array<SymbolFeature> {
         const geom = feature.geometry;
         const text = feature.text ? feature.text.toString() : null;
 
-        if (!text) {
+        if (!text || geom.length > 1) {
             add(k);
             continue;
         }
 
-        const leftKey = getKey(text, geom),
+        const leftKey = getKey(text, geom, false),
             rightKey = getKey(text, geom, true);
 
         if ((leftKey in rightIndex) && (rightKey in leftIndex) && (rightIndex[leftKey] !== leftIndex[rightKey])) {
             // found lines with the same text adjacent to both ends of the current line, merge all three
             const j = mergeFromLeft(leftKey, rightKey, geom);
+
             const i = mergeFromRight(leftKey, rightKey, mergedFeatures[j].geometry);
 
             delete leftIndex[leftKey];
             delete rightIndex[rightKey];
 
             rightIndex[getKey(text, mergedFeatures[i].geometry, true)] = i;
-            mergedFeatures[j].geometry = (null as any);
+
+            mergedFeatures[j].geometry = null;
 
         } else if (leftKey in rightIndex) {
             // found mergeable line adjacent to the start of the current line, merge

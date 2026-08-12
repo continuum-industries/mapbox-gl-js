@@ -1,5 +1,4 @@
 import {CircleLayoutArray, CircleGlobeExtArray} from '../array_types';
-
 import {circleAttributes, circleGlobeAttributesExt} from './circle_attributes';
 import SegmentVector from '../segment';
 import {ProgramConfigurationSet} from '../program_configuration';
@@ -10,6 +9,9 @@ import EXTENT from '../../style-spec/data/extent';
 import {register} from '../../util/web_worker_transfer';
 import EvaluationParameters from '../../style/evaluation_parameters';
 
+import type Point from '@mapbox/point-geometry';
+import type {ElevationFeature} from '../../../3d-style/elevation/elevation_feature';
+import type {CircleHDExtension} from '../../../3d-style/data/bucket/circle_hd_extension';
 import type {CanonicalTileID, UnwrappedTileID} from '../../source/tile_id';
 import type {
     Bucket,
@@ -18,12 +20,12 @@ import type {
     IndexedFeature,
     PopulateParameters
 } from '../bucket';
+import type {TypedStyleLayer} from '../../style/style_layer/typed_style_layer';
 import type CircleStyleLayer from '../../style/style_layer/circle_style_layer';
 import type HeatmapStyleLayer from '../../style/style_layer/heatmap_style_layer';
 import type Context from '../../gl/context';
 import type IndexBuffer from '../../gl/index_buffer';
 import type VertexBuffer from '../../gl/vertex_buffer';
-import type Point from '@mapbox/point-geometry';
 import type {FeatureStates} from '../../source/source_state';
 import type {SpritePositions} from '../../util/image';
 import type {TileTransform} from '../../geo/projection/tile_transform';
@@ -32,23 +34,8 @@ import type Projection from '../../geo/projection/projection';
 import type {vec3} from 'gl-matrix';
 import type {VectorTileLayer} from '@mapbox/vector-tile';
 import type {TileFootprint} from '../../../3d-style/util/conflation';
-
-function addCircleVertex(layoutVertexArray: CircleLayoutArray, x: number, y: number, extrudeX: number, extrudeY: number) {
-    layoutVertexArray.emplaceBack(
-        (x * 2) + ((extrudeX + 1) / 2),
-        (y * 2) + ((extrudeY + 1) / 2));
-}
-
-function addGlobeExtVertex(vertexArray: CircleGlobeExtArray, pos: {
-    x: number;
-    y: number;
-    z: number;
-}, normal: vec3) {
-    const encode = 1 << 14;
-    vertexArray.emplaceBack(
-        pos.x, pos.y, pos.z,
-        normal[0] * encode, normal[1] * encode, normal[2] * encode);
-}
+import type {ImageId} from '../../style-spec/expression/types/image_id';
+import type {GlobalProperties} from "../../style-spec/expression";
 
 /**
  * Circles are represented by two triangles.
@@ -57,28 +44,38 @@ function addGlobeExtVertex(vertexArray: CircleGlobeExtArray, pos: {
  * vector that is where it points.
  * @private
  */
-class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implements Bucket {
+class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer = CircleStyleLayer | HeatmapStyleLayer> implements Bucket {
     index: number;
     zoom: number;
     overscaling: number;
     layerIds: Array<string>;
     layers: Array<Layer>;
-    stateDependentLayers: Array<Layer>;
+    stateDependentLayers!: Array<CircleStyleLayer>;
     stateDependentLayerIds: Array<string>;
 
     layoutVertexArray: CircleLayoutArray;
-    layoutVertexBuffer: VertexBuffer;
+    layoutVertexBuffer!: VertexBuffer;
     globeExtVertexArray: CircleGlobeExtArray | null | undefined;
     globeExtVertexBuffer: VertexBuffer | null | undefined;
 
     indexArray: TriangleIndexArray;
-    indexBuffer: IndexBuffer;
+    indexBuffer!: IndexBuffer;
 
     hasPattern: boolean;
     programConfigurations: ProgramConfigurationSet<Layer>;
     segments: SegmentVector;
-    uploaded: boolean;
+    uploaded!: boolean;
     projection: ProjectionSpecification;
+
+    worldview: string | undefined;
+    hasAppearances: boolean | null;
+
+    // Optional HD augmentation, populated by maybeAttachCircleHDExt
+    // (3d-style/data/bucket/circle_hd_extension.ts) when the layer declares
+    // `circle-elevation-reference: 'hd-road-markup'`. Owns the elevated vertex array
+    // and buffer; CircleBucket delegates per-feature / per-vertex elevation writes
+    // to it during addFeature.
+    hdExt: CircleHDExtension | undefined;
 
     constructor(options: BucketParameters<Layer>) {
         this.zoom = options.zoom;
@@ -94,9 +91,19 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
         this.segments = new SegmentVector();
         this.programConfigurations = new ProgramConfigurationSet(options.layers, {zoom: options.zoom, lut: options.lut});
         this.stateDependentLayerIds = this.layers.filter((l) => l.isStateDependent()).map((l) => l.id);
+
+        this.worldview = options.worldview;
+        this.hasAppearances = null;
     }
 
     updateFootprints(_id: UnwrappedTileID, _footprints: Array<TileFootprint>) {
+    }
+
+    updateAppearances(_canonical?: CanonicalTileID, _featureState?: FeatureStates, _availableImages?: Array<ImageId>, _globalProperties?: GlobalProperties) {
+        return {
+            hasLayoutChanges: false,
+            hasUboChanges: false
+        };
     }
 
     populate(features: Array<IndexedFeature>, options: PopulateParameters, canonical: CanonicalTileID, tileTransform: TileTransform) {
@@ -106,30 +113,31 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
 
         // Heatmap layers are handled in this bucket and have no evaluated properties, so we check our access
         if (styleLayer.type === 'circle') {
-            circleSortKey = (styleLayer as CircleStyleLayer).layout.get('circle-sort-key');
+            circleSortKey = styleLayer.layout.get('circle-sort-key');
         }
 
         for (const {feature, id, index, sourceLayerIndex} of features) {
             const needGeometry = this.layers[0]._featureFilter.needGeometry;
             const evaluationFeature = toEvaluationFeature(feature, needGeometry);
 
-            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom), evaluationFeature, canonical))
+            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom, {worldview: this.worldview, activeFloors: options.activeFloors}), evaluationFeature, canonical))
                 continue;
 
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const sortKey = circleSortKey ?
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
                 circleSortKey.evaluate(evaluationFeature, {}, canonical) :
                 undefined;
 
             const bucketFeature: BucketFeature = {
                 id,
                 properties: feature.properties,
-                // @ts-expect-error - TS2322 - Type '0 | 2 | 1 | 3' is not assignable to type '2 | 1 | 3'.
                 type: feature.type,
                 sourceLayerIndex,
                 index,
-                // @ts-expect-error - TS2345 - Argument of type 'VectorTileFeature' is not assignable to parameter of type 'FeatureWithGeometry'.
                 geometry: needGeometry ? evaluationFeature.geometry : loadGeometry(feature, canonical, tileTransform),
                 patterns: {},
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 sortKey
             };
 
@@ -140,6 +148,7 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
         if (circleSortKey) {
             bucketFeatures.sort((a, b) => {
                 // a.sortKey is always a number when in use
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
                 return (a.sortKey as number) - (b.sortKey as number);
             });
         }
@@ -153,19 +162,26 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
         }
 
         for (const bucketFeature of bucketFeatures) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             const {geometry, index, sourceLayerIndex} = bucketFeature;
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
             const feature = features[index].feature;
 
-            this.addFeature(bucketFeature, geometry, index, options.availableImages, canonical, globeProjection, options.brightness);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+            this.addFeature(bucketFeature, geometry, index, options.availableImages, canonical, globeProjection, options.brightness, options.elevationFeatures);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
             options.featureIndex.insert(feature, geometry, index, sourceLayerIndex, this.index);
         }
+
+        if (this.hdExt) this.hdExt.finalize();
     }
 
-    update(states: FeatureStates, vtLayer: VectorTileLayer, availableImages: Array<string>, imagePositions: SpritePositions, brightness?: number | null) {
-        const withStateUpdates = Object.keys(states).length !== 0;
-        if (withStateUpdates && !this.stateDependentLayers.length) return;
-        const layers = withStateUpdates ? this.stateDependentLayers : this.layers;
-        this.programConfigurations.updatePaintArrays(states, vtLayer, layers, availableImages, imagePositions, brightness);
+    update(states: FeatureStates, vtLayer: VectorTileLayer, availableImages: ImageId[], imagePositions: SpritePositions, layers: ReadonlyArray<TypedStyleLayer>, isBrightnessChanged: boolean, brightness?: number | null) {
+        this.programConfigurations.updatePaintArrays(states, vtLayer, layers, availableImages, imagePositions, isBrightnessChanged, brightness, this.worldview);
+    }
+
+    updateExpressions(layers: ReadonlyArray<TypedStyleLayer>) {
+        this.programConfigurations.updateExpressions(layers);
     }
 
     isEmpty(): boolean {
@@ -184,6 +200,8 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
             if (this.globeExtVertexArray) {
                 this.globeExtVertexBuffer = context.createVertexBuffer(this.globeExtVertexArray, circleGlobeAttributesExt.members);
             }
+
+            if (this.hdExt) this.hdExt.upload(context);
         }
         this.programConfigurations.upload(context);
         this.uploaded = true;
@@ -198,9 +216,12 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
         if (this.globeExtVertexBuffer) {
             this.globeExtVertexBuffer.destroy();
         }
+        if (this.hdExt) this.hdExt.destroy();
     }
 
-    addFeature(feature: BucketFeature, geometry: Array<Array<Point>>, index: number, availableImages: Array<string>, canonical: CanonicalTileID, projection?: Projection | null, brightness?: number | null) {
+    addFeature(feature: BucketFeature, geometry: Array<Array<Point>>, index: number, availableImages: ImageId[], canonical: CanonicalTileID, projection?: Projection | null, brightness?: number | null, elevationFeatures?: ElevationFeature[]) {
+        if (this.hdExt) this.hdExt.beginFeature(feature, elevationFeatures, canonical);
+
         for (const ring of geometry) {
             for (const point of ring) {
                 const x = point.x;
@@ -221,20 +242,21 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
                 if (projection) {
                     const projectedPoint = projection.projectTilePoint(x, y, canonical);
                     const normal = projection.upVector(canonical, x, y);
-                    const array: any = this.globeExtVertexArray;
 
-                    addGlobeExtVertex(array, projectedPoint, normal);
-                    addGlobeExtVertex(array, projectedPoint, normal);
-                    addGlobeExtVertex(array, projectedPoint, normal);
-                    addGlobeExtVertex(array, projectedPoint, normal);
+                    this.addGlobeExtVertex(projectedPoint, normal);
+                    this.addGlobeExtVertex(projectedPoint, normal);
+                    this.addGlobeExtVertex(projectedPoint, normal);
+                    this.addGlobeExtVertex(projectedPoint, normal);
                 }
                 const segment = this.segments.prepareSegment(4, this.layoutVertexArray, this.indexArray, feature.sortKey);
                 const index = segment.vertexLength;
 
-                addCircleVertex(this.layoutVertexArray, x, y, -1, -1);
-                addCircleVertex(this.layoutVertexArray, x, y, 1, -1);
-                addCircleVertex(this.layoutVertexArray, x, y, 1, 1);
-                addCircleVertex(this.layoutVertexArray, x, y, -1, 1);
+                this.addCircleVertex(x, y, -1, -1);
+                this.addCircleVertex(x, y, 1, -1);
+                this.addCircleVertex(x, y, 1, 1);
+                this.addCircleVertex(x, y, -1, 1);
+
+                if (this.hdExt) this.hdExt.writeVertexQuad(x, y);
 
                 this.indexArray.emplaceBack(index, index + 1, index + 2);
                 this.indexArray.emplaceBack(index, index + 2, index + 3);
@@ -244,7 +266,24 @@ class CircleBucket<Layer extends CircleStyleLayer | HeatmapStyleLayer> implement
             }
         }
 
-        this.programConfigurations.populatePaintArrays(this.layoutVertexArray.length, feature, index, {}, availableImages, canonical, brightness);
+        this.programConfigurations.populatePaintArrays(this.layoutVertexArray.length, feature, index, {}, availableImages, canonical, brightness, undefined, this.worldview);
+    }
+
+    private addCircleVertex(x: number, y: number, extrudeX: number, extrudeY: number) {
+        const circleX = (x * 2) + ((extrudeX + 1) / 2);
+        const circleY = (y * 2) + ((extrudeY + 1) / 2);
+        this.layoutVertexArray.emplaceBack(circleX, circleY);
+    }
+
+    private addGlobeExtVertex(pos: {
+        x: number;
+        y: number;
+        z: number;
+    }, normal: vec3) {
+        const encode = 1 << 14;
+        this.globeExtVertexArray.emplaceBack(
+            pos.x, pos.y, pos.z,
+            normal[0] * encode, normal[1] * encode, normal[2] * encode);
     }
 }
 

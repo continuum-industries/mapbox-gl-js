@@ -1,11 +1,12 @@
 import earcut from 'earcut';
 import classifyRings from '../../util/classify_rings';
-import assert from 'assert';
+import assert from '../../style-spec/util/assert';
 import {register} from '../../util/web_worker_transfer';
 import loadGeometry from '../load_geometry';
 import toEvaluationFeature from '../evaluation_feature';
 import EvaluationParameters from '../../style/evaluation_parameters';
 import TriangleGridIndex from '../../util/triangle_grid_index';
+import Point from "@mapbox/point-geometry";
 
 import type {CanonicalTileID, UnwrappedTileID} from '../../source/tile_id';
 import type {
@@ -22,19 +23,23 @@ import type {TileTransform} from '../../geo/projection/tile_transform';
 import type {Footprint, TileFootprint} from '../../../3d-style/util/conflation';
 import type {VectorTileLayer} from '@mapbox/vector-tile';
 import type {SpritePositions} from '../../util/image';
-
-import Point from "@mapbox/point-geometry";
+import type {TypedStyleLayer} from '../../style/style_layer/typed_style_layer';
+import type {ImageId} from '../../style-spec/expression/types/image_id';
+import type {GlobalProperties} from '../../style-spec/expression';
 
 class ClipBucket implements Bucket {
     index: number;
     zoom: number;
     layers: Array<ClipStyleLayer>;
     layerIds: Array<string>;
-    stateDependentLayers: Array<ClipStyleLayer>;
+    stateDependentLayers!: Array<ClipStyleLayer>;
     stateDependentLayerIds: Array<string>;
     hasPattern: boolean;
 
     footprints: Array<Footprint>;
+
+    worldview: string;
+    hasAppearances: boolean | null;
 
     constructor(options: BucketParameters<ClipStyleLayer>) {
         this.zoom = options.zoom;
@@ -45,6 +50,9 @@ class ClipBucket implements Bucket {
 
         this.stateDependentLayerIds = this.layers.filter((l) => l.isStateDependent()).map((l) => l.id);
         this.footprints = [];
+
+        this.worldview = options.worldview;
+        this.hasAppearances = null;
     }
 
     updateFootprints(id: UnwrappedTileID, footprints: Array<TileFootprint>) {
@@ -56,24 +64,29 @@ class ClipBucket implements Bucket {
         }
     }
 
+    updateAppearances(_canonical?: CanonicalTileID, _featureState?: FeatureStates, _availableImages?: Array<ImageId>, _globalProperties?: GlobalProperties) {
+        return {
+            hasLayoutChanges: false,
+            hasUboChanges: false
+        };
+    }
+
     populate(features: Array<IndexedFeature>, options: PopulateParameters, canonical: CanonicalTileID, tileTransform: TileTransform) {
-        const bucketFeatures = [];
+        const bucketFeatures: BucketFeature[] = [];
 
         for (const {feature, id, index, sourceLayerIndex} of features) {
             const needGeometry = this.layers[0]._featureFilter.needGeometry;
             const evaluationFeature = toEvaluationFeature(feature, needGeometry);
 
-            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom), evaluationFeature, canonical))
+            if (!this.layers[0]._featureFilter.filter(new EvaluationParameters(this.zoom, {worldview: this.worldview, activeFloors: options.activeFloors}), evaluationFeature, canonical))
                 continue;
 
             const bucketFeature: BucketFeature = {
                 id,
                 properties: feature.properties,
-                // @ts-expect-error - TS2322 - Type '0 | 2 | 1 | 3' is not assignable to type '2 | 1 | 3'.
                 type: feature.type,
                 sourceLayerIndex,
                 index,
-                // @ts-expect-error - TS2345 - Argument of type 'VectorTileFeature' is not assignable to parameter of type 'FeatureWithGeometry'.
                 geometry: needGeometry ? evaluationFeature.geometry : loadGeometry(feature, canonical, tileTransform),
                 patterns: {}
             };
@@ -101,13 +114,13 @@ class ClipBucket implements Bucket {
     upload(_context: Context) {
     }
 
-    update(_states: FeatureStates, _vtLayer: VectorTileLayer, _availableImages: Array<string>, _imagePositions: SpritePositions, _brightness?: number | null) {
+    update(_states: FeatureStates, _vtLayer: VectorTileLayer, _availableImages: ImageId[], _imagePositions: SpritePositions, _layers: ReadonlyArray<TypedStyleLayer>, _isBrightnessChanged: boolean, _brightness?: number | null) {
     }
 
     destroy() {
     }
 
-    addFeature(feature: BucketFeature, geometry: Array<Array<Point>>, index: number, canonical: CanonicalTileID, imagePositions: SpritePositions, _availableImages: Array<string> = [], _brightness?: number | null) {
+    addFeature(feature: BucketFeature, geometry: Array<Array<Point>>, index: number, canonical: CanonicalTileID, imagePositions: SpritePositions, _availableImages: ImageId[] = [], _brightness?: number | null) {
         for (const polygon of classifyRings(geometry, 2)) {
             const points: Array<Point> = [];
             const flattened = [];
@@ -137,7 +150,9 @@ class ClipBucket implements Bucket {
                 }
             }
 
-            const indices = earcut(flattened, holeIndices);
+            // earcut library lacks proper type definitions
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+            const indices = earcut(flattened, holeIndices) as number[];
             assert(indices.length % 3 === 0);
 
             const grid = new TriangleGridIndex(points, indices, 8, 256);
@@ -146,7 +161,7 @@ class ClipBucket implements Bucket {
                 indices,
                 grid,
                 min,
-                max
+                max,
             });
         }
     }

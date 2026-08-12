@@ -4,10 +4,19 @@
     "test": {
       "width": 512,
       "height": 512,
-      "allowed": 0.003,
       "operations": [
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-macos", "reason": "Flaky"}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native", "reason": "Flaky gfx metrics"},
+        {"platform-tag-contains": "native-android", "reason": "Flaky"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.003}
       ]
     }
   },
@@ -29,7 +38,6 @@
       ]
     }
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "background",

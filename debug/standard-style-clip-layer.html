@@ -3,9 +3,9 @@
 
 <head>
     <title>Mapbox GL JS debug page</title>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>
-    <link rel='stylesheet' href='../dist/mapbox-gl.css' />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="../dist/mapbox-gl.css" />
     <style>
         body {
             margin: 0;
@@ -45,12 +45,12 @@
 </head>
 
 <body>
-    <div id='map'></div>
-    <div id='config'></div>
-    <script src='/debug/dynamic.js'></script>
-    <script src='../dist/mapbox-gl-dev.js'></script>
-    <script src='../debug/access_token_generated.js'></script>
+    <div id="map"></div>
+    <div id="config"></div>
+    <script src="/debug/dynamic.js"></script>
     <script type='module'>
+        import * as mapboxgl from '../dist/esm-dev/mapbox-gl.js';
+        import {getAccessToken} from './access_token_generated.js';
         import {Pane} from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.3/dist/tweakpane.min.js';
 
         const pane = new Pane({
@@ -152,15 +152,16 @@
 
         const defaultStyle = styles[1];
 
-        const params = window.params = {style: defaultStyle, accessToken: mapboxgl.accessToken};
+        const params = window.params = {style: defaultStyle, accessToken: getAccessToken()};
         const arrayToOptions = (arr) => arr.reduce((acc, item) => ({...acc, [item]: item}), {});
 
         const map = window.map = new mapboxgl.Map({
+            accessToken: getAccessToken(),
             container: 'map',
-            center: [-74.012499, 40.705441],
-            zoom: 15.27,
-            pitch: 60,
-            bearing: -7,
+            center: [-0.12501974, 51.5332374],
+            zoom: 16,
+            pitch: 50,
+            bearing: -30,
             style: defaultStyle,
             devtools: true,
             hash: true
@@ -175,8 +176,9 @@
         });
 
         const accessTokenBinding = pane.addBinding(params, 'accessToken', {label: 'Access Token'});
-        accessTokenBinding.on('change', (e) => { mapboxgl.accessToken = e.value; });
-
+        accessTokenBinding.on('change', (e) => {
+            mapboxgl.setAccessToken(e.value);
+        });
         map.on('style.load', (e) => {
             const style = map.getStyle();
             dynamicFolders.forEach((folder) => folder.dispose());
@@ -190,18 +192,93 @@
 
                 // Render configuration binding
                 const schema = fragment.schema || {};
-                for (const config in schema) {
-                    const meta = schema[config];
+                for (const configKey in schema) {
+                    const meta = schema[configKey];
                     const label = meta.metadata['mapbox:title'];
                     const options = meta.values && Array.isArray(meta.values) ? arrayToOptions(meta.values) : undefined;
-                    params[config] = meta.default;
-                    const configBinding = folder.addBinding(params, config, {label, options});
-                    configBinding.on('change', (e) => map.setConfigProperty(id, config, e.value));
+                    params[configKey] = meta.default;
+                    const configBinding = folder.addBinding(params, configKey, {label, options});
+                    configBinding.on('change', (e) => map.setConfigProperty(id, configKey, e.value));
                 }
             }
 
             if (standard) {
-                map.addImport(imported);
+              map.addSource('eraser', {
+                  'type': 'geojson',
+                  'data': {
+                      'type': 'FeatureCollection',
+                      'features': [
+                          {
+                              'type': 'Feature',
+                              'properties': {},
+                              'geometry': {
+                                  'coordinates': [
+                                      [
+                                          [-0.12573446384880071, 51.53222253720682],
+                                          [-0.12458889852425159, 51.53219470021111],
+                                          [-0.12358091771250201, 51.53492205161518],
+                                          [-0.12701761368793996, 51.53391996847543],
+                                          [-0.12573446384880071, 51.53222253720682]
+                                      ]
+                                  ],
+                                  'type': 'Polygon'
+                              }
+                          }
+                      ]
+                  }
+              });
+
+              map.addSource('model', {
+                  'type': 'geojson',
+                  'data': {
+                      'type': 'Feature',
+                      'properties': {
+                          'model-uri':
+                              'http://localhost:9966/debug/models/tower.glb'
+                      },
+                      'geometry': {
+                          'coordinates': [-0.12501974, 51.5332374],
+                          'type': 'Point'
+                      }
+                  }
+              });
+
+              map.addLayer({
+                  'id': 'tower',
+                  'type': 'model',
+                  'source': 'model',
+                  'minzoom': 14,
+                  'slot': 'middle',
+                  'layout': {
+                      'model-id': ['get', 'model-uri']
+                  },
+                  'paint': {
+                    "model-opacity": [
+                        "interpolate",
+                        ["exponential", 1.8],
+                        ["zoom"],
+                        14,
+                        0,
+                        15,
+                        1
+                      ],
+                      'model-rotation': [0.0, 0.0, 35.0],
+                      'model-scale': [0.8, 0.8, 1.2],
+                      'model-color-mix-intensity': 0,
+                      'model-cast-shadows': true,
+                      'model-emissive-strength': 0.8
+                  }
+              });
+
+              map.addLayer({
+                  'id': 'eraser',
+                  'type': 'clip',
+                  'source': 'eraser',
+                  'layout': {
+                      'clip-layer-types': ['symbol', 'model'],
+                      'clip-layer-scope': ['basemap']
+                  }
+              });
             }
         });
     </script>

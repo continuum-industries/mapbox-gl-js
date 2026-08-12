@@ -2,7 +2,10 @@
   "version": 8,
   "metadata": {
     "test": {
-        "allowed": 0.0003
+        
+        "image-threshold": [
+            {"platform-tag-contains": "", "threshold": 0.0003}
+        ]
     }
   },
   "center": [
@@ -19,7 +22,6 @@
       ]
     }
   },
-  "sprite": "local://sprites/emerald",
   "layers": [
     {
       "id": "background",

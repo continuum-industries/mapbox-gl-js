@@ -2,7 +2,7 @@ import {plugin as rtlTextPlugin} from '../source/rtl_text_plugin';
 
 import type SymbolStyleLayer from '../style/style_layer/symbol_style_layer';
 import type {Feature} from '../style-spec/expression/index';
-import Formatted from '../style-spec/expression/types/formatted';
+import type Formatted from '../style-spec/expression/types/formatted';
 
 function transformText(text: string, layer: SymbolStyleLayer, feature: Feature) {
 
@@ -20,7 +20,7 @@ function transformText(text: string, layer: SymbolStyleLayer, feature: Feature) 
     return text;
 }
 
-export default function(text: Formatted, layer: SymbolStyleLayer, feature: Feature): Formatted {
+export default function (text: Formatted, layer: SymbolStyleLayer, feature: Feature): Formatted {
     text.sections.forEach(section => {
         section.text = transformText(section.text, layer, feature);
     });

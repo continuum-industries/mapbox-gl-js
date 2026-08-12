@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
+    "checkJs": true,
+    "erasableSyntaxOnly": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "module": "ESNext",
+    "moduleDetection": "force",
+    "moduleResolution": "bundler",
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitThis": true,
+    "noUncheckedIndexedAccess": true,
+    "resolveJsonModule": true,
+    "strict": false,
+    "strictBindCallApply": true,
+    "strictBuiltinIteratorReturn": true,
+    "target": "es2022",
+    "useDefineForClassFields": false,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "geojson",
+      "offscreencanvas"
+    ],
+    "paths": {
+      "mapbox-gl": ["./src/index.ts"]
+    }
+  }
+}

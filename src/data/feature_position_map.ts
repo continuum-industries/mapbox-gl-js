@@ -1,6 +1,6 @@
-import murmur3 from 'murmurhash-js';
+import murmur3 from '../util/murmur3';
 import {register} from '../util/web_worker_transfer';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 
 type SerializedFeaturePositionMap = {
     ids: Float64Array;
@@ -21,12 +21,12 @@ export default class FeaturePositionMap {
         this.indexed = false;
     }
 
-    add(id: unknown, index: number, start: number, end: number) {
+    add(id: string | number, index: number, start: number, end: number) {
         this.ids.push(getNumericId(id));
         this.positions.push(index, start, end);
     }
 
-    eachPosition(id: unknown, fn: (index: number, start: number, end: number) => void) {
+    eachPosition(id: string | number, fn: (index: number, start: number, end: number) => void) {
         assert(this.indexed);
 
         const intId = getNumericId(id);
@@ -70,9 +70,9 @@ export default class FeaturePositionMap {
         const map = new FeaturePositionMap();
         // after transferring, we only use these arrays statically (no pushes),
         // so TypedArray vs Array distinction that TS points out doesn't matter
-        map.ids = obj.ids as any;
-        map.positions = obj.positions as any;
-        let prev;
+        map.ids = obj.ids as unknown as number[];
+        map.positions = obj.positions as unknown as number[];
+        let prev: number | undefined;
         for (const id of map.ids) {
             if (id !== prev) map.uniqueIds.push(id);
             prev = id;
@@ -82,9 +82,9 @@ export default class FeaturePositionMap {
     }
 }
 
-function getNumericId(value: unknown) {
+function getNumericId(value: string | number): number {
     const numValue = +value;
-    if (!isNaN(numValue) && Number.MIN_SAFE_INTEGER <= numValue && numValue <= Number.MAX_SAFE_INTEGER) {
+    if (Number.isSafeInteger(numValue)) {
         return numValue;
     }
     return murmur3(String(value));

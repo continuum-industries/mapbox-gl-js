@@ -2,9 +2,16 @@
   "version": 8,
   "metadata": {
     "test": {
+      "pixelRatio": 2,
       "width": 360,
       "height": 120,
-      "allowed": 0.0008
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "Skip - port https://github.com/mapbox/mapbox-sdk/pull/2747 to gl-js"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.00955},
+        {"platform-tag-contains": "native-android", "threshold": 0.029}
+      ]
     }
   },
   "center": [
@@ -19,7 +26,7 @@
       "lineMetrics": true
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "background",
@@ -33,7 +40,7 @@
       "type": "line",
       "source": "geojson",
       "paint": {
-        "line-pattern": "dot",
+        "line-pattern": "border-dot-13",
         "line-width": {
           "type": "exponential",
           "base": 2,

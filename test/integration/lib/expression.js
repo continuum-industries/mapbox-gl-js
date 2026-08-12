@@ -3,19 +3,18 @@ import * as diff from 'diff';
 import fs from 'fs';
 import harness from './harness.js';
 import compactStringify from 'json-stringify-pretty-compact';
-
 import {fileURLToPath} from 'url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 // we have to handle this edge case here because we have test fixtures for this
-// edge case, and we don't want UPDATE=1 to mess with them
+// edge case, and we don't want to force update to mess with them
 function stringify(v) {
     let s = compactStringify(v);
     // http://timelessrepo.com/json-isnt-a-javascript-subset
-    if (s.indexOf('\u2028') >= 0) {
+    if (s.includes('\u2028')) {
         s = s.replace(/\u2028/g, '\\u2028');
     }
-    if (s.indexOf('\u2029') >= 0) {
+    if (s.includes('\u2029')) {
         s = s.replace(/\u2029/g, '\\u2029');
     }
     return s;
@@ -77,6 +76,12 @@ function deepEqual(a, b) {
     return true;
 }
 
+function deriveNodePlatformTag() {
+    const osMap = {darwin: 'macos', linux: 'linux', win32: 'windows'};
+    const os = osMap[process.platform] || process.platform;
+    return `web-${os}-node`;
+}
+
 /**
  * Run the expression suite.
  *
@@ -84,13 +89,16 @@ function deepEqual(a, b) {
  * deal with implementation-specific test exclusions and fudge-factors.
  * @param {Object} options
  * @param {Array<string>} [options.tests] - Array of test names to run; tests not in the array will be skipped.
- * @param {Array<string>} [options.ignores] - Array of test names to ignore.
- * @param {} runExpressionTest - A function that runs a single expression test fixture.
+ * @param {{ skip: string[]; }} [options.ignores] - Object with a skip array containing test names to ignore.
+ * @param {string} [options.fixtureFilename]
+ * @param {string} [options.platformTag]
+ * @param {Function} runExpressionTest - A function that runs a single expression test fixture.
  * @returns {undefined} Terminates the process when testing is complete.
  */
 export function run(implementation, options, runExpressionTest) {
     const directory = path.join(__dirname, '../expression-tests');
     options.fixtureFilename = 'test.json';
+    options.platformTag = options.platformTag || deriveNodePlatformTag();
     harness(directory, implementation, options, (fixture, params, done) => {
         try {
             const result = runExpressionTest(fixture, params);
@@ -105,7 +113,7 @@ export function run(implementation, options, runExpressionTest) {
 
                 delete fixture.metadata;
 
-                fs.writeFile(path.join(dir, 'test.json'), `${stringify(fixture, null, 2)}\n`, done);
+                fs.writeFile(path.join(dir, 'test.json'), `${stringify(fixture)}\n`, done);
                 return;
             }
 

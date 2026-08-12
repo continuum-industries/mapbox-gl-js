@@ -1,15 +1,14 @@
 import IndexBuffer from './index_buffer';
-
 import VertexBuffer from './vertex_buffer';
 import Framebuffer from './framebuffer';
-import DepthMode from './depth_mode';
-import StencilMode from './stencil_mode';
 import ColorMode from './color_mode';
-import CullFaceMode from './cull_face_mode';
 import {deepEqual} from '../util/util';
 import {ClearColor, ClearDepth, ClearStencil, ColorMask, DepthMask, StencilMask, StencilFunc, StencilOp, StencilTest, DepthRange, DepthTest, DepthFunc, Blend, BlendFunc, BlendColor, BlendEquation, CullFace, CullFaceSide, FrontFace, Program, ActiveTextureUnit, Viewport, BindFramebuffer, BindRenderbuffer, BindTexture, BindVertexBuffer, BindElementBuffer, BindVertexArrayOES, PixelStoreUnpack, PixelStoreUnpackPremultiplyAlpha, PixelStoreUnpackFlipY} from './value';
-import type {DepthBufferType, ColorMaskType} from './types';
 
+import type DepthMode from './depth_mode';
+import type StencilMode from './stencil_mode';
+import type CullFaceMode from './cull_face_mode';
+import type {DepthBufferType, ColorMaskType, WebGL2BlendFuncExtended} from './types';
 import type {TriangleIndexArray, LineIndexArray, LineStripIndexArray} from '../data/index_array_type';
 import type {
     StructArray,
@@ -28,12 +27,32 @@ export type ContextOptions = {
     extTextureFilterAnisotropicForceOff?: boolean;
     extTextureFloatLinearForceOff?: boolean;
     extStandardDerivativesForceOff?: boolean;
+    forceManualRenderingForInstanceIDShaders?: boolean;
+};
+
+// metrics for a single stall (a draw-time wait for an unfinished compile)
+export type StallRecord = {
+    name: string; // `${programId}/${defines}` — full cache-key-equivalent label of the stalled program
+    ms: number;
+    timestamp: number; // browser.now() at stall start to spot clusters: multiple stalls in the same 16ms window = jank.
+};
+
+// Shader-compile telemetry: precompile vs on-demand counts, stall counters.
+// `framesMissed` and `maxStallMs` quantify user-visible compile jank.
+export type CompileStats = {
+    precompiled: number;
+    onDemand: number;
+    totalStallMs: number;
+    maxStallMs: number;
+    framesMissed: number;
+    stalls: StallRecord[];
 };
 
 class Context {
     gl: WebGL2RenderingContext;
-    currentNumAttributes: number | null | undefined;
     maxTextureSize: number;
+    maxUniformBlockSize: number;
+    maxUniformBufferBindings: number;
 
     clearColor: ClearColor;
     clearDepth: ClearDepth;
@@ -69,18 +88,41 @@ class Context {
     renderer: string | null | undefined;
     vendor: string | null | undefined;
 
-    extTextureFilterAnisotropic: any;
-    extTextureFilterAnisotropicMax: any;
-    extTextureHalfFloat: any;
-    extRenderToTextureHalfFloat: any;
-    extDebugRendererInfo: any;
-    extTimerQuery: any;
-    extTextureFloatLinear: any;
+    // eslint-disable-next-line camelcase
+    extTextureFilterAnisotropic!: EXT_texture_filter_anisotropic;
+    extTextureFilterAnisotropicMax!: GLfloat;
+    // eslint-disable-next-line camelcase
+    extRenderToTextureHalfFloat: EXT_color_buffer_half_float;
+    // eslint-disable-next-line camelcase
+    extColorBufferFloat: EXT_color_buffer_float;
+    // eslint-disable-next-line camelcase
+    extDebugRendererInfo: WEBGL_debug_renderer_info;
+    extTimerQuery: {
+        /* EXT_disjoint_timer_query is not yet available as a TypeScript type */
+        TIME_ELAPSED_EXT: number;
+        getQueryParameter: (query: WebGLQuery, pname: GLenum) => GLuint;
+        deleteQueryEXT: (query: WebGLQuery) => void;
+    };
+    // eslint-disable-next-line camelcase
+    extTextureFloatLinear!: OES_texture_float_linear;
     options: ContextOptions;
     maxPointSize: number;
+    extBlendFuncExtended: WebGL2BlendFuncExtended | null;
+    // eslint-disable-next-line camelcase
+    extParallelShaderCompile: KHR_parallel_shader_compile | null;
+
+    forceManualRenderingForInstanceIDShaders: boolean;
+
+    // Programs whose compile was kicked off but not yet finalized. Swept opportunistically
+    // (frame start, idle, precompile batches) so finalize happens off the draw path.
+    _pendingPrograms: Set<{maybeFinalize: () => void}>;
+
+    _compileStats: CompileStats;
 
     constructor(gl: WebGL2RenderingContext, options?: ContextOptions) {
         this.gl = gl;
+        this._pendingPrograms = new Set();
+        this._compileStats = {precompiled: 0, onDemand: 0, totalStallMs: 0, maxStallMs: 0, framesMissed: 0, stalls: []};
 
         this.clearColor = new ClearColor(this);
         this.clearDepth = new ClearDepth(this);
@@ -113,33 +155,60 @@ class Context {
         this.pixelStoreUnpack = new PixelStoreUnpack(this);
         this.pixelStoreUnpackPremultiplyAlpha = new PixelStoreUnpackPremultiplyAlpha(this);
         this.pixelStoreUnpackFlipY = new PixelStoreUnpackFlipY(this);
-        this.options = options ? {...options} : {};
+        this.options = options ? ({...options}) : {};
 
         if (!this.options.extTextureFilterAnisotropicForceOff) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this.extTextureFilterAnisotropic = (
                 gl.getExtension('EXT_texture_filter_anisotropic') ||
             gl.getExtension('MOZ_EXT_texture_filter_anisotropic') ||
             gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic')
             );
             if (this.extTextureFilterAnisotropic) {
+                // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
                 this.extTextureFilterAnisotropicMax = gl.getParameter(this.extTextureFilterAnisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
             }
         }
 
         this.extDebugRendererInfo = gl.getExtension('WEBGL_debug_renderer_info');
         if (this.extDebugRendererInfo) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this.renderer = gl.getParameter(this.extDebugRendererInfo.UNMASKED_RENDERER_WEBGL);
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
             this.vendor = gl.getParameter(this.extDebugRendererInfo.UNMASKED_VENDOR_WEBGL);
         }
+
+        // Force manual rendering for instanced draw calls having gl_InstanceID usage in the shader for PowerVR adapters
+        this.forceManualRenderingForInstanceIDShaders = (options && !!options.forceManualRenderingForInstanceIDShaders) || (this.renderer && this.renderer.includes("PowerVR"));
 
         if (!this.options.extTextureFloatLinearForceOff) {
             this.extTextureFloatLinear = gl.getExtension('OES_texture_float_linear');
         }
         this.extRenderToTextureHalfFloat = gl.getExtension('EXT_color_buffer_half_float');
+        this.extColorBufferFloat = gl.getExtension('EXT_color_buffer_float');
 
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this.extTimerQuery = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-        this.maxPointSize = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+        // Query UBO limits for dynamic sizing (WebGL2 minimum: 16KB, 36 binding points)
+        // Cap it to a max of 32KB to avoid allocating big UBO buffers
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        this.maxUniformBlockSize = Math.min(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE), 32 * 1024);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        this.maxUniformBufferBindings = gl.getParameter(gl.MAX_UNIFORM_BUFFER_BINDINGS);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        this.extBlendFuncExtended = gl.getExtension('WEBGL_blend_func_extended');
+        this.extParallelShaderCompile = gl.getExtension('KHR_parallel_shader_compile');
+    }
+
+    // Non-blocking sweep of programs whose parallel compile may have finished.
+    // Finalizes ready ones so their future draw-path use doesn't stall.
+    sweepPendingPrograms() {
+        if (this._pendingPrograms.size === 0) return;
+        for (const p of this._pendingPrograms) {
+            p.maybeFinalize();
+        }
     }
 
     setDefault() {
@@ -238,10 +307,10 @@ class Context {
     createFramebuffer(
         width: number,
         height: number,
-        hasColor: boolean,
-        depthType?: DepthBufferType | null,
+        numColorAttachments: number,
+        depthType?: DepthBufferType | null
     ): Framebuffer {
-        return new Framebuffer(this, width, height, hasColor, depthType);
+        return new Framebuffer(this, width, height, numColorAttachments, depthType);
     }
 
     clear({
@@ -255,7 +324,7 @@ class Context {
 
         if (color) {
             mask |= gl.COLOR_BUFFER_BIT;
-            this.clearColor.set(color);
+            this.clearColor.set(color.toNonPremultipliedRenderColor(null));
             if (colorMask) {
                 this.colorMask.set(colorMask);
             } else {

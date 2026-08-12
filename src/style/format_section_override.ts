@@ -1,11 +1,12 @@
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
+import {NullType} from '../style-spec/expression/types';
+import {register} from '../util/web_worker_transfer';
+
 import type {Expression} from '../style-spec/expression/expression';
 import type EvaluationContext from '../style-spec/expression/evaluation_context';
 import type {Type} from '../style-spec/expression/types';
 import type {ZoomConstantExpression} from '../style-spec/expression/index';
-import {NullType} from '../style-spec/expression/types';
-import {PossiblyEvaluatedPropertyValue} from './properties';
-import {register} from '../util/web_worker_transfer';
+import type {PossiblyEvaluatedPropertyValue} from './properties';
 
 // This is an internal expression class. It is only used in GL JS and
 // has GL JS dependencies which can break the standalone style-spec module
@@ -23,7 +24,7 @@ export default class FormatSectionOverride<T> implements Expression {
         if (ctx.formattedSection) {
             const overrides = this.defaultValue.property.overrides;
             if (overrides && overrides.hasOverride(ctx.formattedSection)) {
-                return overrides.getOverride(ctx.formattedSection);
+                return overrides.getOverride(ctx.formattedSection) as T;
             }
         }
 
@@ -37,7 +38,7 @@ export default class FormatSectionOverride<T> implements Expression {
 
     eachChild(fn: (_: Expression) => void) {
         if (!this.defaultValue.isConstant()) {
-            const expr: ZoomConstantExpression<'source'> = ((this.defaultValue.value) as any);
+            const expr: ZoomConstantExpression<'source'> = this.defaultValue.value as ZoomConstantExpression<'source'>;
             fn(expr._styleExpression.expression);
         }
     }

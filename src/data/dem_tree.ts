@@ -121,10 +121,6 @@ function triangleRayIntersect(
     return (acX * qvecX + acY * qvecY + acZ * qvecZ) * invDet;
 }
 
-function frac(v: number, lo: number, hi: number) {
-    return (v - lo) / (hi - lo);
-}
-
 function decodeBounds(x: number, y: number, depth: number, boundsMinx: number, boundsMiny: number, boundsMaxx: number, boundsMaxy: number, outMin: Array<number>, outMax: Array<number>) {
     const scale = 1 << depth;
     const rangex = boundsMaxx - boundsMinx;
@@ -199,9 +195,8 @@ export default class DemMinMaxQuadTree {
         d: vec3,
         exaggeration: number = 1,
     ): number | null | undefined {
-        const min = [minx, miny, -aabbSkirtPadding];
-        const max = [maxx, maxy, this.maximums[0] * exaggeration];
-        // @ts-expect-error - TS2345 - Argument of type 'number[]' is not assignable to parameter of type 'vec3'.
+        const min: [number, number, number] = [minx, miny, -aabbSkirtPadding];
+        const max: [number, number, number] = [maxx, maxy, this.maximums[0] * exaggeration];
         return aabbRayIntersect(min, max, p, d);
     }
 
@@ -221,10 +216,10 @@ export default class DemMinMaxQuadTree {
         if (t == null)
             return null;
 
-        const tHits = [];
-        const sortedHits = [];
-        const boundsMin = [];
-        const boundsMax = [];
+        const tHits: number[] = [];
+        const sortedHits: number[] = [];
+        const boundsMin: number[] = [];
+        const boundsMax: number[] = [];
 
         const stack = [{
             idx: 0,
@@ -239,49 +234,108 @@ export default class DemMinMaxQuadTree {
             const {idx, t, nodex, nodey, depth} = stack.pop();
 
             if (this.leaves[idx]) {
-                // Create 2 triangles to approximate the surface plane for more precise tests
+                // DDA over the leaf's DEM texels using the '/' diagonal (matching the terrain shader).
+                // Accurate because buildDemMipmap mip-0 now stores true texel max, so tEnter = t
+                // is the correct AABB entry point. Uses edge-sharing and a height-based skip.
                 decodeBounds(nodex, nodey, depth, rootMinx, rootMiny, rootMaxx, rootMaxy, boundsMin, boundsMax);
 
                 const scale = 1 << depth;
-                const minxUv = (nodex + 0) / scale;
+                const minxUv = nodex / scale;
                 const maxxUv = (nodex + 1) / scale;
-                const minyUv = (nodey + 0) / scale;
+                const minyUv = nodey / scale;
                 const maxyUv = (nodey + 1) / scale;
 
-                // 4 corner points A, B, C and D defines the (quad) area covered by this node
+                const {dim: demSz, floatView: fv, stride: st} = this.dem;
+                const txMin = Math.floor(minxUv * demSz);
+                const txMax = Math.ceil(maxxUv * demSz);
+                const tyMin = Math.floor(minyUv * demSz);
+                const tyMax = Math.ceil(maxyUv * demSz);
+                const txCount = txMax - txMin;
+                const tyCount = tyMax - tyMin;
+                if (txCount <= 0 || tyCount <= 0) continue;
+
+                const x0 = boundsMin[0];
+                const y0 = boundsMin[1];
+                const cellW = (boundsMax[0] - x0) / txCount;
+                const cellH = (boundsMax[1] - y0) / tyCount;
+
+                // Starting point on the ray (clamped to tile entry)
+                const tEnter = Math.max(0, t);
+                const entryX = p[0] + d[0] * tEnter;
+                const entryY = p[1] + d[1] * tEnter;
+
+                // Step direction
+                const hasX = Math.abs(d[0]) > 1e-10;
+                const hasY = Math.abs(d[1]) > 1e-10;
+                const stepI = d[0] >= 0 ? 1 : -1;
+                const stepJ = d[1] >= 0 ? 1 : -1;
+
+                let ci = Math.max(0, Math.min(txCount - 1, Math.floor((entryX - x0) / cellW)));
+                let cj = Math.max(0, Math.min(tyCount - 1, Math.floor((entryY - y0) / cellH)));
+
+                // Distance along ray to cross one cell
+                const tDeltaI = hasX ? Math.abs(cellW / d[0]) : Number.MAX_VALUE;
+                const tDeltaJ = hasY ? Math.abs(cellH / d[1]) : Number.MAX_VALUE;
+                // Distance to next cell boundary
+                let tNextI = hasX ? tEnter + (x0 + (d[0] >= 0 ? ci + 1 : ci) * cellW - entryX) / d[0] : Number.MAX_VALUE;
+                let tNextJ = hasY ? tEnter + (y0 + (d[1] >= 0 ? cj + 1 : cj) * cellH - entryY) / d[1] : Number.MAX_VALUE;
+
+                const elev = (tx: number, ty: number) => fv[(ty + 1) * st + tx + 1] * exaggeration;
+                let e00 = elev(txMin + ci,     tyMin + cj);
+                let e10 = elev(txMin + ci + 1, tyMin + cj);
+                let e01 = elev(txMin + ci,     tyMin + cj + 1);
+                let e11 = elev(txMin + ci + 1, tyMin + cj + 1);
+
+                let closestT: number | null = null;
+
+                // Traverse cells in order along the ray
+                for (let step = 0; step < txCount + tyCount; step++) {
+                    const tExit = Math.min(tNextI, tNextJ);
+
+                    // Height-based skip: for a downward ray, tExit is the lowest z the ray reaches in this cell
+                    if (d[2] >= 0 || p[2] + d[2] * tExit <= Math.max(e00, e10, e01, e11)) {
+                        const cx0 = x0 + ci * cellW;
+                        const cx1 = cx0 + cellW;
+                        const cy0 = y0 + cj * cellH;
+                        const cy1 = cy0 + cellH;
+                        // Triangle 1: (1,0) -> (0,0) -> (0,1)
+                        const t0 = triangleRayIntersect(cx1, cy0, e10, cx0, cy0, e00, cx0, cy1, e01, p, d);
+                        // Triangle 2: (0,1) -> (1,1) -> (1,0)
+                        const t1 = triangleRayIntersect(cx0, cy1, e01, cx1, cy1, e11, cx1, cy0, e10, p, d);
+                        if (t0 != null && t0 >= 0 && (closestT === null || t0 < closestT)) closestT = t0;
+                        if (t1 != null && t1 >= 0 && (closestT === null || t1 < closestT)) closestT = t1;
+                    }
+
+                    // Move to next cell
+                    const steppedI = tNextI < tNextJ;
+                    if (steppedI) { ci += stepI; tNextI += tDeltaI; } else { cj += stepJ; tNextJ += tDeltaJ; }
+
+                    // Check if we've exited the grid
+                    if (ci < 0 || ci >= txCount || cj < 0 || cj >= tyCount) break;
+                    // Early termination: found a hit and the ray has passed it in XY
+                    if (closestT !== null && tExit > closestT) break;
+
+                    // Update shared edges (reuse 2 corners, fetch 2 new ones)
+                    if (steppedI) {
+                        if (stepI > 0) { e00 = e10; e01 = e11; e10 = elev(txMin + ci + 1, tyMin + cj); e11 = elev(txMin + ci + 1, tyMin + cj + 1); } else { e10 = e00; e11 = e01; e00 = elev(txMin + ci, tyMin + cj); e01 = elev(txMin + ci, tyMin + cj + 1); }
+                    } else {
+                        if (stepJ > 0) { e00 = e01; e10 = e11; e01 = elev(txMin + ci, tyMin + cj + 1); e11 = elev(txMin + ci + 1, tyMin + cj + 1); } else { e01 = e00; e11 = e10; e00 = elev(txMin + ci, tyMin + cj); e10 = elev(txMin + ci + 1, tyMin + cj); }
+                    }
+                }
+
+                if (closestT !== null) return closestT || 0; // normalize -0 to +0
+
+                // Skirt fallback: handles rays that pass below the triangulated surface
+                // (e.g. horizontal rays through the gap between tiles at different zoom levels).
+                const hitPos = vec3.scaleAndAdd([], p, d, t);
+                const fracx = (hitPos[0] - boundsMin[0]) / (boundsMax[0] - boundsMin[0]);
+                const fracy = (hitPos[1] - boundsMin[1]) / (boundsMax[1] - boundsMin[1]);
                 const az = sampleElevation(minxUv, minyUv, this.dem) * exaggeration;
                 const bz = sampleElevation(maxxUv, minyUv, this.dem) * exaggeration;
                 const cz = sampleElevation(maxxUv, maxyUv, this.dem) * exaggeration;
                 const dz = sampleElevation(minxUv, maxyUv, this.dem) * exaggeration;
-
-                const t0: any = triangleRayIntersect(
-                    boundsMin[0], boundsMin[1], az,     // A
-                    boundsMax[0], boundsMin[1], bz,     // B
-                    boundsMax[0], boundsMax[1], cz,     // C
-                    p, d);
-
-                const t1: any = triangleRayIntersect(
-                    boundsMax[0], boundsMax[1], cz,
-                    boundsMin[0], boundsMax[1], dz,
-                    boundsMin[0], boundsMin[1], az,
-                    p, d);
-
-                const tMin = Math.min(
-                    t0 !== null ? t0 : Number.MAX_VALUE,
-                    t1 !== null ? t1 : Number.MAX_VALUE);
-
-                // The ray might go below the two surface triangles but hit one of the sides.
-                // This covers the case of skirt geometry between two dem tiles of different zoom level
-                if (tMin === Number.MAX_VALUE) {
-                    const hitPos = vec3.scaleAndAdd([] as any, p, d, t);
-                    const fracx = frac(hitPos[0], boundsMin[0], boundsMax[0]);
-                    const fracy = frac(hitPos[1], boundsMin[1], boundsMax[1]);
-
-                    if (bilinearLerp(az, bz, dz, cz, fracx, fracy) >= hitPos[2])
-                        return t;
-                } else {
-                    return tMin;
-                }
+                if (bilinearLerp(az, bz, dz, cz, fracx, fracy) >= hitPos[2])
+                    return t;
 
                 continue;
             }
@@ -300,7 +354,6 @@ export default class DemMinMaxQuadTree {
                 boundsMin[2] = -aabbSkirtPadding;
                 boundsMax[2] = this.maximums[this.childOffsets[idx] + i] * exaggeration;
 
-                // @ts-expect-error - TS2345 - Argument of type 'any[]' is not assignable to parameter of type 'vec3'.
                 const result = aabbRayIntersect(boundsMin, boundsMax, p, d);
                 if (result != null) {
                     // Build the result list from furthest to closest hit.
@@ -384,11 +437,12 @@ export default class DemMinMaxQuadTree {
     }
 }
 
-function bilinearLerp(p00: any, p10: any, p01: any, p11: any, x: number, y: number): any {
+function bilinearLerp(p00: number, p10: number, p01: number, p11: number, x: number, y: number): number {
     return interpolate(
         interpolate(p00, p01, y),
         interpolate(p10, p11, y),
-        x);
+        x
+    );
 }
 
 // Sample elevation in normalized uv-space ([0, 0] is the top left)
@@ -422,7 +476,6 @@ export function buildDemMipmap(dem: DEMData): Array<MipLevel> {
     const mips: Array<MipLevel> = [];
 
     let blockCount = Math.ceil(Math.pow(2, levelCount));
-    const blockSize = 1 / blockCount;
 
     const blockSamples = (x: number, y: number, size: number, exclusive: boolean, outBounds: Array<number>) => {
         const padding = exclusive ? 1 : 0;
@@ -437,23 +490,48 @@ export function buildDemMipmap(dem: DEMData): Array<MipLevel> {
         outBounds[3] = maxy;
     };
 
-    // The first mip (0) is built by sampling 4 corner points of each 8x8 texel block
+    // Mip 0: use bilinear corner samples for MIN (preserves existing behaviour for
+    // getMinElevationBelowMSL and the rendering pipeline) but scan all raw DEM texels
+    // for MAX. The corner approach underestimates peaks between samples, so the AABB
+    // z-max was too low — causing the DDA to start at the wrong cell and miss hits.
     let mip = new MipLevel(blockCount);
-    const blockBounds = [];
+    const blockSize = 1 / blockCount;
+    const {floatView, stride} = dem;
+    const blockBounds: number[] = [];
 
     for (let idx = 0; idx < blockCount * blockCount; idx++) {
-        const y = Math.floor(idx / blockCount);
-        const x = idx % blockCount;
+        const by = Math.floor(idx / blockCount);
+        const bx = idx % blockCount;
 
-        blockSamples(x, y, blockSize, false, blockBounds);
+        // MIN: bilinear at the 4 corners (unchanged from original)
 
-        const e0 = sampleElevation(blockBounds[0], blockBounds[1], dem);    // minx, miny
-        const e1 = sampleElevation(blockBounds[2], blockBounds[1], dem);    // maxx, miny
-        const e2 = sampleElevation(blockBounds[2], blockBounds[3], dem);    // maxx, maxy
-        const e3 = sampleElevation(blockBounds[0], blockBounds[3], dem);    // minx, maxy
+        blockSamples(bx, by, blockSize, false, blockBounds);
 
-        mip.minimums.push(Math.min(e0, e1, e2, e3));
-        mip.maximums.push(Math.max(e0, e1, e2, e3));
+        const e0 = sampleElevation(blockBounds[0], blockBounds[1], dem);
+
+        const e1 = sampleElevation(blockBounds[2], blockBounds[1], dem);
+
+        const e2 = sampleElevation(blockBounds[2], blockBounds[3], dem);
+
+        const e3 = sampleElevation(blockBounds[0], blockBounds[3], dem);
+        const blockMin = Math.min(e0, e1, e2, e3);
+
+        // MAX: scan all raw texels (plus one border texel per edge) for true peak detection
+        const txStart = Math.max(0, bx * texelSizeOfMip0 - 1);
+        const txEnd   = Math.min(demSize - 1, (bx + 1) * texelSizeOfMip0);
+        const tyStart = Math.max(0, by * texelSizeOfMip0 - 1);
+        const tyEnd   = Math.min(demSize - 1, (by + 1) * texelSizeOfMip0);
+        let blockMax = -Infinity;
+        for (let ty = tyStart; ty <= tyEnd; ty++) {
+            const rowBase = (ty + 1) * stride;
+            for (let tx = txStart; tx <= txEnd; tx++) {
+                const v = floatView[rowBase + tx + 1];
+                if (v > blockMax) blockMax = v;
+            }
+        }
+
+        mip.minimums.push(blockMin);
+        mip.maximums.push(blockMax);
         mip.leaves.push(1);
     }
 
@@ -461,7 +539,7 @@ export function buildDemMipmap(dem: DEMData): Array<MipLevel> {
 
     // Construct the rest of the mip levels from bottom to up
     for (blockCount /= 2; blockCount >= 1; blockCount /= 2) {
-        const prevMip = mips[mips.length - 1];
+        const prevMip = mips.at(-1);
 
         mip = new MipLevel(blockCount);
 
@@ -471,16 +549,23 @@ export function buildDemMipmap(dem: DEMData): Array<MipLevel> {
 
             // Sample elevation of all 4 children mip texels. 4 leaf nodes can be concatenated into a single
             // leaf if the total elevation difference is below the threshold value
+
             blockSamples(x, y, 2, true, blockBounds);
 
             const e0 = prevMip.getElevation(blockBounds[0], blockBounds[1]);
+
             const e1 = prevMip.getElevation(blockBounds[2], blockBounds[1]);
+
             const e2 = prevMip.getElevation(blockBounds[2], blockBounds[3]);
+
             const e3 = prevMip.getElevation(blockBounds[0], blockBounds[3]);
 
             const l0 = prevMip.isLeaf(blockBounds[0], blockBounds[1]);
+
             const l1 = prevMip.isLeaf(blockBounds[2], blockBounds[1]);
+
             const l2 = prevMip.isLeaf(blockBounds[2], blockBounds[3]);
+
             const l3 = prevMip.isLeaf(blockBounds[0], blockBounds[3]);
 
             const minElevation = Math.min(e0.min, e1.min, e2.min, e3.min);

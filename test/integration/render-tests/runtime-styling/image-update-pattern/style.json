@@ -11,12 +11,16 @@
         ],
         [
           "updateImage",
-          "generic_icon",
+          "globe_blue",
           "./image/marker_18x18.png"
         ],
         [
           "wait"
         ]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "native-android", "reason": "Needs to be investigated and fixed."},
+        {"platform-tag-contains": "native-ios", "reason": "Needs to be investigated and fixed."}
       ]
     }
   },
@@ -52,7 +56,7 @@
       }
     }
   },
-  "sprite": "local://sprites/emerald",
+  "sprite": "local://sprites/standard",
   "layers": [
     {
       "id": "fill",
@@ -60,7 +64,7 @@
       "source": "geojson",
       "paint": {
         "fill-antialias": false,
-        "fill-pattern": "generic_icon"
+        "fill-pattern": "globe_blue"
       }
     }
   ]

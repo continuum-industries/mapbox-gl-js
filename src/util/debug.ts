@@ -1,5 +1,4 @@
-import {extend} from './util';
-import assert from 'assert';
+import assert from '../style-spec/util/assert';
 import {mat4, vec3} from 'gl-matrix';
 import {aabbForTileOnGlobe} from '../geo/projection/globe_util';
 
@@ -16,33 +15,24 @@ import type {OverscaledTileID} from '../source/tile_id';
  */
 export const Debug: {
     debugCanvas: HTMLCanvasElement | null | undefined;
-    aabbCorners: Array<vec3>;
-    extend: (...args: any) => void;
-    run: (...args: any) => void;
-    logToElement: (...args: any) => void;
-    drawAabbs: (...args: any) => void;
-    clearAabbs: (...args: any) => void;
-    _drawBox: (...args: any) => void;
-    _drawLine: (...args: any) => void;
-    _drawQuad: (...args: any) => void;
+    aabbCorners: Array<Array<vec3>>;
+    extend: (...args: unknown[]) => void;
+    run: (...args: unknown[]) => void;
+    drawAabbs: (...args: unknown[]) => void;
+    clearAabbs: (...args: unknown[]) => void;
+    _drawBox: (...args: unknown[]) => void;
+    _drawLine: (...args: unknown[]) => void;
+    _drawQuad: (...args: unknown[]) => void;
     _initializeCanvas: (tr: Transform) => HTMLCanvasElement;
-} =
-{
-    extend(dest: any, ...sources: Array<any | null | undefined>): any {
-        return extend(dest, ...sources);
+} = {
+    extend(dest: object, ...sources: Array<object | null | undefined>): object {
+        return Object.assign(dest, ...sources) as object;
     },
 
-    run(fn: () => any) {
+    // Production stripping: @rollup/plugin-strip removes all Debug.* call sites
+    // (see build/rollup_plugins.js). This is pattern-matched removal, not tree-shaking.
+    run(fn: () => unknown) {
         fn();
-    },
-
-    logToElement(message: string, overwrite: boolean = false, id: string = "log") {
-        const el = document.getElementById(id);
-        if (el) {
-            if (overwrite) el.innerHTML = '';
-            el.innerHTML += `<br>${message}`;
-        }
-
     },
 
     debugCanvas: null,
@@ -69,11 +59,9 @@ export const Debug: {
         return Debug.debugCanvas;
     },
 
-    _drawLine(ctx: CanvasRenderingContext2D, start?: vec2 | null, end?: vec2 | null) {
-        if (!start || !end) { return; }
-        // @ts-expect-error - TS2556 - A spread argument must either have a tuple type or be passed to a rest parameter.
+    _drawLine(ctx: CanvasRenderingContext2D, start?: [number, number], end?: [number, number]) {
+        if (!start || !end) return;
         ctx.moveTo(...start);
-        // @ts-expect-error - TS2556 - A spread argument must either have a tuple type or be passed to a rest parameter.
         ctx.lineTo(...end);
     },
 
@@ -99,15 +87,11 @@ export const Debug: {
     drawAabbs(painter: Painter, sourceCache: SourceCache, coords: Array<OverscaledTileID>) {
         const tr = painter.transform;
 
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'mat4'.
         const worldToECEFMatrix = mat4.invert(new Float64Array(16), tr.globeMatrix);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-        const ecefToPixelMatrix = mat4.multiply([] as any, tr.pixelMatrix, tr.globeMatrix);
-        // @ts-expect-error - TS2345 - Argument of type 'Float64Array' is not assignable to parameter of type 'ReadonlyMat4'.
-        const ecefToCameraMatrix = mat4.multiply([] as any,  tr._camera.getWorldToCamera(tr.worldSize, 1), tr.globeMatrix);
+        const ecefToPixelMatrix = mat4.multiply([], tr.pixelMatrix, tr.globeMatrix);
+        const ecefToCameraMatrix = mat4.multiply([], tr._camera.getWorldToCamera(tr.worldSize, 1), tr.globeMatrix);
 
         if (!tr.freezeTileCoverage) {
-            // @ts-expect-error - TS2322 - Type 'vec3[][]' is not assignable to type 'vec3[]'.
             Debug.aabbCorners = coords.map(coord => {
                 // Get tile AABBs in world/pixel space scaled by worldSize
                 const aabb = aabbForTileOnGlobe(tr, tr.worldSize, coord.canonical, false);
@@ -131,18 +115,17 @@ export const Debug: {
         ctx.lineWidth = 1.5;
 
         for (let i = 0; i <  tileCount; i++) {
-            // @ts-expect-error - TS2345 - Argument of type '(ecef: any) => vec3' is not assignable to parameter of type '((value: number, index: number, array: Float32Array) => number) & ((value: number, index: number, array: number[]) => vec3)'.
-            const pixelCorners = Debug.aabbCorners[i].map(ecef => {
+            const pixelCorners = Debug.aabbCorners[i].map((ecef: vec3) => {
                 // Clipping to prevent visual artifacts.
                 // We don't draw any lines if one of their points is behind the camera.
                 // This means that AABBs close to the camera may appear to be missing.
                 // (A more correct algorithm would shorten the line segments instead of removing them entirely.)
                 // Full AABBs can be viewed by enabling `map.transform.freezeTileCoverage` and panning.
-                const cameraPos = vec3.transformMat4([] as any, ecef, ecefToCameraMatrix);
+                const cameraPos = vec3.transformMat4([], ecef, ecefToCameraMatrix);
 
                 if (cameraPos[2] > 0) { return null; }
 
-                return vec3.transformMat4([] as any, ecef, ecefToPixelMatrix);
+                return vec3.transformMat4([], ecef, ecefToPixelMatrix);
             });
             ctx.strokeStyle = `hsl(${360 * i / tileCount}, 100%, 50%)`;
             Debug._drawBox(ctx, pixelCorners);

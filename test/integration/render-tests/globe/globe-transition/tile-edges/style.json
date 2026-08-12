@@ -4,7 +4,13 @@
     "test": {
       "width": 640,
       "height": 512,
-      "allowed": 0.004
+      "pixelRatio": 0.5,
+      "skip-test": [
+        {"platform-tag-contains": "native", "reason": "not implemented in gl-native yet"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.004}
+      ]
     }
   },
   "center": [5.44, 46.42],

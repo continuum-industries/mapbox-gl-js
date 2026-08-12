@@ -1,15 +1,17 @@
 import MercatorCoordinate, {mercatorZfromAltitude} from '../geo/mercator_coordinate';
-import DEMData from '../data/dem_data';
 import {number as interpolate} from '../style-spec/util/interpolate';
 import EXTENT from '../style-spec/data/extent';
 import {vec3} from 'gl-matrix';
 import Point from '@mapbox/point-geometry';
 import {OverscaledTileID} from '../source/tile_id';
+import assert from '../style-spec/util/assert';
 
+import type DEMData from '../data/dem_data';
 import type {vec4} from 'gl-matrix';
 import type SourceCache from '../source/source_cache';
 import type Projection from '../geo/projection/projection';
 import type Tile from '../source/tile';
+import type {ElevationFeature} from '../../3d-style/elevation/elevation_feature';
 /**
  * Options common to {@link Map#queryTerrainElevation} and {@link Map#unproject3d}, used to control how elevation
  * data is returned.
@@ -80,7 +82,7 @@ export class Elevation {
         }
 
         // Force a cast to null for both null and undefined
-        if (defaultIfNotLoaded == null) defaultIfNotLoaded = null;
+        defaultIfNotLoaded ??= null;
 
         const src = this._source();
         if (!src) return defaultIfNotLoaded;
@@ -110,26 +112,33 @@ export class Elevation {
     }
 
     /*
-     * x and y are offset within tile, in 0 .. EXTENT coordinate space.
+     * point.x and point.y are offset within tile, in 0 .. EXTENT coordinate space.
      */
-    getAtTileOffset(tileID: OverscaledTileID, x: number, y: number): number {
+    static getAtTileOffset(tileID: OverscaledTileID, point: Point, elevation: Elevation | null, elevationFeature: ElevationFeature | null): number {
         const tilesAtTileZoom = 1 << tileID.canonical.z;
-        return this.getAtPointOrZero(new MercatorCoordinate(
-            tileID.wrap + (tileID.canonical.x + x / EXTENT) / tilesAtTileZoom,
-            (tileID.canonical.y + y / EXTENT) / tilesAtTileZoom));
+        if (elevationFeature) {
+            return elevationFeature.pointElevation(point);
+        } else if (elevation) {
+            return elevation.getAtPointOrZero(new MercatorCoordinate(
+                tileID.wrap + (tileID.canonical.x + point.x / EXTENT) / tilesAtTileZoom,
+                (tileID.canonical.y + point.y / EXTENT) / tilesAtTileZoom));
+        } else {
+            return 0.0;
+        }
     }
 
-    getAtTileOffsetFunc(
+    static getAtTileOffsetFunc(
         tileID: OverscaledTileID,
         lat: number,
         worldSize: number,
         projection: Projection,
-    ): (arg1: Point) => [number, number, number] {
-        return ((p: Point) => {
-            const elevation = this.getAtTileOffset(tileID, p.x, p.y);
+    ): (arg1: Point, arg2: Elevation, arg3?: ElevationFeature) => [number, number, number] {
+        return ((p: Point, elevation: Elevation, elevationFeature?: ElevationFeature) => {
+            assert(p);
+            const z = this.getAtTileOffset(tileID, p, elevation, elevationFeature);
             const upVector = projection.upVector(tileID.canonical, p.x, p.y);
             const upVectorScale = projection.upVectorScale(tileID.canonical, lat, worldSize).metersToTile;
-            vec3.scale(upVector, upVector, elevation * upVectorScale);
+            vec3.scale(upVector, upVector, z * upVectorScale);
             return upVector;
         });
     }
@@ -155,7 +164,7 @@ export class Elevation {
         if (!helper) { return false; }
 
         points.forEach(p => {
-            p[2] = this.exaggeration() * helper.getElevationAt(p[0], p[1], interpolated);
+            p[2] = this.exaggeration() * helper.getElevationAt(p[0], p[1], interpolated, true);
         });
         return true;
     }
@@ -216,7 +225,7 @@ export class Elevation {
      * @param {vec3} dir The ray direction.
      * @param {number} exaggeration The terrain exaggeration.
     */
-    raycast(_position: vec3, _dir: vec3, _exaggeration: number): number | null | undefined {
+    raycast(position: vec3, dir: vec3, exaggeration: number): number | null | undefined {
         throw new Error('Pure virtual method called.');
     }
 
@@ -229,7 +238,7 @@ export class Elevation {
      * 3D MercatorCoordinate's of intersection in its first 3 components, and elevation in meter in its 4th coordinate.
      * Otherwise returns null.
      */
-    pointCoordinate(_screenPoint: Point): vec4 | null | undefined {
+    pointCoordinate(screenPoint: Point): vec4 | null | undefined {
         throw new Error('Pure virtual method called.');
     }
 

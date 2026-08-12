@@ -1,13 +1,14 @@
-import loadGlyphRange from '../style/load_glyph_range';
-
+import {GlyphLoader} from '../style/glyph_loader';
 import TinySDF from '@mapbox/tiny-sdf';
 import isChar from '../util/is_char_in_unicode_block';
 import config from '../util/config';
-import {asyncAll} from '../util/util';
+import {asyncAll, warnOnce} from '../util/util';
 import {AlphaImage} from '../util/image';
 
+import type {FontstackCompositing} from '../style/glyph_loader';
 import type {Class} from '../types/class';
-import type {StyleGlyph} from '../style/style_glyph';
+import type {GlyphRange} from '../style/load_glyph_range';
+import type {StyleGlyph, StyleGlyphs} from '../style/style_glyph';
 import type {RequestManager} from '../util/mapbox';
 import type {Callback} from '../types/callback';
 
@@ -34,27 +35,33 @@ import type {Callback} from '../types/callback';
 */
 export const SDF_SCALE = 2;
 
+const BOLD_FONT_RE = /bold/i;
+const MEDIUM_FONT_RE = /medium/i;
+const LIGHT_FONT_RE = /light/i;
+
+// Only these four font weights are supported
+type FontWeight = '200' | '400' | '500' | '900';
+
+type FontStack = string;
+export type FontStacks = Record<FontStack, number[]>;
+
+type FontGlyph = {
+    id: number;
+    stack: FontStack;
+    glyph?: StyleGlyph;
+};
+
 type Entry = {
     // null means we've requested the range, but the glyph wasn't included in the result.
-    glyphs: {
-        [id: number]: StyleGlyph | null;
-    };
-    requests: {
-        [range: number]: Array<Callback<{
-            glyphs: {
-                [key: number]: StyleGlyph | null;
-            };
-            ascender?: number;
-            descender?: number;
-        }>>;
-    };
-    ranges: {
-        [range: number]: boolean | null;
-    };
-    tinySDF?: TinySDF;
+    glyphs: StyleGlyphs;
+    requests: {[range: number]: Array<Callback<GlyphRange>>};
+    ranges: {[range: number]: boolean | null};
+    tinySDF?: TinySDF & {fontWeight: FontWeight};
     ascender?: number;
     descender?: number;
 };
+
+export type GlyphMap = Record<FontStack, GlyphRange>;
 
 export const LocalGlyphMode = {
     none: 0,
@@ -64,68 +71,64 @@ export const LocalGlyphMode = {
 
 class GlyphManager {
     requestManager: RequestManager;
-    localFontFamily: string | null | undefined;
+    localFontFamily?: string;
     localGlyphMode: number;
-    entries: {
-        [_: string]: Entry;
-    };
+    entries: Record<string, Entry>;
     // Multiple fontstacks may share the same local glyphs, so keep an index
     // into the glyphs based soley on font weight
-    localGlyphs: {
-        [_: string]: {
-            glyphs: {
-                [id: number]: StyleGlyph | null;
-            };
-            ascender: number | null | undefined;
-            descender: number | null | undefined;
-        };
-    };
-    urls: {
-        [scope: string]: string | null | undefined;
-    };
+    localGlyphs: Record<FontWeight, GlyphRange>;
+    url: string;
+    glyphLoader: GlyphLoader;
 
-    // exposed as statics to enable stubbing in unit tests
-    static loadGlyphRange: typeof loadGlyphRange;
     static TinySDF: Class<TinySDF>;
 
-    constructor(requestManager: RequestManager, localGlyphMode: number, localFontFamily?: string | null) {
+    constructor(requestManager: RequestManager, localGlyphMode: number, localFontFamily?: string, fontstackCompositing?: FontstackCompositing) {
         this.requestManager = requestManager;
         this.localGlyphMode = localGlyphMode;
         this.localFontFamily = localFontFamily;
-        this.urls = {};
+        this.url = '';
         this.entries = {};
         this.localGlyphs = {
-            // Only these four font weights are supported
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type '{ glyphs: { [id: number]: StyleGlyph; }; ascender: number; descender: number; }': glyphs, ascender, descender
             '200': {},
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type '{ glyphs: { [id: number]: StyleGlyph; }; ascender: number; descender: number; }': glyphs, ascender, descender
             '400': {},
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type '{ glyphs: { [id: number]: StyleGlyph; }; ascender: number; descender: number; }': glyphs, ascender, descender
             '500': {},
-            // @ts-expect-error - TS2739 - Type '{}' is missing the following properties from type '{ glyphs: { [id: number]: StyleGlyph; }; ascender: number; descender: number; }': glyphs, ascender, descender
             '900': {}
         };
+        this.glyphLoader = new GlyphLoader({fontstackCompositing});
     }
 
-    setURL(url: string | null | undefined, scope: string) {
-        this.urls[scope] = url;
+    setURL(url: string) {
+        this.url = url;
     }
 
-    getGlyphs(glyphs: {
-        [stack: string]: Array<number>;
-    }, scope: string, callback: Callback<{
-        [stack: string]: {
-            glyphs: {
-                [_: number]: StyleGlyph | null | undefined;
-            };
-            ascender?: number;
-            descender?: number;
-        };
-    }>) {
-        const all = [];
+    prefetchRange(stack: string, range: number): void {
+        const url = this.url || config.GLYPHS_URL;
+        if (!url) return;
+        let entry = this.entries[stack];
+        if (!entry) {
+            entry = this.entries[stack] = {glyphs: {}, requests: {}, ranges: {}};
+        }
+        if (entry.ranges[range] || entry.requests[range]) return; // already done or in-flight
+        entry.requests[range] = [];
+        this.glyphLoader.loadGlyphRange(stack, range, url, this.requestManager, (err, response?: GlyphRange) => {
+            if (response) {
+                entry.ascender = response.ascender;
+                entry.descender = response.descender;
+                for (const id in response.glyphs) {
+                    if (!this._doesCharSupportLocalGlyph(+id)) entry.glyphs[+id] = response.glyphs[+id];
+                }
+                entry.ranges[range] = true;
+            }
+            for (const cb of entry.requests[range] || []) cb(err, response);
+            delete entry.requests[range];
+        });
+    }
+
+    getGlyphs(glyphs: FontStacks, callback: Callback<GlyphMap>) {
+        const all: Array<{id: number, stack: FontStack}> = [];
 
         // Fallback to the default glyphs URL if none is specified
-        const url = this.urls[scope] || config.GLYPHS_URL;
+        const url = this.url || config.GLYPHS_URL;
 
         for (const stack in glyphs) {
             for (const id of glyphs[stack]) {
@@ -133,11 +136,7 @@ class GlyphManager {
             }
         }
 
-        asyncAll(all, ({stack, id}, fnCallback: Callback<{
-            stack: string;
-            id: number;
-            glyph: StyleGlyph | null | undefined;
-        }>) => {
+        asyncAll(all, ({stack, id}, fnCallback: Callback<FontGlyph>) => {
             let entry = this.entries[stack];
             if (!entry) {
                 entry = this.entries[stack] = {
@@ -164,7 +163,8 @@ class GlyphManager {
 
             const range = Math.floor(id / 256);
             if (range * 256 > 65535) {
-                fnCallback(new Error('glyphs > 65535 not supported'));
+                warnOnce('glyphs > 65535 not supported');
+                fnCallback(null, {stack, id, glyph});
                 return;
             }
 
@@ -176,14 +176,8 @@ class GlyphManager {
             let requests = entry.requests[range];
             if (!requests) {
                 requests = entry.requests[range] = [];
-                GlyphManager.loadGlyphRange(stack, range, url, this.requestManager,
-                    (err, response?: {
-                        glyphs: {
-                            [_: number]: StyleGlyph | null;
-                        };
-                        ascender?: number;
-                        descender?: number;
-                    } | null) => {
+                this.glyphLoader.loadGlyphRange(stack, range, url, this.requestManager,
+                    (err, response?: GlyphRange) => {
                         if (response) {
                             entry.ascender = response.ascender;
                             entry.descender = response.descender;
@@ -201,28 +195,18 @@ class GlyphManager {
                     });
             }
 
-            requests.push((err, result?: {
-                glyphs: {
-                    [_: number]: StyleGlyph | null;
-                };
-                ascender?: number;
-                descender?: number;
-            } | null) => {
+            requests.push((err, result?: GlyphRange) => {
                 if (err) {
                     fnCallback(err);
                 } else if (result) {
                     fnCallback(null, {stack, id, glyph: result.glyphs[id] || null});
                 }
             });
-        }, (err, glyphs?: Array<{
-            stack: string;
-            id: number;
-            glyph: StyleGlyph | null | undefined;
-        }> | null) => {
+        }, (err, glyphs?: Array<FontGlyph>) => {
             if (err) {
                 callback(err);
             } else if (glyphs) {
-                const result: Record<string, any> = {};
+                const result: GlyphMap = {};
 
                 for (const {stack, id, glyph} of glyphs) {
                     // Clone the glyph so that our own copy of its ArrayBuffer doesn't get transferred.
@@ -256,39 +240,40 @@ class GlyphManager {
                 isChar['Katakana'](id) ||
                 // gl-native parity: Extend Ideographs rasterization range to include CJK symbols and punctuations
                 isChar['CJK Symbols and Punctuation'](id) ||
-                isChar['CJK Unified Ideographs Extension A'](id) || isChar['CJK Unified Ideographs Extension B'](id)) // very rare surrogate characters
+                isChar['CJK Unified Ideographs Extension A'](id) || isChar['CJK Unified Ideographs Extension B'](id)) || // very rare surrogate characters
+                isChar['Osage'](id)
             );
             /* eslint-enable new-cap */
         }
     }
 
-    _tinySDF(entry: Entry, stack: string, id: number): StyleGlyph | null | undefined {
+    _tinySDF(entry: Entry, stack: FontStack, id: number): StyleGlyph | null | undefined {
         const fontFamily = this.localFontFamily;
         if (!fontFamily || !this._doesCharSupportLocalGlyph(id)) return;
 
         let tinySDF = entry.tinySDF;
         if (!tinySDF) {
-            let fontWeight = '400';
-            if (/bold/i.test(stack)) {
+            let fontWeight: FontWeight = '400';
+            if (BOLD_FONT_RE.test(stack)) {
                 fontWeight = '900';
-            } else if (/medium/i.test(stack)) {
+            } else if (MEDIUM_FONT_RE.test(stack)) {
                 fontWeight = '500';
-            } else if (/light/i.test(stack)) {
+            } else if (LIGHT_FONT_RE.test(stack)) {
                 fontWeight = '200';
             }
 
             const fontSize = 24 * SDF_SCALE;
             const buffer = 3 * SDF_SCALE;
             const radius = 8 * SDF_SCALE;
-            tinySDF = entry.tinySDF = new GlyphManager.TinySDF({fontFamily, fontWeight, fontSize, buffer, radius});
-            // @ts-expect-error - TS2339 - Property 'fontWeight' does not exist on type 'TinySDF'.
+            tinySDF = entry.tinySDF = new GlyphManager.TinySDF({fontFamily, fontWeight, fontSize, buffer, radius}) as Entry['tinySDF'];
             tinySDF.fontWeight = fontWeight;
         }
 
-        // @ts-expect-error - TS2339 - Property 'fontWeight' does not exist on type 'TinySDF'.
-        if (this.localGlyphs[tinySDF.fontWeight][id]) {
-            // @ts-expect-error - TS2339 - Property 'fontWeight' does not exist on type 'TinySDF'.
-            return this.localGlyphs[tinySDF.fontWeight][id];
+        const weight = tinySDF.fontWeight;
+
+        if (this.localGlyphs[weight][id]) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+            return this.localGlyphs[weight][id];
         }
 
         const char = String.fromCodePoint(id);
@@ -312,8 +297,7 @@ class GlyphManager {
         */
         const baselineAdjustment = 27;
 
-        // @ts-expect-error - TS2339 - Property 'fontWeight' does not exist on type 'TinySDF'.
-        const glyph = this.localGlyphs[tinySDF.fontWeight][id] = {
+        const glyph = this.localGlyphs[weight][id] = {
             id,
             bitmap: new AlphaImage({width, height}, data),
             metrics: {
@@ -329,7 +313,8 @@ class GlyphManager {
     }
 }
 
-GlyphManager.loadGlyphRange = loadGlyphRange;
 GlyphManager.TinySDF = TinySDF;
+
+export type {GlyphRange};
 
 export default GlyphManager;

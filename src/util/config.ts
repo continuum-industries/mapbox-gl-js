@@ -1,4 +1,14 @@
-type Config = {
+import {isWasmSimdSupported} from './is_wasm_simd_supported';
+import browser from './browser';
+
+const API_URL_REGEX = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/|\?|$)/i;
+const API_TILEJSON_REGEX = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/v[0-9]*\/.*\.json.*$)/i;
+const API_SPRITE_REGEX = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/styles\/v[0-9]*\/)(.*\/sprite.*\..*$)/i;
+const API_FONTS_REGEX = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/fonts\/v[0-9]*\/)(.*\.pbf.*$)/i;
+const API_STYLE_REGEX = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/styles\/v[0-9]*\/)(.*$)/i;
+const API_CDN_URL_REGEX = /^((https?:)?\/\/)?api\.mapbox\.c(n|om)(\/mapbox-gl-js\/)(.*$)/i;
+
+export type Config = {
     API_URL: string;
     API_URL_REGEX: RegExp;
     API_TILEJSON_REGEX: RegExp;
@@ -18,46 +28,21 @@ type Config = {
     DRACO_URL: string;
     MESHOPT_URL: string;
     MESHOPT_SIMD_URL: string;
+    BUILDING_GEN_URL: string;
     DEFAULT_STYLE: string;
     GLYPHS_URL: string;
     TILES3D_URL_PREFIX: string;
+    TILE_PROVIDER_URLS: Record<string, string>;
 };
-
-let mapboxHTTPURLRegex;
 
 const config: Config = {
     API_URL: 'https://api.mapbox.com',
-    get API_URL_REGEX () {
-        if (mapboxHTTPURLRegex == null) {
-            const prodMapboxHTTPURLRegex = /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/|\?|$)/i;
-            try {
-                mapboxHTTPURLRegex = (process.env.API_URL_REGEX != null) ? new RegExp(process.env.API_URL_REGEX) : prodMapboxHTTPURLRegex;
-            } catch (e: any) {
-                mapboxHTTPURLRegex = prodMapboxHTTPURLRegex;
-            }
-        }
-
-        return mapboxHTTPURLRegex;
-    },
-    get API_TILEJSON_REGEX() {
-        // https://docs.mapbox.com/api/maps/mapbox-tiling-service/#retrieve-tilejson-metadata
-        return /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/v[0-9]*\/.*\.json.*$)/i;
-    },
-    get API_SPRITE_REGEX() {
-        // https://docs.mapbox.com/api/maps/styles/#retrieve-a-sprite-image-or-json
-        return /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/styles\/v[0-9]*\/)(.*\/sprite.*\..*$)/i;
-    },
-    get API_FONTS_REGEX() {
-        // https://docs.mapbox.com/api/maps/fonts/#retrieve-font-glyph-ranges
-        return /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/fonts\/v[0-9]*\/)(.*\.pbf.*$)/i;
-    },
-    get API_STYLE_REGEX() {
-        // https://docs.mapbox.com/api/maps/styles/#retrieve-a-style
-        return /^((https?:)?\/\/)?([^\/]+\.)?mapbox\.c(n|om)(\/styles\/v[0-9]*\/)(.*$)/i;
-    },
-    get API_CDN_URL_REGEX() {
-        return /^((https?:)?\/\/)?api\.mapbox\.c(n|om)(\/mapbox-gl-js\/)(.*$)/i;
-    },
+    API_URL_REGEX,
+    API_TILEJSON_REGEX,
+    API_SPRITE_REGEX,
+    API_FONTS_REGEX,
+    API_STYLE_REGEX,
+    API_CDN_URL_REGEX,
     get EVENTS_URL() {
         if (!config.API_URL) { return null; }
         try {
@@ -69,7 +54,7 @@ const config: Config = {
             } else {
                 return null;
             }
-        } catch (e: any) {
+        } catch (e) {
             return null;
         }
     },
@@ -82,11 +67,68 @@ const config: Config = {
     ACCESS_TOKEN: null,
     DEFAULT_STYLE: 'mapbox://styles/mapbox/standard',
     MAX_PARALLEL_IMAGE_REQUESTS: 16,
-    DRACO_URL: 'https://api.mapbox.com/mapbox-gl-js/draco_decoder_gltf_v1.5.6.wasm',
-    MESHOPT_URL: 'https://api.mapbox.com/mapbox-gl-js/meshopt_base_v0.20.wasm',
-    MESHOPT_SIMD_URL: 'https://api.mapbox.com/mapbox-gl-js/meshopt_simd_v0.20.wasm',
+    DRACO_URL: '/mapbox-gl-js/draco_decoder_gltf_v1.5.6.wasm',
+    MESHOPT_URL: '/mapbox-gl-js/meshopt_base_v1.2.wasm',
+    MESHOPT_SIMD_URL: '/mapbox-gl-js/meshopt_simd_v1.2.wasm',
+    BUILDING_GEN_URL: '/mapbox-gl-js/building-gen/building_gen_v1.2.4.wasm',
     GLYPHS_URL: 'mapbox://fonts/mapbox/{fontstack}/{range}.pbf',
     TILES3D_URL_PREFIX: '3dtiles/v1',
+    TILE_PROVIDER_URLS: Object.assign(Object.create(null) as Record<string, string>, {
+        pmtiles: `/mapbox-gl-js/plugins/mapbox-gl-pmtiles-provider/v0.0.2/mapbox-gl-pmtiles-provider.js`,
+    }),
 };
+
+export function setAccessToken(token: string) {
+    config.ACCESS_TOKEN = token;
+}
+
+export function setBaseApiUrl(url: string) {
+    config.API_URL = url;
+}
+
+export function setMaxParallelImageRequests(numRequests: number) {
+    config.MAX_PARALLEL_IMAGE_REQUESTS = numRequests;
+}
+
+// Returns the config subset that can be changed via public setters and needs syncing to workers.
+export function getBroadcastableConfig() {
+    return {
+        API_URL: config.API_URL,
+        DRACO_URL: config.DRACO_URL,
+        MESHOPT_URL: config.MESHOPT_URL,
+        MESHOPT_SIMD_URL: config.MESHOPT_SIMD_URL,
+        BUILDING_GEN_URL: config.BUILDING_GEN_URL,
+    };
+}
+
+export function getDracoUrl(): string {
+    return new URL(config.DRACO_URL, config.API_URL).href;
+}
+
+export function setDracoUrl(url: string) {
+    config.DRACO_URL = browser.resolveURL(url);
+}
+
+export function getMeshoptUrl(): string {
+    if (typeof WebAssembly !== 'object') {
+        throw new Error("WebAssembly not supported, cannot instantiate meshoptimizer");
+    }
+
+    return new URL(isWasmSimdSupported() ? config.MESHOPT_SIMD_URL : config.MESHOPT_URL, config.API_URL).href;
+}
+
+export function setMeshoptUrl(url: string) {
+    const resolved = browser.resolveURL(url);
+    config.MESHOPT_URL = resolved;
+    config.MESHOPT_SIMD_URL = resolved;
+}
+
+export function getBuildingGenUrl(): string {
+    return new URL(config.BUILDING_GEN_URL, config.API_URL).href;
+}
+
+export function setBuildingGenUrl(url: string) {
+    config.BUILDING_GEN_URL = browser.resolveURL(url);
+}
 
 export default config;

@@ -4,7 +4,6 @@
     "test": {
       "width": 512,
       "height": 512,
-      "allowed": 0.0009,
       "operations": [
         ["setProjection", "globe"],
         ["wait"],
@@ -12,6 +11,15 @@
         ["wait"],
         ["setProjection", "globe"],
         ["wait"]
+      ],
+      "skip-test": [
+        {"platform-tag-contains": "web-windows-chrome", "reason": "Occasionally crashing with 'Error occured during [\"wait\"]':"}
+      ],
+      "image-threshold": [
+        {"platform-tag-contains": "", "threshold": 0.0009}
+      ],
+      "ignore-metrics": [
+        {"platform-tag-contains": "native-android-gl-adreno", "reason": "Flaky rendering metrics"}
       ]
     }
   },

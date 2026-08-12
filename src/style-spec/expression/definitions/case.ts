@@ -1,5 +1,4 @@
-import assert from 'assert';
-
+import assert from '../../util/assert';
 import {BooleanType} from '../types';
 
 import type {Expression, SerializedExpression} from '../expression';
@@ -22,19 +21,21 @@ class Case implements Expression {
     }
 
     static parse(args: ReadonlyArray<unknown>, context: ParsingContext): Case | null | undefined {
-        if (args.length < 4)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Case'.
-            return context.error(`Expected at least 3 arguments, but found only ${args.length - 1}.`);
-        if (args.length % 2 !== 0)
-        // @ts-expect-error - TS2322 - Type 'void' is not assignable to type 'Case'.
-            return context.error(`Expected an odd number of arguments.`);
+        if (args.length < 4) {
+            context.error(`Expected at least 3 arguments, but found only ${args.length - 1}.`);
+            return null;
+        }
+        if (args.length % 2 !== 0) {
+            context.error(`Expected an odd number of arguments.`);
+            return null;
+        }
 
         let outputType: Type | null | undefined;
         if (context.expectedType && context.expectedType.kind !== 'value') {
             outputType = context.expectedType;
         }
 
-        const branches = [];
+        const branches: Branches = [];
         for (let i = 1; i < args.length - 1; i += 2) {
             const test = context.parse(args[i], i, BooleanType);
             if (!test) return null;
@@ -47,13 +48,14 @@ class Case implements Expression {
             outputType = outputType || result.type;
         }
 
-        const otherwise = context.parse(args[args.length - 1], args.length - 1, outputType);
+        const otherwise = context.parse(args.at(-1), args.length - 1, outputType);
         if (!otherwise) return null;
 
         assert(outputType);
-        return new Case((outputType as any), branches, otherwise);
+        return new Case(outputType, branches, otherwise);
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     evaluate(ctx: EvaluationContext): any {
         for (const [test, expression] of this.branches) {
             if (test.evaluate(ctx)) {
@@ -72,12 +74,11 @@ class Case implements Expression {
     }
 
     outputDefined(): boolean {
-        return this.branches.every(([_, out]: [any, any]) => out.outputDefined()) && this.otherwise.outputDefined();
+        return this.branches.every(([_, out]: [Expression, Expression]) => out.outputDefined()) && this.otherwise.outputDefined();
     }
 
     serialize(): SerializedExpression {
-        const serialized = ["case"];
-        // @ts-expect-error - TS2345 - Argument of type 'SerializedExpression' is not assignable to parameter of type 'string'.
+        const serialized: Array<SerializedExpression> = ["case"];
         this.eachChild(child => { serialized.push(child.serialize()); });
         return serialized;
     }
